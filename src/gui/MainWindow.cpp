@@ -7858,6 +7858,19 @@ void MainWindow::buildMenuBar()
     }
 
     auto* helpMenu = menuBar()->addMenu("&Help");
+    helpMenu->addAction("What's New...", this, [this]() {
+        if (m_whatsNewDialog) {
+            m_whatsNewDialog->show();
+            m_whatsNewDialog->raise();
+            m_whatsNewDialog->activateWindow();
+            return;
+        }
+        m_whatsNewDialog = WhatsNewDialog::showAll(this);
+        m_whatsNewDialog->setFramelessMode(
+            AppSettings::instance().value("FramelessWindow", "True").toString() == "True");
+        m_persistentDialogs.append(QPointer<PersistentDialog>(m_whatsNewDialog));
+    });
+    helpMenu->addSeparator();
     helpMenu->addAction("Getting Started...", this, [this]() {
         auto* dlg = new HelpDialog("Getting Started", ":/help/getting-started.md", this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
@@ -7924,14 +7937,6 @@ void MainWindow::buildMenuBar()
         SliceTroubleshootingDialog dlg(&m_radioModel, m_audio, this,
                                        [this]() { return buildControlDevicesSnapshot(); });
         dlg.exec();
-    });
-    helpMenu->addAction("What's New...", this, [this]() {
-        if (m_whatsNewDialog) {
-            m_whatsNewDialog->raise();
-            m_whatsNewDialog->activateWindow();
-            return;
-        }
-        m_whatsNewDialog = WhatsNewDialog::showAll(this);
     });
     helpMenu->addSeparator();
     helpMenu->addAction("About AetherSDR", this, [this]{
