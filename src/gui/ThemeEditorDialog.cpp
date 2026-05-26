@@ -1,28 +1,30 @@
 #include "ThemeEditorDialog.h"
-#include "GradientEditorDialog.h"
 #include "Theme.h"
 #include "ThemeInspector.h"
+#include "TokenEditorWidget.h"
 #include "core/ThemeManager.h"
 
 #include <QAction>
-#include <QColorDialog>
+#include <QComboBox>
 #include <QCursor>
+#include <QTimer>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFontDialog>
 #include <QFontMetrics>
-#include <QMimeData>
-#include <QUrl>
+#include <QFrame>
 #include <QHBoxLayout>
-#include <QLinearGradient>
-#include <QMenu>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLinearGradient>
+#include <QMenu>
+#include <QMimeData>
+#include <QUrl>
 #include <QLineEdit>
-#include <QListWidget>
-#include <QListWidgetItem>
+#include <QHeaderView>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
@@ -104,17 +106,6 @@ QIcon gradientSwatchIcon(const ThemeGradient& g)
 
 // Build the short text shown on a gradient row: "N stops, Xdeg" so the
 // list stays scannable without having to open every gradient.
-QString gradientRowText(const QString& key, const ThemeGradient& g)
-{
-    const QString kind = g.type == ThemeGradient::Radial
-                             ? QStringLiteral("radial")
-                             : QStringLiteral("linear, %1°").arg(
-                                   static_cast<int>(std::round(g.angle)));
-    return QStringLiteral("%1   %2, %3 stops")
-        .arg(key, -36)
-        .arg(kind)
-        .arg(g.stops.size());
-}
 } // namespace
 
 ThemeEditorDialog::ThemeEditorDialog(QWidget* parent)
@@ -127,8 +118,16 @@ ThemeEditorDialog::ThemeEditorDialog(QWidget* parent)
     // bodyWidget() with the actual editor controls.  Subclasses are
     // expected to be non-modal — MainWindow's showOrRaisePersistent
     // wires that up + the frameless chrome from AppSettings.
-    setMinimumSize(420, 560);
+    // Size budget — fits CompactColorPicker (~218×220) on the color
+    // page; the gradient page is taller (strip + stop list + picker
+    // + angle row).
+    setMinimumSize(440, 720);
     applyAppTheme(this);
+
+    // Container declaration — places this dialog under the "dialog"
+    // umbrella so step 3's editor UI can navigate from root → dialog →
+    // dialog.themeEditor when rendering its own scope tree.
+    theme::setContainer(this, QStringLiteral("dialog/themeEditor"));
 
     auto* root = new QVBoxLayout(bodyWidget());
     root->setContentsMargins(8, 8, 8, 8);
@@ -139,32 +138,87 @@ ThemeEditorDialog::ThemeEditorDialog(QWidget* parent)
         "QLabel { font-weight: bold; }"));
     root->addWidget(m_themeLabel);
 
-    m_filterEdit = new QLineEdit(bodyWidget());
-    m_filterEdit->setPlaceholderText(QStringLiteral("Filter tokens (e.g. accent, slice, meter)…"));
-    root->addWidget(m_filterEdit);
+    // Inline editor — swaps controls based on the currently selected
+    // token's namespace + value shape.  Sits above the filter + token
+    // list so the operator can see what they're editing without their
+    // gaze jumping to a separate window.  Every control writes live to
+    // ThemeManager, so the rest of the app re-themes as they edit.
+    m_tokenEditor = new TokenEditorWidget(bodyWidget());
+    root->addWidget(m_tokenEditor);
 
-    m_tokenList = new QListWidget(bodyWidget());
-    m_tokenList->setIconSize(QSize(18, 18));
-    m_tokenList->setAlternatingRowColors(true);
-    m_tokenList->setSelectionMode(QAbstractItemView::SingleSelection);
-    root->addWidget(m_tokenList, 1);
+    auto* divider = new QFrame(bodyWidget());
+    divider->setFrameShape(QFrame::HLine);
+    divider->setFrameShadow(QFrame::Sunken);
+    root->addWidget(divider);
 
-    // Inspector toggle row — sits above the filter so it reads as a mode
-    // switch ("am I clicking on the main UI to pick a token?") rather than
-    // a button buried with Save As / Close.
+    // Inspector + scope picker row.  Layout left-to-right:
+    //   [Scope: combo] [Inspect btn] [Editing label] [status] [Reset btn]
+    // Scope picker sits leftmost so it visually anchors the row as
+    // "where this edit will land".  Combo width is clamped to the
+    // longest container-path label + 4 px pad on each side; no
+    // stretch so it doesn't grow with the dialog.
     auto* inspectRow = new QHBoxLayout;
+    inspectRow->addWidget(new QLabel(QStringLiteral("Scope:"), bodyWidget()));
+    m_containerCombo = new QComboBox(bodyWidget());
+    m_containerCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_containerCombo->setToolTip(QStringLiteral(
+        "Container scope to edit.  \"(root)\" is the global namespace.\n"
+        "Selecting a nested scope (e.g. applet.tx) routes new overrides\n"
+        "into that scope, and only widgets inside that container see them."));
+    inspectRow->addWidget(m_containerCombo);
+
     m_inspectBtn = new QPushButton(QStringLiteral("🎯  Inspect"), bodyWidget());
     m_inspectBtn->setCheckable(true);
     m_inspectBtn->setToolTip(QStringLiteral(
         "Click, then point at any region of the main UI to find the\n"
         "token(s) painting it.  ESC cancels."));
     inspectRow->addWidget(m_inspectBtn);
+    // "Editing: <token>" sits left-aligned right after the Inspect
+    // button.  Inspector status text takes the leftover stretch so
+    // transient messages ("Inspector canceled.") show between the
+    // header and the Reset button without nudging either side.
+    // Inspector status sits on the inspect row in transient-message
+    // territory; Editing label moves down to the filter row.
     m_inspectStatus = new QLabel(bodyWidget());
     m_inspectStatus->setWordWrap(true);
     m_inspectStatus->setStyleSheet(QStringLiteral(
         "QLabel { font-style: italic; }"));
     inspectRow->addWidget(m_inspectStatus, 1);
+    // Reset button reparents out of the editor's bottom row and sits
+    // right-aligned on the inspect row — keeps the editor's Cancel/OK
+    // pair clean, and Reset stays visible without scrolling.
+    if (auto* reset = m_tokenEditor->resetButton()) {
+        inspectRow->addWidget(reset, 0, Qt::AlignRight);
+    }
     root->addLayout(inspectRow);
+
+    // Filter input + "Editing: <token>" header share one row: filter
+    // is clamped to ~50% of the body width, header takes the rest so
+    // its single-line layout always has the room it needs to render.
+    auto* filterRow = new QHBoxLayout;
+    filterRow->setSpacing(8);
+    m_filterEdit = new QLineEdit(bodyWidget());
+    m_filterEdit->setPlaceholderText(QStringLiteral("Filter tokens (e.g. accent, slice, meter)…"));
+    m_filterEdit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    filterRow->addWidget(m_filterEdit, 1);
+    if (auto* hdr = m_tokenEditor->headerLabel()) {
+        filterRow->addWidget(hdr, 1, Qt::AlignLeft | Qt::AlignVCenter);
+    }
+    root->addLayout(filterRow);
+
+    m_tokenList = new QTreeWidget(bodyWidget());
+    m_tokenList->setIconSize(QSize(18, 18));
+    m_tokenList->setAlternatingRowColors(true);
+    m_tokenList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_tokenList->setRootIsDecorated(false);   // flat-table look
+    m_tokenList->setIndentation(0);
+    m_tokenList->setUniformRowHeights(true);
+    m_tokenList->setSortingEnabled(false);
+    // Columns rebuild dynamically as the scope picker changes — see
+    // rebuildColumns().  Initial setup with just the Object + Value
+    // pair so the widget has something to render before refreshTokenList.
+    rebuildColumns();
+    root->addWidget(m_tokenList, 1);
 
     auto* btnRow = new QHBoxLayout;
     // Theme-management dropdown — left side, since it's a destructive
@@ -205,12 +259,34 @@ ThemeEditorDialog::ThemeEditorDialog(QWidget* parent)
     // outermost dialog has setAcceptDrops(true).
     setAcceptDrops(true);
 
+    refreshContainerCombo();
     refreshTokenList();
     updateTitle();
     m_lastRenderedTheme = ThemeManager::instance().activeTheme();
 
-    connect(m_tokenList, &QListWidget::itemClicked,
-            this, &ThemeEditorDialog::onTokenRowClicked);
+    // Selection-driven editing — `currentItemChanged` fires for both
+    // mouse clicks and keyboard navigation so arrow-key walks through
+    // the list also update the inline editor.
+    connect(m_tokenList, &QTreeWidget::currentItemChanged,
+            this, &ThemeEditorDialog::onTokenRowSelectionChanged);
+    // Click on a scope-column cell focuses that scope in the picker AND
+    // selects the row's token — the columnar view becomes the primary
+    // navigation surface instead of being read-only.
+    connect(m_tokenList, &QTreeWidget::itemClicked,
+            this, &ThemeEditorDialog::onTokenCellClicked);
+    m_tokenList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_tokenList, &QTreeWidget::customContextMenuRequested,
+            this, &ThemeEditorDialog::onTokenContextMenu);
+    connect(m_tokenEditor, &TokenEditorWidget::tokenChanged,
+            this, &ThemeEditorDialog::onTokenEditedByEditor);
+    // Built-in themes can't be edited in place; the editor stashes
+    // its buffered edit and asks us to run Save As, then we restore
+    // the snapshot into the new user copy.
+    connect(m_tokenEditor, &TokenEditorWidget::requestSaveAsBeforeCommit,
+            this, &ThemeEditorDialog::onSaveAsBeforeCommit);
+    connect(m_containerCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &ThemeEditorDialog::onContainerChanged);
+
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this](const QString&) {
         // Re-evaluate visibility against both the text filter and the
         // last inspector-picked subset (if any) — filterTokensTo() reads
@@ -242,9 +318,56 @@ ThemeEditorDialog::ThemeEditorDialog(QWidget* parent)
     });
 }
 
+void ThemeEditorDialog::rebuildColumns()
+{
+    if (!m_tokenList) return;
+    // Column layout: Object | <root, seg0, seg0/seg1, …, leaf> | Value
+    QStringList scopeLevels;       // canonical paths for each header column
+    QStringList headerLabels = { QStringLiteral("Object") };
+    if (m_activeContainerPath.isEmpty()) {
+        // No scope selected → just Object + Value.  Skip the "root"
+        // column since it would duplicate the Value column.
+    } else {
+        scopeLevels.append(QString());          // root
+        headerLabels.append(QStringLiteral("root"));
+        const QStringList segs = m_activeContainerPath.split(QLatin1Char('/'),
+                                                             Qt::SkipEmptyParts);
+        QString running;
+        for (const QString& s : segs) {
+            running = running.isEmpty() ? s : running + QLatin1Char('/') + s;
+            scopeLevels.append(running);
+            headerLabels.append(s);
+        }
+    }
+    headerLabels.append(QStringLiteral("Value"));
+
+    m_tokenList->setColumnCount(headerLabels.size());
+    m_tokenList->setHeaderLabels(headerLabels);
+    // The Object + Value columns size to content; intermediate scope
+    // columns get reasonable fixed widths so the table doesn't lurch
+    // every time the user picks a different leaf.
+    auto* hdr = m_tokenList->header();
+    if (hdr) {
+        hdr->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        for (int i = 1; i < headerLabels.size() - 1; ++i) {
+            hdr->setSectionResizeMode(i, QHeaderView::Stretch);
+        }
+        hdr->setSectionResizeMode(headerLabels.size() - 1,
+                                  QHeaderView::ResizeToContents);
+        hdr->setStretchLastSection(false);
+    }
+    // Stash scope paths on the header column index so populateRow()
+    // can use them to look up the override value at each level.
+    for (int i = 0; i < scopeLevels.size(); ++i) {
+        // header data slot per column: Qt::UserRole carries the path
+        m_tokenList->headerItem()->setData(i + 1, Qt::UserRole, scopeLevels.at(i));
+    }
+}
+
 void ThemeEditorDialog::refreshTokenList()
 {
     m_tokenList->clear();
+    rebuildColumns();
     auto& tm = ThemeManager::instance();
     for (const QString& key : tm.allTokenKeys()) {
         // Editable token namespaces — gradient + scalar colours under
@@ -254,47 +377,97 @@ void ThemeEditorDialog::refreshTokenList()
             && !key.startsWith(QStringLiteral("sizing."))) {
             continue;
         }
-        auto* item = new QListWidgetItem;
-        item->setData(Qt::UserRole, key);
-        m_tokenList->addItem(item);
+        auto* item = new QTreeWidgetItem;
+        item->setData(0, Qt::UserRole, key);
+        m_tokenList->addTopLevelItem(item);
         populateRow(item);
     }
 }
 
-void ThemeEditorDialog::populateRow(QListWidgetItem* item)
+void ThemeEditorDialog::populateRow(QTreeWidgetItem* item)
 {
     if (!item) return;
-    const QString key = item->data(Qt::UserRole).toString();
+    const QString key = item->data(0, Qt::UserRole).toString();
     auto& tm = ThemeManager::instance();
 
+    // Column 0 — Object: token name + swatch.
+    QIcon swatch;
     if (key.startsWith(QStringLiteral("color."))) {
         if (tm.brush(key).gradient()) {
-            const ThemeGradient g = tm.gradient(key);
-            item->setIcon(gradientSwatchIcon(g));
-            item->setText(gradientRowText(key, g));
-            return;
+            swatch = gradientSwatchIcon(tm.gradient(key));
+        } else {
+            swatch = swatchIcon(tm.color(key));
         }
-        const QColor c = tm.color(key);
-        item->setIcon(swatchIcon(c));
-        item->setText(QStringLiteral("%1   %2").arg(key, -36).arg(colorToTokenHex(c)));
-        return;
     }
-    if (key.startsWith(QStringLiteral("font.family."))) {
-        const QString family = tm.value(key);
-        item->setIcon(QIcon());
-        item->setText(QStringLiteral("%1   %2").arg(key, -36).arg(family));
-        return;
+    item->setIcon(0, swatch);
+    item->setText(0, key);
+
+    // Intermediate scope-chain columns (if any).  Each shows either
+    // the literal override stored at that scope, or "inherited" in
+    // italics when the scope inherits from an ancestor.
+    const int nCols = m_tokenList->columnCount();
+    const int lastCol = nCols - 1;
+    const QFont normalFont = m_tokenList->font();
+    QFont inheritedFont = normalFont; inheritedFont.setItalic(true);
+    for (int col = 1; col < lastCol; ++col) {
+        const QString scopePath = m_tokenList->headerItem()->data(col, Qt::UserRole).toString();
+        if (tm.isOverriddenAt(scopePath, key)) {
+            // Format the override succinctly: hex for colours, plain
+            // number / string for sizings and font families.
+            QString text;
+            if (key.startsWith(QStringLiteral("color."))) {
+                if (tm.brush(key).gradient()) {
+                    {
+                    const ThemeGradient g = tm.gradientAt(scopePath, key);
+                    text = g.type == ThemeGradient::Radial
+                        ? QStringLiteral("radial, %1 stops").arg(g.stops.size())
+                        : QStringLiteral("linear, %1°, %2 stops")
+                              .arg(static_cast<int>(std::round(g.angle)))
+                              .arg(g.stops.size());
+                }
+                } else {
+                    text = colorToTokenHex(tm.colorAt(scopePath, key));
+                }
+            } else if (key.startsWith(QStringLiteral("font.family."))) {
+                text = tm.valueAt(scopePath, key);
+            } else {
+                text = QStringLiteral("%1 px").arg(tm.sizingAt(scopePath, key));
+            }
+            item->setText(col, text);
+            item->setFont(col, normalFont);
+            item->setForeground(col, QBrush());
+        } else {
+            item->setText(col, QStringLiteral("inherited"));
+            item->setFont(col, inheritedFont);
+            item->setForeground(col, QBrush(QColor(0x60, 0x70, 0x80)));
+        }
     }
-    if (key.startsWith(QStringLiteral("font.size."))
-        || key.startsWith(QStringLiteral("sizing."))) {
-        const int v = tm.sizing(key);
-        item->setIcon(QIcon());
-        item->setText(QStringLiteral("%1   %2 px").arg(key, -36).arg(v));
-        return;
+
+    // Last column — Value: the resolved value walking the chain from
+    // the leaf container (or root, when no scope is selected).
+    const QString leafPath = m_activeContainerPath;
+    if (key.startsWith(QStringLiteral("color."))) {
+        if (tm.brush(key).gradient()) {
+            {
+                const ThemeGradient g = tm.gradientAt(leafPath, key);
+                const QString text = g.type == ThemeGradient::Radial
+                    ? QStringLiteral("radial, %1 stops").arg(g.stops.size())
+                    : QStringLiteral("linear, %1°, %2 stops")
+                          .arg(static_cast<int>(std::round(g.angle)))
+                          .arg(g.stops.size());
+                item->setText(lastCol, text);
+            }
+        } else {
+            item->setText(lastCol, colorToTokenHex(tm.colorAt(leafPath, key)));
+        }
+    } else if (key.startsWith(QStringLiteral("font.family."))) {
+        item->setText(lastCol, tm.valueAt(leafPath, key));
+    } else {
+        item->setText(lastCol, QStringLiteral("%1 px").arg(tm.sizingAt(leafPath, key)));
     }
 }
 
-void ThemeEditorDialog::updateRow(QListWidgetItem* item)
+void ThemeEditorDialog::updateRow(QTreeWidgetItem* item)
 {
     populateRow(item);
 }
@@ -302,134 +475,38 @@ void ThemeEditorDialog::updateRow(QListWidgetItem* item)
 void ThemeEditorDialog::updateTitle()
 {
     const QString name = ThemeManager::instance().activeTheme();
-    m_themeLabel->setText(QStringLiteral("Editing: %1").arg(
+    m_themeLabel->setText(QStringLiteral("Profile: %1").arg(
         name.isEmpty() ? QStringLiteral("(no active theme)") : name));
     setWindowTitle(QStringLiteral("Theme Editor — %1").arg(name));
 }
 
-void ThemeEditorDialog::onTokenRowClicked(QListWidgetItem* item)
+void ThemeEditorDialog::onTokenRowSelectionChanged()
 {
-    if (!item) return;
-    const QString key = item->data(Qt::UserRole).toString();
-    auto& tm = ThemeManager::instance();
+    // Triggered by either mouse click or keyboard navigation on the
+    // token list — load the selected token into the inline editor so
+    // its controls reflect the value and the operator can edit in place.
+    auto* item = m_tokenList->currentItem();
+    if (!item) {
+        m_tokenEditor->setToken(QString());
+        return;
+    }
+    m_tokenEditor->setToken(item->data(0, Qt::UserRole).toString());
+}
 
-    // Click-menu adapts to the token's namespace + current type:
-    //   * color.*   — flat ↔ gradient chooser
-    //   * font.family.* — font family picker
-    //   * font.size.* / sizing.* — numeric picker
-    // A "Reset to default" entry shows up at the bottom whenever the
-    // token has a factory baseline (every bundled token does).
-    QMenu menu(this);
-    QAction* flatAct   = nullptr;
-    QAction* gradAct   = nullptr;
-    QAction* familyAct = nullptr;
-    QAction* numAct    = nullptr;
-
-    if (key.startsWith(QStringLiteral("color."))) {
-        const bool isGradient = tm.brush(key).gradient() != nullptr;
-        if (isGradient) {
-            gradAct = menu.addAction(QStringLiteral("Edit gradient…"));
-            menu.addSeparator();
-            flatAct = menu.addAction(QStringLiteral("Convert to flat colour…"));
-        } else {
-            flatAct = menu.addAction(QStringLiteral("Edit flat colour…"));
-            menu.addSeparator();
-            gradAct = menu.addAction(QStringLiteral("Convert to gradient…"));
+void ThemeEditorDialog::onTokenEditedByEditor(const QString& key)
+{
+    // The inline editor just wrote a new value for `key` to ThemeManager —
+    // refresh the matching list row so its swatch + descriptor reflect
+    // the edit.  ThemeManager's themeChanged signal already drove a
+    // repaint everywhere else; this just keeps the editor's own list
+    // consistent.
+    for (int i = 0; i < m_tokenList->topLevelItemCount(); ++i) {
+        auto* item = m_tokenList->topLevelItem(i);
+        if (item->data(0, Qt::UserRole).toString() == key) {
+            updateRow(item);
+            break;
         }
-    } else if (key.startsWith(QStringLiteral("font.family."))) {
-        familyAct = menu.addAction(QStringLiteral("Edit font family…"));
-    } else if (key.startsWith(QStringLiteral("font.size."))
-               || key.startsWith(QStringLiteral("sizing."))) {
-        numAct = menu.addAction(QStringLiteral("Edit size…"));
     }
-
-    QAction* resetAct = nullptr;
-    if (tm.hasFactoryValue(key)) {
-        if (!menu.isEmpty()) menu.addSeparator();
-        resetAct = menu.addAction(QStringLiteral("Reset to default"));
-    }
-
-    QAction* chosen = menu.exec(QCursor::pos());
-    if (!chosen) return;
-    if      (chosen == flatAct)   editTokenAsFlat(key, item);
-    else if (chosen == gradAct)   editTokenAsGradient(key, item);
-    else if (chosen == familyAct) editTokenFontFamily(key, item);
-    else if (chosen == numAct)    editTokenSizing(key, item);
-    else if (chosen == resetAct)  resetTokenToFactory(key, item);
-}
-
-void ThemeEditorDialog::editTokenAsFlat(const QString& key, QListWidgetItem* item)
-{
-    auto& tm = ThemeManager::instance();
-    // ThemeManager::color() returns the first-stop colour when the token
-    // is currently a gradient — exactly the right seed for "I want this
-    // flat now, starting from the dominant gradient colour."
-    const QColor current = tm.color(key);
-    const QColor chosen = QColorDialog::getColor(current, this,
-        QStringLiteral("Edit %1").arg(key),
-        QColorDialog::ShowAlphaChannel);
-    if (!chosen.isValid()) return;
-    tm.setColor(key, chosen);   // overwrites any previous gradient entry
-    updateRow(item);
-}
-
-void ThemeEditorDialog::editTokenAsGradient(const QString& key, QListWidgetItem* item)
-{
-    auto& tm = ThemeManager::instance();
-    ThemeGradient before = tm.gradient(key);
-    if (before.stops.isEmpty()) {
-        // Token is currently flat — seed a 2-stop linear gradient with
-        // the scalar colour at both ends.  The initial render matches
-        // the previous flat output exactly, so opening the editor
-        // doesn't perturb anything until the operator makes a deliberate
-        // edit.  Angle 0 (bottom→top) matches the canonical convention
-        // used by the meter and waterfall gradients.
-        const QColor c = tm.color(key);
-        before.type   = ThemeGradient::Linear;
-        before.angle  = 0.0;
-        before.stops  = { {0.0, c}, {1.0, c} };
-    }
-    GradientEditorDialog dlg(key, before, this);
-    if (dlg.exec() == QDialog::Accepted) {
-        tm.setGradient(key, dlg.currentGradient());  // overwrites any prior scalar
-        updateRow(item);
-    }
-}
-
-void ThemeEditorDialog::editTokenFontFamily(const QString& key,
-                                            QListWidgetItem* item)
-{
-    auto& tm = ThemeManager::instance();
-    const QString currentFamily = tm.value(key);
-    QFont seed;
-    if (!currentFamily.isEmpty()) seed.setFamily(currentFamily);
-
-    bool ok = false;
-    const QFont chosen = QFontDialog::getFont(&ok, seed, this,
-        QStringLiteral("Edit %1").arg(key));
-    if (!ok) return;
-    tm.setString(key, chosen.family());
-    updateRow(item);
-}
-
-void ThemeEditorDialog::editTokenSizing(const QString& key,
-                                        QListWidgetItem* item)
-{
-    auto& tm = ThemeManager::instance();
-    const int current = tm.sizing(key);
-    // Integer tokens span both font.size.* and sizing.*; allow a generous
-    // range and let the QSpinBox handle clamping.  Range chosen to cover
-    // realistic font sizes (4–96 px) and panel paddings (0–48 px) in one
-    // input — at the cost of letting a user dial a 96-px panel padding
-    // if they really want one.
-    bool ok = false;
-    const int chosen = QInputDialog::getInt(this,
-        QStringLiteral("Edit %1").arg(key),
-        QStringLiteral("Value (px):"),
-        current, 0, 96, 1, &ok);
-    if (!ok) return;
-    tm.setSizing(key, chosen);
-    updateRow(item);
 }
 
 void ThemeEditorDialog::onRenameThemeClicked()
@@ -569,34 +646,6 @@ void ThemeEditorDialog::onDeleteThemeClicked()
     }
 }
 
-void ThemeEditorDialog::resetTokenToFactory(const QString& key,
-                                            QListWidgetItem* item)
-{
-    auto& tm = ThemeManager::instance();
-    if (!tm.hasFactoryValue(key)) return;
-
-    if (key.startsWith(QStringLiteral("color."))) {
-        // Gradients restore through setGradient; scalars through setColor.
-        // The factory snapshot lookup goes through factoryGradient first,
-        // falls back to factoryColor.  An empty gradient with a valid
-        // factoryColor means the factory baseline is a scalar.
-        const ThemeGradient g = tm.factoryGradient(key);
-        if (!g.stops.isEmpty()) {
-            tm.setGradient(key, g);
-        } else {
-            const QColor c = tm.factoryColor(key);
-            if (c.isValid()) tm.setColor(key, c);
-        }
-    } else if (key.startsWith(QStringLiteral("font.family."))) {
-        const QString f = tm.factoryString(key);
-        if (!f.isEmpty()) tm.setString(key, f);
-    } else if (key.startsWith(QStringLiteral("font.size."))
-               || key.startsWith(QStringLiteral("sizing."))) {
-        const int v = tm.factorySizing(key);
-        if (v >= 0) tm.setSizing(key, v);
-    }
-    updateRow(item);
-}
 
 void ThemeEditorDialog::onSaveAsClicked()
 {
@@ -634,6 +683,70 @@ void ThemeEditorDialog::onSaveAsClicked()
     // will fire from themeChanged and refresh the title.
 }
 
+void ThemeEditorDialog::onSaveAsBeforeCommit()
+{
+    auto& tm = ThemeManager::instance();
+    const QString current = tm.activeTheme();
+    if (!tm.isBuiltInTheme(current)) {
+        // Race / stale signal — nothing to fork, just complete the
+        // commit directly.
+        m_tokenEditor->completeDeferredCommit();
+        return;
+    }
+
+    bool ok = false;
+    QString suggestion = QStringLiteral("My %1").arg(current);
+    const QString name = QInputDialog::getText(this,
+        QStringLiteral("Save Theme As"),
+        QStringLiteral("\"%1\" is a built-in theme and can't be modified "
+                       "directly.\nSave your changes as a new theme:")
+            .arg(current),
+        QLineEdit::Normal, suggestion, &ok).trimmed();
+    if (!ok || name.isEmpty()) return;  // user cancelled — buffer stays uncommitted
+
+    // Disallow accidentally writing to another built-in or overwriting
+    // an existing user theme without confirmation.
+    if (tm.isBuiltInTheme(name)) {
+        QMessageBox::warning(this, QStringLiteral("Reserved name"),
+            QStringLiteral("\"%1\" is a built-in theme name and can't be used.")
+                .arg(name));
+        return;
+    }
+    const QStringList existing = tm.availableThemes();
+    if (existing.contains(name)) {
+        const auto reply = QMessageBox::question(this,
+            QStringLiteral("Theme exists"),
+            QStringLiteral("A theme named \"%1\" already exists. Overwrite it?").arg(name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply != QMessageBox::Yes) return;
+    }
+
+    if (!tm.saveCurrentThemeAs(name)) {
+        QMessageBox::warning(this, QStringLiteral("Save failed"),
+            QStringLiteral("Could not write the theme file. Check that "
+                           "~/.config/AetherSDR/themes/ is writable."));
+        return;
+    }
+    // saveCurrentThemeAs() has switched the active theme and refreshed
+    // the list (clearing the editor's selection in the process).  The
+    // editor stashed its buffer in DeferredEdit before emitting; tell
+    // it to write that into the new user copy now.
+    m_tokenEditor->completeDeferredCommit();
+
+    // Re-select the row that matches the just-committed token so the
+    // list highlight matches what the editor is showing.
+    const QString committed = m_tokenEditor->currentToken();
+    if (!committed.isEmpty()) {
+        for (int i = 0; i < m_tokenList->topLevelItemCount(); ++i) {
+            auto* it = m_tokenList->topLevelItem(i);
+            if (it->data(0, Qt::UserRole).toString() == committed) {
+                m_tokenList->setCurrentItem(it);
+                break;
+            }
+        }
+    }
+}
+
 void ThemeEditorDialog::onInspectToggled(bool on)
 {
     if (!m_inspector) return;
@@ -664,6 +777,16 @@ void ThemeEditorDialog::onInspectorPicked(QWidget* target, QPoint localPos)
 {
     if (!target) return;
     auto& tm = ThemeManager::instance();
+
+    // Auto-select the picked widget's container scope so any subsequent
+    // edit lands at the right level of the inheritance chain.  Walks
+    // `target`'s Qt parent chain to the nearest declared `themeContainer`
+    // (the same lookup widget-aware getters use for token resolution).
+    const QString pickedScope = tm.containerPathFor(target);
+    if (m_containerCombo) {
+        const int idx = m_containerCombo->findData(pickedScope);
+        if (idx >= 0) m_containerCombo->setCurrentIndex(idx);
+    }
 
     // Walk up the parent chain until we find a widget with a declared
     // token list — that's how a click on a deep child (e.g. the QLabel
@@ -700,25 +823,30 @@ void ThemeEditorDialog::onInspectorPicked(QWidget* target, QPoint localPos)
     filterTokensTo(tokens);
 
     const QString matchedClass = w ? w->metaObject()->className() : hitName;
+    const QString scopeSuffix = pickedScope.isEmpty()
+        ? QString()
+        : QStringLiteral("  ·  scope: %1").arg(pickedScope);
     if (w && w != target) {
         updateInspectorStatus(QStringLiteral(
-            "%1 (via %2): %3 token%4.").arg(matchedClass).arg(hitName)
-            .arg(tokens.size()).arg(tokens.size() == 1 ? "" : "s"));
+            "%1 (via %2): %3 token%4.%5").arg(matchedClass).arg(hitName)
+            .arg(tokens.size()).arg(tokens.size() == 1 ? "" : "s")
+            .arg(scopeSuffix));
     } else {
         updateInspectorStatus(QStringLiteral(
-            "%1: %2 token%3.").arg(matchedClass)
-            .arg(tokens.size()).arg(tokens.size() == 1 ? "" : "s"));
+            "%1: %2 token%3.%4").arg(matchedClass)
+            .arg(tokens.size()).arg(tokens.size() == 1 ? "" : "s")
+            .arg(scopeSuffix));
     }
 
-    // Convenience: if exactly one color token matched, open the picker
-    // straight away — that's the "click ugly thing → fix it" flow.
+    // Convenience: if exactly one token matched, select it so the
+    // inline editor surfaces it immediately — the "click ugly thing →
+    // fix it" flow now happens in the editor above instead of a modal.
     if (tokens.size() == 1) {
-        for (int i = 0; i < m_tokenList->count(); ++i) {
-            auto* item = m_tokenList->item(i);
+        for (int i = 0; i < m_tokenList->topLevelItemCount(); ++i) {
+            auto* item = m_tokenList->topLevelItem(i);
             if (item->isHidden()) continue;
-            if (item->data(Qt::UserRole).toString() == tokens.first()) {
+            if (item->data(0, Qt::UserRole).toString() == tokens.first()) {
                 m_tokenList->setCurrentItem(item);
-                onTokenRowClicked(item);
                 break;
             }
         }
@@ -739,13 +867,117 @@ void ThemeEditorDialog::filterTokensTo(const QStringList& subset)
                                ? m_filterEdit->text().trimmed().toLower()
                                : QString();
     const QSet<QString> wanted(subset.begin(), subset.end());
-    for (int i = 0; i < m_tokenList->count(); ++i) {
-        auto* item = m_tokenList->item(i);
-        const QString key = item->data(Qt::UserRole).toString();
+    for (int i = 0; i < m_tokenList->topLevelItemCount(); ++i) {
+        auto* item = m_tokenList->topLevelItem(i);
+        const QString key = item->data(0, Qt::UserRole).toString();
         bool hidden = false;
         if (!subset.isEmpty() && !wanted.contains(key)) hidden = true;
         if (!hidden && !needle.isEmpty() && !key.contains(needle)) hidden = true;
         item->setHidden(hidden);
+    }
+}
+
+void ThemeEditorDialog::refreshContainerCombo()
+{
+    if (!m_containerCombo) return;
+    QSignalBlocker block(m_containerCombo);
+    m_containerCombo->clear();
+    // Friendlier label for the empty (root) path so the dropdown is
+    // self-explanatory; userData carries the real path string.
+    m_containerCombo->addItem(QStringLiteral("(root)"), QString());
+    for (const QString& path : ThemeManager::instance().containerPaths()) {
+        if (path.isEmpty()) continue;  // already added as "(root)"
+        m_containerCombo->addItem(path, path);
+    }
+    // Clamp the combo to the longest label + 4 px pad on each side
+    // (plus arrow + frame allowance).  Sized once per refresh; combo
+    // stays exactly that wide regardless of which item is selected.
+    QFontMetrics fm(m_containerCombo->font());
+    int maxLabelW = 0;
+    for (int i = 0; i < m_containerCombo->count(); ++i) {
+        maxLabelW = std::max(maxLabelW,
+                             fm.horizontalAdvance(m_containerCombo->itemText(i)));
+    }
+    // 4 px L + 4 px R text padding (overrides Theme.h's 6/6 default),
+    // ~20 px dropdown arrow, ~2 px frame borders.
+    m_containerCombo->setStyleSheet(QStringLiteral(
+        "QComboBox { padding: 2px 4px; }"));
+    m_containerCombo->setFixedWidth(maxLabelW + 4 + 4 + 20 + 2);
+    // Restore previous selection by path string, falling back to root.
+    int idx = m_containerCombo->findData(m_activeContainerPath);
+    if (idx < 0) idx = 0;
+    m_containerCombo->setCurrentIndex(idx);
+}
+
+void ThemeEditorDialog::onContainerChanged(int)
+{
+    if (!m_containerCombo) return;
+    m_activeContainerPath = m_containerCombo->currentData().toString();
+    if (m_tokenEditor) m_tokenEditor->setActiveContainerPath(m_activeContainerPath);
+    // Defer the heavy rebuild to the next event-loop tick.  When the
+    // inspector triggers a scope change via setCurrentIndex, the slot
+    // runs inside the synchronous signal cascade from
+    // ThemeInspector::eventFilter → widgetPicked → onInspectorPicked
+    // → setCurrentIndex; tearing down QTreeWidgetItems (and their
+    // QPixmap-backed icon QVariants) inside that stack has hit a
+    // destructor SEGV in the wild.  Deferring breaks the chain — the
+    // inspector callback completes, and the rebuild runs from a
+    // clean stack on the next iteration.
+    QTimer::singleShot(0, this, &ThemeEditorDialog::refreshTokenList);
+}
+
+void ThemeEditorDialog::onTokenCellClicked(QTreeWidgetItem* item, int column)
+{
+    if (!item || !m_tokenList) return;
+    if (column == 0) return;                                  // Object column: already wired via currentItemChanged
+    if (column == m_tokenList->columnCount() - 1) return;     // Value column: just informational
+    // Scope-chain column — switch the active scope to that column's
+    // path so the editor's commit lands there.  The user's perspective
+    // becomes "I want to override this token at this exact scope".
+    const QString scopePath =
+        m_tokenList->headerItem()->data(column, Qt::UserRole).toString();
+    // Sync the picker, which fires onContainerChanged → updates the
+    // editor + columns + repopulates the rows.
+    const int idx = m_containerCombo
+                        ? m_containerCombo->findData(scopePath)
+                        : -1;
+    if (idx >= 0) m_containerCombo->setCurrentIndex(idx);
+    // After the picker change re-selects the previous current row,
+    // explicitly re-select this row so the editor reflects the clicked
+    // token (the refresh may have lost the highlight).
+    m_tokenList->setCurrentItem(item);
+}
+
+void ThemeEditorDialog::onTokenContextMenu(const QPoint& pos)
+{
+    if (!m_tokenList) return;
+    QTreeWidgetItem* item = m_tokenList->itemAt(pos);
+    if (!item) return;
+    const int column = m_tokenList->columnAt(pos.x());
+    // Right-click is only meaningful on a scope-chain column (not
+    // Object, not Value) where an actual override could exist.
+    if (column <= 0 || column >= m_tokenList->columnCount() - 1) return;
+    const QString scopePath =
+        m_tokenList->headerItem()->data(column, Qt::UserRole).toString();
+    // Root column has no parent to fall back to — "clear" there would
+    // delete the token tree-wide.  Reset-to-factory belongs to the
+    // dedicated Reset button on the inspect row.
+    if (scopePath.isEmpty()) return;
+    const QString token = item->data(0, Qt::UserRole).toString();
+    auto& tm = ThemeManager::instance();
+    if (!tm.isOverriddenAt(scopePath, token)) return;  // nothing to clear
+
+    const QString scopeLabel = scopePath.isEmpty()
+                                   ? QStringLiteral("(root)")
+                                   : scopePath;
+    QMenu menu(this);
+    QAction* clearAct = menu.addAction(
+        QStringLiteral("Clear override at %1").arg(scopeLabel));
+    QAction* picked = menu.exec(m_tokenList->viewport()->mapToGlobal(pos));
+    if (picked == clearAct) {
+        tm.removeOverride(scopePath, token);
+        // Refresh the row so the column flips back to italic "inherited".
+        populateRow(item);
     }
 }
 
@@ -764,6 +996,7 @@ void ThemeEditorDialog::onActiveThemeChanged()
     updateTitle();
     if (current != m_lastRenderedTheme) {
         m_lastRenderedTheme = current;
+        refreshContainerCombo();
         refreshTokenList();
     }
 }

@@ -314,6 +314,7 @@ static QPushButton* mkRight(QWidget* parent = nullptr) { return new TriBtn(TriBt
 
 RxApplet::RxApplet(QWidget* parent) : QWidget(parent)
 {
+    theme::setContainer(this, QStringLiteral("applet/rx"));
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     // Recall the last user-chosen Manual squelch threshold from prior
     // sessions.  Auto mode clobbers the slice's squelchLevel with
@@ -516,7 +517,7 @@ void RxApplet::buildUI()
         // VfoWidget's frequency label reads the same token so both surfaces
         // re-theme in lockstep when the operator picks a new family in the
         // Theme Editor.
-        AetherSDR::ThemeManager::instance().applyStyleSheet(m_freqLabel, "QLabel { color: {{color.text.primary}}; font-size: 28px; font-weight: bold;"
+        AetherSDR::ThemeManager::instance().applyStyleSheet(m_freqLabel, "QLabel { color: {{color.text.primary}}; font-size: {{font.size.freq}}px; font-weight: bold;"
             " font-family: \"{{font.family.freq}}\";"
             " background: transparent; padding: 0; margin: 0; }");
         m_freqLabel->installEventFilter(this);

@@ -6,15 +6,17 @@
 
 class QDragEnterEvent;
 class QDropEvent;
-class QListWidget;
-class QListWidgetItem;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QLabel;
+class QComboBox;
 class QLineEdit;
 class QPushButton;
 
 namespace AetherSDR {
 
 class ThemeInspector;
+class TokenEditorWidget;
 
 // Modeless dialog for live-editing the active theme's color tokens.
 //
@@ -40,28 +42,27 @@ public:
 
 private slots:
     void refreshTokenList();         // rebuild rows from ThemeManager
-    void onTokenRowClicked(QListWidgetItem* item);
+    void onTokenRowSelectionChanged();
+    void onTokenEditedByEditor(const QString& key);
     void onSaveAsClicked();
+    void onSaveAsBeforeCommit();     // fork built-in theme before committing an edit
     void onActiveThemeChanged();     // re-load when user picks a different theme
+    void onContainerChanged(int);    // user picked a different scope from the container combo
+    // Click a scope-column cell in the columnar token table → focus
+    // that scope in the picker AND select the row's token for editing.
+    void onTokenCellClicked(QTreeWidgetItem* item, int column);
+    // Right-click a scope-column cell → context menu with
+    // "Clear override at <scope>" (enabled only when an override
+    // actually exists at that level for the row's token).
+    void onTokenContextMenu(const QPoint& pos);
 
     // Inspector-mode handlers.
     void onInspectToggled(bool on);
     void onInspectorPicked(QWidget* target, QPoint localPos);
     void onInspectorActiveChanged(bool active);
 
-    // Routes wired from the type-chooser menu in onTokenRowClicked.
-    // editTokenAsFlat falls back to the first-stop colour when the token
-    // is currently a gradient.  editTokenAsGradient seeds a 2-stop
-    // gradient from the scalar value when the token is currently flat,
-    // so the initial visual output matches the previous flat colour.
-    void editTokenAsFlat(const QString& key, QListWidgetItem* item);
-    void editTokenAsGradient(const QString& key, QListWidgetItem* item);
-    void editTokenFontFamily(const QString& key, QListWidgetItem* item);
-    void editTokenSizing(const QString& key, QListWidgetItem* item);
-    void resetTokenToFactory(const QString& key, QListWidgetItem* item);
-
     // Theme-file management — Rename / Delete / Export / Import on the
-    // "Theme actions ▾" menu next to Save As.
+    // "Theme actions" menu next to Save As.
     void onRenameThemeClicked();
     void onDeleteThemeClicked();
     void onExportThemeClicked();
@@ -77,16 +78,21 @@ protected:
 
 private:
     void updateTitle();
-    void updateRow(QListWidgetItem* item);   // re-paint swatch + hex label
-    void populateRow(QListWidgetItem* item); // shared by refresh + update
+    void updateRow(QTreeWidgetItem* item);   // re-paint swatch + hex label
+    void populateRow(QTreeWidgetItem* item); // shared by refresh + update
+    void rebuildColumns();                   // adjust column count + headers to active scope
     void updateInspectorStatus(const QString& text);
     // Filter the token list down to a specific subset, e.g. tokens
     // returned by tokensForWidget().  An empty list clears the filter.
     void filterTokensTo(const QStringList& subset);
 
     QLabel*      m_themeLabel{nullptr};   // "Editing: <name>"
+    TokenEditorWidget* m_tokenEditor{nullptr};   // inline editor stack
+    QComboBox*   m_containerCombo{nullptr};   // scope picker — root + declared paths
     QLineEdit*   m_filterEdit{nullptr};   // type-to-filter token names
-    QListWidget* m_tokenList{nullptr};
+    QTreeWidget* m_tokenList{nullptr};   // multi-column: Object | <scope chain…> | Value
+    void         refreshContainerCombo();
+    QString      m_activeContainerPath;  // empty == root scope
     QPushButton* m_saveAsBtn{nullptr};
     QPushButton* m_inspectBtn{nullptr};   // checkable
     QLabel*      m_inspectStatus{nullptr};
