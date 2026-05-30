@@ -1,4 +1,5 @@
 #include "CwDecoder.h"
+#include "CwPllDecoder.h"
 #include "LogManager.h"
 #include "ggmorse/ggmorse.h"
 #include <cstring>
@@ -27,18 +28,27 @@ void CwDecoder::start()
     params.sampleFormatOut = GGMORSE_SAMPLE_FORMAT_I16;
 
     m_ggmorse = std::make_unique<GGMorse>(params);
+    applyDecodeParameters();
 
-    // Auto-detect pitch and speed
-    GGMorse::ParametersDecode dp = GGMorse::getDefaultParametersDecode();
-    dp.frequency_hz = -1;  // auto
-    dp.speed_wpm = -1;     // auto
-    m_ggmorse->setParametersDecode(dp);
+    // Create PLL decoder with pitch/speed ranges matching current state
+    CwPllDecoder::Config pllCfg;
+    pllCfg.pitchMin = m_pitchRangeMin;
+    pllCfg.pitchMax = m_pitchRangeMax;
+    pllCfg.speedMin = (m_speedRangeMin > 0) ? m_speedRangeMin.load() : 5.0f;
+    pllCfg.speedMax = (m_speedRangeMax > 0) ? m_speedRangeMax.load() : 60.0f;
+    if (m_pitchLocked) pllCfg.pitchHz = m_pitch;
+    m_pllDecoder = std::make_unique<CwPllDecoder>(pllCfg);
+    if (m_speedLocked) m_pllDecoder->lockSpeed(m_speed);
 
     m_running = true;
 
     {
         QMutexLocker lock(&m_bufMutex);
         m_ringBuf.clear();
+    }
+    {
+        QMutexLocker lock(&m_pllMutex);
+        m_pllBuf.clear();
     }
 
     // Run decode loop on worker thread (CwDecoder stays on main thread)
@@ -62,21 +72,43 @@ void CwDecoder::stop()
     }
 
     m_ggmorse.reset();
+    m_pllDecoder.reset();
     qCDebug(lcDsp) << "CwDecoder: stopped";
 }
 
-// Build and apply current ggmorse decode parameters from all stored state.
+void CwDecoder::setDecoderMode(CwDecoderMode mode)
+{
+    m_decoderMode = mode;
+    // Reset PLL state on switch so stale timing doesn't confuse the new session
+    if (mode == CwDecoderMode::PLL && m_pllDecoder)
+        m_pllDecoder->reset();
+    qCDebug(lcDsp) << "CwDecoder: mode →" << (mode == CwDecoderMode::PLL ? "PLL" : "ggmorse");
+}
+
+// Apply all stored state to both decode engines.
 void CwDecoder::applyDecodeParameters()
 {
-    if (!m_ggmorse) return;
-    GGMorse::ParametersDecode dp = GGMorse::getDefaultParametersDecode();
-    dp.frequency_hz          = m_pitchLocked ? m_pitch.load() : -1.0f;
-    dp.speed_wpm             = m_speedLocked ? m_speed.load() : -1.0f;
-    dp.frequencyRangeMin_hz  = m_pitchRangeMin;
-    dp.frequencyRangeMax_hz  = m_pitchRangeMax;
-    dp.speedRangeMin_wpm     = m_speedRangeMin;
-    dp.speedRangeMax_wpm     = m_speedRangeMax;
-    m_ggmorse->setParametersDecode(dp);
+    if (m_ggmorse) {
+        GGMorse::ParametersDecode dp = GGMorse::getDefaultParametersDecode();
+        dp.frequency_hz          = m_pitchLocked ? m_pitch.load() : -1.0f;
+        dp.speed_wpm             = m_speedLocked ? m_speed.load() : -1.0f;
+        dp.frequencyRangeMin_hz  = m_pitchRangeMin;
+        dp.frequencyRangeMax_hz  = m_pitchRangeMax;
+        dp.speedRangeMin_wpm     = m_speedRangeMin;
+        dp.speedRangeMax_wpm     = m_speedRangeMax;
+        m_ggmorse->setParametersDecode(dp);
+    }
+    if (m_pllDecoder) {
+        CwPllDecoder::Config cfg;
+        cfg.pitchHz  = m_pitchLocked ? m_pitch.load()  : -1.0f;
+        cfg.pitchMin = m_pitchRangeMin;
+        cfg.pitchMax = m_pitchRangeMax;
+        cfg.speedMin = (m_speedRangeMin > 0) ? m_speedRangeMin.load() : 5.0f;
+        cfg.speedMax = (m_speedRangeMax > 0) ? m_speedRangeMax.load() : 60.0f;
+        m_pllDecoder->setConfig(cfg);
+        m_pllDecoder->lockPitch(m_pitchLocked ? m_pitch.load() : -1.0f);
+        m_pllDecoder->lockSpeed(m_speedLocked ? m_speed.load() : -1.0f);
+    }
 }
 
 void CwDecoder::lockPitch(bool lock)
@@ -146,89 +178,137 @@ void CwDecoder::feedAudio(const QByteArray& pcm24kStereo)
 {
     if (!m_running) return;
 
-    // Downmix stereo float32 → mono int16 for ggmorse (requires int16)
     const auto* src = reinterpret_cast<const float*>(pcm24kStereo.constData());
     const int stereoSamples = pcm24kStereo.size() / (2 * static_cast<int>(sizeof(float)));
-    QByteArray mono(stereoSamples * static_cast<int>(sizeof(int16_t)), Qt::Uninitialized);
-    auto* dst = reinterpret_cast<int16_t*>(mono.data());
+
+    // Downmix stereo float32 → mono int16 for ggmorse
+    QByteArray monoI16(stereoSamples * static_cast<int>(sizeof(int16_t)), Qt::Uninitialized);
+    auto* dst16 = reinterpret_cast<int16_t*>(monoI16.data());
+
+    // Downmix stereo float32 → mono float32 for PLL
+    QByteArray monoF32(stereoSamples * static_cast<int>(sizeof(float)), Qt::Uninitialized);
+    auto* dstF = reinterpret_cast<float*>(monoF32.data());
+
     for (int i = 0; i < stereoSamples; ++i) {
         float avg = (src[2 * i] + src[2 * i + 1]) * 0.5f;
-        dst[i] = static_cast<int16_t>(std::clamp(avg * 32768.0f, -32768.0f, 32767.0f));
+        dst16[i] = static_cast<int16_t>(std::clamp(avg * 32768.0f, -32768.0f, 32767.0f));
+        dstF[i]  = avg;
     }
 
-    QMutexLocker lock(&m_bufMutex);
-    m_ringBuf.append(mono);
-
-    // Trim to capacity (drop oldest)
-    if (m_ringBuf.size() > RING_CAPACITY) {
-        m_ringBuf.remove(0, m_ringBuf.size() - RING_CAPACITY);
+    {
+        QMutexLocker lock(&m_bufMutex);
+        m_ringBuf.append(monoI16);
+        if (m_ringBuf.size() > RING_CAPACITY)
+            m_ringBuf.remove(0, m_ringBuf.size() - RING_CAPACITY);
+    }
+    {
+        QMutexLocker lock(&m_pllMutex);
+        m_pllBuf.append(monoF32);
+        if (m_pllBuf.size() > PLL_RING_CAPACITY)
+            m_pllBuf.remove(0, m_pllBuf.size() - PLL_RING_CAPACITY);
     }
 }
 
 void CwDecoder::decodeLoop()
 {
-    // ggmorse requests samplesPerFrame * resampleFactor * sampleSize bytes per callback.
-    // At 24kHz int16, factor=6 (24000/4000), frame=128: 128*6*2 = 1536 bytes.
-    const int resampleFactor = static_cast<int>(m_ggmorse->getSampleRateInp() / GGMorse::kBaseSampleRate);
-    const int bytesPerFrame = m_ggmorse->getSamplesPerFrame() * resampleFactor * m_ggmorse->getSampleSizeBytesInp();
-    int feedCount = 0;
+    // ggmorse frame size: 128 * 6 * 2 = 1536 bytes of mono int16 at 24kHz
+    const int resampleFactor  = static_cast<int>(m_ggmorse->getSampleRateInp() / GGMorse::kBaseSampleRate);
+    const int ggmorseFrameBytes = m_ggmorse->getSamplesPerFrame() * resampleFactor
+                                  * m_ggmorse->getSampleSizeBytesInp();
 
-    qCDebug(lcDsp) << "CwDecoder: decode loop running, bytesPerFrame:" << bytesPerFrame;
+    // PLL frame: same 768 samples expressed as float32 = 3072 bytes
+    const int pllFrameSamples = m_ggmorse->getSamplesPerFrame() * resampleFactor;  // 768
+    const int pllFrameBytes   = pllFrameSamples * static_cast<int>(sizeof(float));
+
+    int feedCount = 0;
+    qCDebug(lcDsp) << "CwDecoder: decode loop running";
 
     while (m_running) {
-        // Wait until we have at least one frame of data
-        {
-            QMutexLocker lock(&m_bufMutex);
-            if (m_ringBuf.size() < bytesPerFrame) {
-                lock.unlock();
-                QThread::msleep(20);
-                continue;
+        const CwDecoderMode mode = m_decoderMode.load();
+
+        if (mode == CwDecoderMode::PLL) {
+            // ── PLL path ─────────────────────────────────────────────────────
+            {
+                QMutexLocker lock(&m_pllMutex);
+                if (m_pllBuf.size() < pllFrameBytes) {
+                    lock.unlock();
+                    QThread::msleep(10);
+                    continue;
+                }
             }
-        }
 
-        int framesThisCall = 0;
+            QByteArray chunk;
+            {
+                QMutexLocker lock(&m_pllMutex);
+                chunk = m_pllBuf.left(pllFrameBytes);
+                m_pllBuf.remove(0, pllFrameBytes);
+            }
 
-        bool gotData = m_ggmorse->decode([this, &framesThisCall](void* data, uint32_t nMaxBytes) -> uint32_t {
-            if (!m_running) return 0;
+            const float* samples = reinterpret_cast<const float*>(chunk.constData());
+            std::string decoded  = m_pllDecoder->process(samples, pllFrameSamples);
 
-            QMutexLocker lock(&m_bufMutex);
-            // ggmorse requires exactly nMaxBytes — partial returns cause it to abort
-            if (static_cast<uint32_t>(m_ringBuf.size()) < nMaxBytes) return 0;
+            if (!decoded.empty()) {
+                emit textDecoded(QString::fromLatin1(decoded.c_str(),
+                                                     static_cast<int>(decoded.size())),
+                                 1.0f - m_pllDecoder->confidence());
+            }
 
-            std::memcpy(data, m_ringBuf.constData(), nMaxBytes);
-            m_ringBuf.remove(0, nMaxBytes);
-            ++framesThisCall;
-            return nMaxBytes;
-        });
+            float pitch = m_pllDecoder->estimatedPitch();
+            float speed = m_pllDecoder->estimatedSpeed();
+            if (pitch > 0) {
+                m_pitch = pitch;
+                m_speed = speed;
+                emit statsUpdated(pitch, speed);
+            }
 
-        feedCount += framesThisCall;
+            ++feedCount;
 
-        // Log periodically
-        if (feedCount % 200 == 0 && feedCount > 0) {
+        } else {
+            // ── ggmorse path ─────────────────────────────────────────────────
+            {
+                QMutexLocker lock(&m_bufMutex);
+                if (m_ringBuf.size() < ggmorseFrameBytes) {
+                    lock.unlock();
+                    QThread::msleep(20);
+                    continue;
+                }
+            }
+
+            int framesThisCall = 0;
+            bool gotData = m_ggmorse->decode([this, ggmorseFrameBytes, &framesThisCall]
+                                             (void* data, uint32_t nMaxBytes) -> uint32_t {
+                if (!m_running) return 0;
+                QMutexLocker lock(&m_bufMutex);
+                if (static_cast<uint32_t>(m_ringBuf.size()) < nMaxBytes) return 0;
+                std::memcpy(data, m_ringBuf.constData(), nMaxBytes);
+                m_ringBuf.remove(0, nMaxBytes);
+                ++framesThisCall;
+                return nMaxBytes;
+            });
+            feedCount += framesThisCall;
+
+            if (feedCount % 200 == 0 && feedCount > 0) {
+                const auto& stats = m_ggmorse->getStatistics();
+                qCDebug(lcDsp) << "CwDecoder(ggmorse):" << feedCount
+                         << "frames, pitch:" << stats.estimatedPitch_Hz
+                         << "Hz, speed:" << stats.estimatedSpeed_wpm
+                         << "WPM, decoded:" << gotData;
+            }
+
             const auto& stats = m_ggmorse->getStatistics();
-            const auto& rxData = m_ggmorse->getRxData();
-            qCDebug(lcDsp) << "CwDecoder:" << feedCount << "frames fed, pitch:"
-                     << stats.estimatedPitch_Hz << "Hz, speed:"
-                     << stats.estimatedSpeed_wpm << "WPM, decode:" << gotData
-                     << "rxLen:" << rxData.size()
-                     << "lastResult:" << m_ggmorse->lastDecodeResult();
-        }
+            GGMorse::TxRx rxData;
+            if (m_ggmorse->takeRxData(rxData) > 0 && stats.costFunction < 1.0f) {
+                QString text = QString::fromLatin1(
+                    reinterpret_cast<const char*>(rxData.data()),
+                    static_cast<int>(rxData.size()));
+                emit textDecoded(text, stats.costFunction);
+            }
 
-        const auto& stats = m_ggmorse->getStatistics();
-
-        // Accept all decodes — color-coded by confidence in the UI
-        GGMorse::TxRx rxData;
-        if (m_ggmorse->takeRxData(rxData) > 0 && stats.costFunction < 1.0f) {
-            QString text = QString::fromLatin1(
-                reinterpret_cast<const char*>(rxData.data()),
-                static_cast<int>(rxData.size()));
-            emit textDecoded(text, stats.costFunction);
-        }
-
-        if (stats.estimatedPitch_Hz > 0) {
-            m_pitch = stats.estimatedPitch_Hz;
-            m_speed = stats.estimatedSpeed_wpm;
-            emit statsUpdated(m_pitch, m_speed);
+            if (stats.estimatedPitch_Hz > 0) {
+                m_pitch = stats.estimatedPitch_Hz;
+                m_speed = stats.estimatedSpeed_wpm;
+                emit statsUpdated(m_pitch, m_speed);
+            }
         }
     }
 

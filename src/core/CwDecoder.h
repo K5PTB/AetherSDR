@@ -12,8 +12,14 @@ class GGMorse;
 
 namespace AetherSDR {
 
-// Client-side CW (Morse code) decoder using ggmorse.
-// Runs decoding on a worker thread. Feed it 24kHz stereo int16 PCM
+class CwPllDecoder;
+
+// Selects which CW decode engine the worker thread uses.
+enum class CwDecoderMode { GGMorse, PLL };
+
+// Client-side CW (Morse code) decoder.
+// Supports two engines: ggmorse (original) and CwPllDecoder (PLL-based).
+// Runs decoding on a worker thread. Feed it 24kHz stereo float32 PCM
 // and it emits decoded text character by character.
 //
 // Usage:
@@ -51,8 +57,9 @@ public:
     bool isSpeedLocked() const { return m_speedLocked; }
 
 public slots:
-    // Feed 24kHz stereo int16 PCM (same format as AudioEngine receives).
+    // Feed 24kHz stereo float32 PCM (same format as AudioEngine receives).
     void feedAudio(const QByteArray& pcm24kStereo);
+    void setDecoderMode(CwDecoderMode mode);
 
 signals:
     void textDecoded(const QString& text, float cost);
@@ -63,12 +70,20 @@ private:
     void applyDecodeParameters();
 
     QThread*      m_workerThread{nullptr};
-    std::unique_ptr<GGMorse> m_ggmorse;
+    std::unique_ptr<GGMorse>      m_ggmorse;
+    std::unique_ptr<CwPllDecoder> m_pllDecoder;
 
-    // Ring buffer for audio samples (mono int16 at 24kHz)
+    std::atomic<CwDecoderMode> m_decoderMode{CwDecoderMode::PLL};
+
+    // ggmorse ring buffer: mono int16 at 24kHz
     QMutex        m_bufMutex;
     QByteArray    m_ringBuf;
-    static constexpr int RING_CAPACITY = 24000 * 2 * 4; // 4 seconds of mono int16
+    static constexpr int RING_CAPACITY = 24000 * 2 * 4;  // 4 s mono int16
+
+    // PLL ring buffer: mono float32 at 24kHz
+    QMutex        m_pllMutex;
+    QByteArray    m_pllBuf;
+    static constexpr int PLL_RING_CAPACITY = 24000 * 4 * 4; // 4 s mono float32
 
     std::atomic<bool> m_running{false};
     std::atomic<float> m_pitch{0};

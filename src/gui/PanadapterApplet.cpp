@@ -6,6 +6,7 @@
 #include "SpectrumWidget.h"
 #include "Theme.h"
 #include "core/AppSettings.h"
+#include "core/CwDecoder.h"
 #include "core/SettingsHelpers.h"
 
 #include <QVBoxLayout>
@@ -193,6 +194,22 @@ PanadapterApplet::PanadapterApplet(QWidget* parent)
     connect(m_speedRangeSlider, &RangeSlider::rangeChanged, this, [this](int lo, int hi) {
         emit speedRangeChanged(lo, hi);
     });
+
+    // Decoder mode toggle: PLL (default) ↔ ggmorse
+    m_pllModeBtn = new QPushButton("PLL");
+    m_pllModeBtn->setCheckable(true);
+    m_pllModeBtn->setChecked(true);  // PLL is default
+    m_pllModeBtn->setFixedSize(36, 16);
+    m_pllModeBtn->setToolTip("Toggle decoder: PLL (checked) or ggmorse (unchecked)");
+    AetherSDR::ThemeManager::instance().applyStyleSheet(m_pllModeBtn,
+        "QPushButton { background: #1a3a1a; color: #40c040; border: 1px solid #204020;"
+        " border-radius: 2px; font-size: 9px; font-weight: bold; }"
+        "QPushButton:checked { background: #1a3a1a; color: #40c040; }"
+        "QPushButton:!checked { background: #1a2a3a; color: #8090a0; border: 1px solid #203040; }");
+    connect(m_pllModeBtn, &QPushButton::toggled, this, [this](bool checked) {
+        emit decoderModeChanged(checked ? CwDecoderMode::PLL : CwDecoderMode::GGMorse);
+    });
+    cwBar->addWidget(m_pllModeBtn);
 
     cwBar->addStretch();
 

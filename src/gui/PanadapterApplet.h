@@ -2,6 +2,10 @@
 
 #include <QWidget>
 
+// Forward-declared to avoid pulling core headers into a gui header.
+// Defined in core/CwDecoder.h.
+enum class CwDecoderMode;
+
 class QLabel;
 class QPushButton;
 class QSlider;
@@ -62,6 +66,7 @@ signals:
     void maximizeRequested(const QString& panId);
     void pitchRangeChanged(int minHz, int maxHz);
     void speedRangeChanged(int minWpm, int maxWpm);
+    void decoderModeChanged(CwDecoderMode mode);
     void cwPanelCloseRequested();
 
 protected:
@@ -86,6 +91,7 @@ private:
     QPushButton*  m_lockSpeedBtn{nullptr};
     RangeSlider*  m_pitchRangeSlider{nullptr};
     RangeSlider*  m_speedRangeSlider{nullptr};
+    QPushButton*  m_pllModeBtn{nullptr};
     float         m_cwCostThreshold{0.70f};
 
     // Last CW text source — used by appendCwText / appendCwTextTx so the
