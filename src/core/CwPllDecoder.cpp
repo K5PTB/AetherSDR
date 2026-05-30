@@ -146,25 +146,27 @@ float CwPllDecoder::sweepPitch(const float* buf, int n) const
 
 void CwPllDecoder::updateEnvelope(float power)
 {
-    // Slow-decaying running max for AGC
-    m_envMax = std::max(m_envMax * 0.9998f, power);
+    // Running max for AGC — faster decay (τ ≈ 1.3 s) recovers from noise spikes
+    m_envMax = std::max(m_envMax * 0.9990f, power);
     float norm = power / m_envMax;
 
-    // Two-pole smoothing: fast attack, slow release
-    const float kAttack  = 0.40f;
-    const float kRelease = 0.08f;
+    // Fast attack (τ ≈ 2 ms), fast release (τ ≈ 5 ms).
+    // Release MUST drop below kOffThresh within one inter-element gap.
+    // At 50 WPM that gap is 24 ms; with α=0.25 we reach threshold in ~10 ms.
+    const float kAttack  = 0.60f;
+    const float kRelease = 0.25f;
     float alpha = (norm > m_envSmooth) ? kAttack : kRelease;
     m_envSmooth = m_envSmooth + alpha * (norm - m_envSmooth);
 
-    // Hysteresis threshold
-    const float kOnThresh  = 0.30f;
-    const float kOffThresh = 0.12f;
+    // Hysteresis: wide gap between on/off thresholds avoids chatter
+    const float kOnThresh  = 0.25f;
+    const float kOffThresh = 0.07f;
     bool newToneOn = m_toneOn;
     if (!m_toneOn && m_envSmooth > kOnThresh)  newToneOn = true;
     if ( m_toneOn && m_envSmooth < kOffThresh) newToneOn = false;
 
     if (newToneOn != m_toneOn) {
-        onEdge(newToneOn);   // newToneOn=true → rising edge (silence just ended)
+        onEdge(newToneOn);
         m_toneOn   = newToneOn;
         m_stateSec = 0.0f;
     }

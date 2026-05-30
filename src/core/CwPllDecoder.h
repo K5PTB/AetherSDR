@@ -23,7 +23,7 @@ public:
         float pitchMin   =    300.0f;  // Hz
         float pitchMax   =   1200.0f;  // Hz
         float speedMin   =      5.0f;  // WPM — clamps dot estimate
-        float speedMax   =     60.0f;
+        float speedMax   =     80.0f;
     };
 
     CwPllDecoder();
