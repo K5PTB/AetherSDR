@@ -73,7 +73,7 @@ private:
     std::unique_ptr<GGMorse>      m_ggmorse;
     std::unique_ptr<CwPllDecoder> m_pllDecoder;
 
-    std::atomic<CwDecoderMode> m_decoderMode{CwDecoderMode::PLL};
+    std::atomic<CwDecoderMode> m_decoderMode{CwDecoderMode::GGMorse};
 
     // ggmorse ring buffer: mono int16 at 24kHz
     QMutex        m_bufMutex;

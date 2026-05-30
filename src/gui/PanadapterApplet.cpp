@@ -198,7 +198,7 @@ PanadapterApplet::PanadapterApplet(QWidget* parent)
     // Decoder mode toggle: PLL (default) ↔ ggmorse
     m_pllModeBtn = new QPushButton("PLL");
     m_pllModeBtn->setCheckable(true);
-    m_pllModeBtn->setChecked(true);  // PLL is default
+    m_pllModeBtn->setChecked(false);  // ggmorse is default; click to enable PLL
     m_pllModeBtn->setFixedSize(36, 16);
     m_pllModeBtn->setToolTip("Toggle decoder: PLL (checked) or ggmorse (unchecked)");
     AetherSDR::ThemeManager::instance().applyStyleSheet(m_pllModeBtn,

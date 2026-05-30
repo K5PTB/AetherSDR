@@ -146,13 +146,14 @@ float CwPllDecoder::sweepPitch(const float* buf, int n) const
 
 void CwPllDecoder::updateEnvelope(float power)
 {
-    // Running max for AGC — faster decay (τ ≈ 1.3 s) recovers from noise spikes
-    m_envMax = std::max(m_envMax * 0.9990f, power);
+    // Running max for AGC — very slow decay (τ ≈ 6.6 s) so the peak tracks
+    // the signal level and noise never normalises to 1.0 during inter-word pauses.
+    m_envMax = std::max(m_envMax * 0.9998f, power);
     float norm = power / m_envMax;
 
     // Fast attack (τ ≈ 2 ms), fast release (τ ≈ 5 ms).
     // Release MUST drop below kOffThresh within one inter-element gap.
-    // At 50 WPM that gap is 24 ms; with α=0.25 we reach threshold in ~10 ms.
+    // At 50 WPM that gap is 24 ms; with α=0.25 we reach 0.12 in ~10 ms.
     const float kAttack  = 0.60f;
     const float kRelease = 0.25f;
     float alpha = (norm > m_envSmooth) ? kAttack : kRelease;
@@ -160,7 +161,7 @@ void CwPllDecoder::updateEnvelope(float power)
 
     // Hysteresis: wide gap between on/off thresholds avoids chatter
     const float kOnThresh  = 0.25f;
-    const float kOffThresh = 0.07f;
+    const float kOffThresh = 0.12f;
     bool newToneOn = m_toneOn;
     if (!m_toneOn && m_envSmooth > kOnThresh)  newToneOn = true;
     if ( m_toneOn && m_envSmooth < kOffThresh) newToneOn = false;
