@@ -4,6 +4,8 @@
 #include <cmath>
 #include <numeric>
 
+namespace AetherSDR {
+
 // ── Morse code table ─────────────────────────────────────────────────────────
 
 static const struct { const char* bits; char ch; } kMorse[] = {
@@ -30,6 +32,10 @@ char CwPllDecoder::morseToAscii(const std::string& bits)
 }
 
 // ── Constructor / config ─────────────────────────────────────────────────────
+
+CwPllDecoder::CwPllDecoder()
+    : CwPllDecoder(Config{})
+{}
 
 CwPllDecoder::CwPllDecoder(const Config& cfg)
     : m_cfg(cfg)
@@ -265,3 +271,5 @@ std::string CwPllDecoder::process(const float* samples, int n)
 
     return m_output;
 }
+
+} // namespace AetherSDR

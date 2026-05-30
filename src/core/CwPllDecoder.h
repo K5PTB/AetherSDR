@@ -2,6 +2,8 @@
 
 #include <string>
 
+namespace AetherSDR {
+
 // PLL-based CW (Morse code) decoder operating at native 24 kHz.
 //
 // Unlike ggmorse (which resamples to 4 kHz and works on 32 ms frames),
@@ -24,7 +26,8 @@ public:
         float speedMax   =     60.0f;
     };
 
-    explicit CwPllDecoder(const Config& cfg = {});
+    CwPllDecoder();
+    explicit CwPllDecoder(const Config& cfg);
 
     void setConfig(const Config& cfg);
     void lockPitch(float hz);   // -1 = unlock and re-sweep
@@ -92,3 +95,5 @@ private:
     int    m_errIdx              = 0;
     float  m_confidence          = 0.0f;
 };
+
+} // namespace AetherSDR

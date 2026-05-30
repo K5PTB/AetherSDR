@@ -2,9 +2,7 @@
 
 #include <QWidget>
 
-// Forward-declared to avoid pulling core headers into a gui header.
-// Defined in core/CwDecoder.h.
-enum class CwDecoderMode;
+namespace AetherSDR { enum class CwDecoderMode; }
 
 class QLabel;
 class QPushButton;
