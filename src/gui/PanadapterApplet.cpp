@@ -187,7 +187,7 @@ PanadapterApplet::PanadapterApplet(QWidget* parent)
     });
 
     // WPM range — double-handle slider, label embedded in widget
-    m_speedRangeSlider = new RangeSlider(5, 80, 20, 60, "WPM", {}, this);
+    m_speedRangeSlider = new RangeSlider(5, 60, 15, 40, "WPM", {}, this);
     m_speedRangeSlider->setFixedWidth(195);
     m_speedRangeSlider->setToolTip("Decoder speed search range (WPM)");
     cwBar->addWidget(m_speedRangeSlider);
@@ -199,7 +199,7 @@ PanadapterApplet::PanadapterApplet(QWidget* parent)
     m_pllModeBtn = new QPushButton("PLL");
     m_pllModeBtn->setCheckable(true);
     m_pllModeBtn->setChecked(false);  // ggmorse is default; click to enable PLL
-    m_pllModeBtn->setFixedSize(36, 16);
+    m_pllModeBtn->setFixedSize(42, 16);
     m_pllModeBtn->setToolTip("Toggle decoder: PLL (checked) or ggmorse (unchecked)");
     AetherSDR::ThemeManager::instance().applyStyleSheet(m_pllModeBtn,
         "QPushButton { background: #1a3a1a; color: #40c040; border: 1px solid #204020;"

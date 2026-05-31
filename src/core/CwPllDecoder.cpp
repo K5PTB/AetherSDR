@@ -84,11 +84,18 @@ void CwPllDecoder::reset()
     m_envMax    = 1e-9f;
     m_toneOn    = false;
     m_stateSec  = 0;
+    m_onCount   = 0;
     m_symbolBits.clear();
     m_output.clear();
     m_reSweepCountdown = 0;
-    m_confidence = 0;
-    m_errIdx     = 0;
+    m_confidence   = 0;
+    m_errIdx       = 0;
+    m_lastErr      = 0;
+    m_silenceSec   = 0;
+    m_didConfReset = false;
+    m_signalPresent     = false;
+    m_prevSignalPresent = false;
+    m_retroBuf.clear();
     std::fill(std::begin(m_errors), std::end(m_errors), 0);
     m_symbolCount = 0;
     // Reset dot estimate to midpoint of speed range
@@ -159,12 +166,24 @@ void CwPllDecoder::updateEnvelope(float power)
     float alpha = (norm > m_envSmooth) ? kAttack : kRelease;
     m_envSmooth = m_envSmooth + alpha * (norm - m_envSmooth);
 
-    // Hysteresis: wide gap between on/off thresholds avoids chatter
-    const float kOnThresh  = 0.25f;
-    const float kOffThresh = 0.12f;
+    // Rising edge: require kOnDebounce consecutive blocks above threshold.
+    // A single-block noise spike cannot trigger tone-on; a real CW element
+    // (shortest dot ~20 ms = 15 blocks) will pass easily.
+    // Falling edge: single block below threshold is enough — fast release is
+    // critical for detecting inter-element gaps at high speeds.
+    const float kOnThresh  = 0.35f;  // raised from 0.25 for noise immunity
+    const float kOffThresh = 0.15f;
     bool newToneOn = m_toneOn;
-    if (!m_toneOn && m_envSmooth > kOnThresh)  newToneOn = true;
-    if ( m_toneOn && m_envSmooth < kOffThresh) newToneOn = false;
+    if (!m_toneOn) {
+        if (m_envSmooth > kOnThresh) {
+            if (++m_onCount >= kOnDebounce) newToneOn = true;
+        } else {
+            m_onCount = 0;
+        }
+    } else {
+        m_onCount = 0;
+        if (m_envSmooth < kOffThresh) newToneOn = false;
+    }
 
     if (newToneOn != m_toneOn) {
         onEdge(newToneOn);
@@ -180,12 +199,20 @@ void CwPllDecoder::onEdge(bool rising)
     const float dur = m_stateSec;
 
     if (!rising) {
+        // Noise gate: discard tone bursts shorter than 30 % of the minimum
+        // possible dot. Real dots at speedMax are ~20–30 ms; noise spikes are
+        // typically 1–4 Goertzel blocks (1–5 ms).
+        const float kMinDot = 1.2f / m_cfg.speedMax;
+        if (dur < 0.30f * kMinDot) return;
+
         // Tone just ended — classify as dot or dash
         bool isDot = (dur < 2.0f * m_dotSec);
         m_symbolBits += isDot ? '.' : '-';
         float expected = isDot ? m_dotSec : 3.0f * m_dotSec;
         recordTiming(dur, expected);
-        updateDot(dur, isDot);
+        // Normalize dash duration to 1T before updating the dot estimate.
+        // Passing raw dash duration (3T) would corrupt the timing PLL.
+        updateDot(isDot ? dur : dur / 3.0f, /*reference1T=*/true);
     } else {
         // Silence just ended — classify spacing
         if (dur < 2.0f * m_dotSec) {
@@ -198,20 +225,29 @@ void CwPllDecoder::onEdge(bool rising)
             updateDot(dur / 3.0f, /*reference1T=*/true);
         } else {
             // Inter-word: decode accumulated symbol and insert space
-            pushSymbol();
-            if (!m_output.empty() && m_output.back() != ' ')
+            if (pushSymbol() && !m_output.empty() && m_output.back() != ' ')
                 m_output += ' ';
         }
     }
 }
 
-void CwPllDecoder::pushSymbol()
+bool CwPllDecoder::pushSymbol()
 {
-    if (m_symbolBits.empty()) return;
+    if (m_symbolBits.empty()) return false;
     char c = morseToAscii(m_symbolBits);
-    if (c != '\0') m_output += c;
     m_symbolBits.clear();
     ++m_symbolCount;
+    if (c == '\0') return false;
+    if (!m_signalPresent) {
+        // Gate closed: buffer the char so it can be recovered at TX onset.
+        // Drop the oldest if the buffer is full (keeps only the most recent chars).
+        m_retroBuf += c;
+        if (static_cast<int>(m_retroBuf.size()) > kRetroBufMax)
+            m_retroBuf.erase(0, 1);
+        return false;
+    }
+    m_output += c;
+    return true;
 }
 
 // ── Timing PLL ────────────────────────────────────────────────────────────────
@@ -224,8 +260,10 @@ void CwPllDecoder::updateDot(float measuredSec, bool reference1T)
     const float maxDot = 1.2f / m_cfg.speedMin;
     const float newDot = std::clamp(measuredSec, minDot, maxDot);
 
-    // Fast convergence for first kWarmupSymbols, then slow tracking
-    const float alpha = (m_symbolCount < kWarmupSymbols) ? 0.35f : 0.10f;
+    // Two-phase warmup: snap hard on first 4 symbols, moderate for next 4, then track slowly
+    const float alpha = (m_symbolCount < 4) ? 0.60f
+                      : (m_symbolCount < kWarmupSymbols) ? 0.35f
+                      : 0.10f;
     (void)reference1T;  // both dot and inter-element contribute the same way
     m_dotSec = m_dotSec + alpha * (newDot - m_dotSec);
     m_dotSec = std::clamp(m_dotSec, minDot, maxDot);
@@ -236,6 +274,7 @@ void CwPllDecoder::recordTiming(float measured, float expected)
     if (expected <= 0) return;
     float err = std::abs(measured - expected) / expected;
     err = std::min(err, 1.0f);
+    m_lastErr = err;  // used by appendOutput for hunt/emit gating
     m_errors[m_errIdx % kConfWindow] = err;
     ++m_errIdx;
     float sum = 0;
@@ -249,26 +288,67 @@ std::string CwPllDecoder::process(const float* samples, int n)
 {
     m_output.clear();
 
-    // Periodic pitch sweep using the full incoming buffer for better
-    // frequency resolution (more samples → narrower Goertzel bin)
+    // ── SNR-based signal-presence gate ───────────────────────────────────────
+    // Measure Goertzel power at pitch and at two in-band reference points
+    // (±kNoiseOffset Hz). Real CW concentrates energy at the carrier;
+    // broadband noise is flat across the passband, giving SNR ≈ 1.
+    // kNoiseOffset (100 Hz) stays inside a 250 Hz IF filter (±125 Hz).
+    const float pitchPwr = goertzelPower(samples, n, m_pitch);
+    const float noisePwr = std::max(1e-10f,
+        0.5f * (goertzelPower(samples, n, m_pitch - kNoiseOffset) +
+                goertzelPower(samples, n, m_pitch + kNoiseOffset)));
+    const float snr = pitchPwr / noisePwr;
+    if (!m_signalPresent && snr >= kSnrOnThresh)  m_signalPresent = true;
+    if ( m_signalPresent && snr <  kSnrOffThresh) m_signalPresent = false;
+
+    // On gate open: flush the retrospective buffer so chars decoded in the
+    // pre-gate window appear at the head of the output.
+    if (m_signalPresent && !m_prevSignalPresent) {
+        m_output += m_retroBuf;
+        m_retroBuf.clear();
+    }
+    m_prevSignalPresent = m_signalPresent;
+
+    // ── Pitch sweep ───────────────────────────────────────────────────────────
+    // Only sweep when the SNR says a signal is present; reuse the computation
+    // above rather than re-computing average power. Retry every 50 ms while
+    // absent so we lock quickly at transmission onset.
     m_reSweepCountdown -= static_cast<float>(n) / m_cfg.sampleRate;
     if (!m_pitchLocked && m_reSweepCountdown <= 0.0f) {
-        m_pitch = sweepPitch(samples, n);
-        m_reSweepCountdown = kReSweepInterval;
+        if (m_signalPresent) {
+            m_pitch = sweepPitch(samples, n);
+            m_reSweepCountdown = kReSweepInterval;
+        } else {
+            m_reSweepCountdown = 0.05f;  // retry in 50 ms
+        }
     }
 
-    // Process in kBlockSize chunks for 1.33 ms temporal resolution
+    // ── Element detection (32-sample Goertzel blocks) ─────────────────────────
     const float blockDur = static_cast<float>(kBlockSize) / m_cfg.sampleRate;
     for (int i = 0; i + kBlockSize <= n; i += kBlockSize) {
         float power = goertzelPower(samples + i, kBlockSize, m_pitch);
         updateEnvelope(power);
         m_stateSec += blockDur;
+        if (m_toneOn) {
+            m_silenceSec   = 0.0f;
+            m_didConfReset = false;
+        } else {
+            m_silenceSec += blockDur;
+        }
     }
 
-    // Flush a pending character if silence has lasted > 7T (operator pause)
+    // ── Confidence reset on long silence (display only) ───────────────────────
+    if (!m_toneOn && m_silenceSec > kConfResetSilence && !m_didConfReset) {
+        std::fill(std::begin(m_errors), std::end(m_errors), 1.0f);
+        m_errIdx       = kConfWindow;
+        m_confidence   = 0.0f;
+        m_lastErr      = 1.0f;
+        m_didConfReset = true;
+    }
+
+    // ── Flush pending character on operator pause (>7T silence) ───────────────
     if (!m_toneOn && m_stateSec > 7.0f * m_dotSec && !m_symbolBits.empty()) {
-        pushSymbol();
-        if (!m_output.empty() && m_output.back() != ' ')
+        if (pushSymbol() && !m_output.empty() && m_output.back() != ' ')
             m_output += ' ';
     }
 
