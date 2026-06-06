@@ -148,7 +148,6 @@ private:
     QRadioButton* m_polarityNormal{nullptr};
     QRadioButton* m_polarityReverse{nullptr};
     QComboBox* m_vhfModeCombo{nullptr};
-    QCheckBox* m_phaseDiversityCheck{nullptr};
     QLineEdit* m_txText{nullptr};
     QPushButton* m_txButton{nullptr};
     QTextEdit* m_log{nullptr};

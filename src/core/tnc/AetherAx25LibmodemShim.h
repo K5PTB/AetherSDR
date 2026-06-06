@@ -37,7 +37,6 @@ struct Ax25DemodConfig {
     double spaceHz{1800.0};
     Ax25TonePolarity polarity{Ax25TonePolarity::Normal};
     VhfMode vhfMode{VhfMode::APlus}; // VHF 1200 only; default A+ (Direwolf default)
-    bool phaseDiversity{true};        // VHF 1200 only; sample symbol period at 18 offsets
 };
 
 struct Ax25DecoderDiagnostics {

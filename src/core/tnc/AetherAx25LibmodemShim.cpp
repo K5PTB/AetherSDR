@@ -112,10 +112,7 @@ constexpr std::array<int, 21> kHf300DecodePhaseOffsets = {
 //
 // Duplicate suppression collapses the same frame seen by multiple lanes into
 // one emission, like Direwolf's multi_modem.c.
-constexpr int    kVhf1200FreeRunPhaseCount = 10;
-constexpr int    kVhf1200TrackedPhaseCount = 4;
-constexpr std::array<double, 2> kVhf1200PllAlphas = { 0.010, 0.025 };
-constexpr double kVhf1200PllAlpha = 0.010; // used when phase diversity is off
+constexpr double kVhf1200PllAlpha = 0.010;
 
 // Profile A+ space-gain multipliers — exact Direwolf A+ values (MAX_SUBCHANS=9).
 // Geometric series: MIN_G=0.5, MAX_G=4.0, 9 steps.
@@ -610,36 +607,12 @@ struct AetherAx25LibmodemShim::Impl {
             const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size())    : 1;
             const int bSlicers = bMulti ? static_cast<int>(kVhf1200BSliceOffsets.size()) : 1;
 
-            if (config.phaseDiversity && samplesPerSymbol > 0) {
-                for (int phase = 0; phase < kVhf1200FreeRunPhaseCount; ++phase) {
-                    const int phaseOffset = (samplesPerSymbol * phase) / kVhf1200FreeRunPhaseCount;
-                    if (wantA)
-                        for (int s = 0; s < aSlicers; ++s)
-                            addLaneA(phaseOffset, 0.0, aMulti ? kVhf1200SpaceGains[s] : 0.0f);
-                    if (wantB)
-                        for (int s = 0; s < bSlicers; ++s)
-                            addLaneB(phaseOffset, 0.0, bMulti ? kVhf1200BSliceOffsets[s] : 0.0f);
-                }
-                for (int phase = 0; phase < kVhf1200TrackedPhaseCount; ++phase) {
-                    const int phaseOffset = (samplesPerSymbol * phase) / kVhf1200TrackedPhaseCount;
-                    for (double laneAlpha : kVhf1200PllAlphas) {
-                        if (wantA)
-                            for (int s = 0; s < aSlicers; ++s)
-                                addLaneA(phaseOffset, laneAlpha, aMulti ? kVhf1200SpaceGains[s] : 0.0f);
-                        if (wantB)
-                            for (int s = 0; s < bSlicers; ++s)
-                                addLaneB(phaseOffset, laneAlpha, bMulti ? kVhf1200BSliceOffsets[s] : 0.0f);
-                    }
-                }
-            } else {
-                // No phase diversity — one DPLL lane per slicer.
-                if (wantA)
-                    for (int s = 0; s < aSlicers; ++s)
-                        addLaneA(0, kVhf1200PllAlpha, aMulti ? kVhf1200SpaceGains[s] : 0.0f);
-                if (wantB)
-                    for (int s = 0; s < bSlicers; ++s)
-                        addLaneB(0, kVhf1200PllAlpha, bMulti ? kVhf1200BSliceOffsets[s] : 0.0f);
-            }
+            if (wantA)
+                for (int s = 0; s < aSlicers; ++s)
+                    addLaneA(0, kVhf1200PllAlpha, aMulti ? kVhf1200SpaceGains[s] : 0.0f);
+            if (wantB)
+                for (int s = 0; s < bSlicers; ++s)
+                    addLaneB(0, kVhf1200PllAlpha, bMulti ? kVhf1200BSliceOffsets[s] : 0.0f);
         }
         resetDecoderState(true, true);
 
@@ -1305,11 +1278,6 @@ int ax25DemodLaneCount(const Ax25DemodConfig& cfg)
     const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size())    : 1;
     const int bSlicers = bMulti ? static_cast<int>(kVhf1200BSliceOffsets.size()) : 1;
     const int slicerLanes = (wantA ? aSlicers : 0) + (wantB ? bSlicers : 0);
-    if (cfg.phaseDiversity) {
-        const int phases = kVhf1200FreeRunPhaseCount
-            + kVhf1200TrackedPhaseCount * static_cast<int>(kVhf1200PllAlphas.size());
-        return slicerLanes * phases;
-    }
     return slicerLanes;
 }
 
