@@ -71,8 +71,9 @@ constexpr int kMaxKissTxQueueDepth   = 64;
 // ride out an ATU tune or a long voice transmission, short enough that a
 // stuck-PTT radio doesn't permanently jam the queue.
 constexpr int kMaxKissTxBusyRetries  = 60;
-constexpr auto kPacketDecoderVhfModeSetting  = "Ax25PacketDecoderVhfMode"; // 0=Off..6=AB+
-constexpr auto kPacketDecoderPolaritySetting = "Ax25PacketDecoderPolarity";
+constexpr auto kPacketDecoderVhfModeSetting        = "Ax25PacketDecoderVhfMode"; // 0=Off..6=AB+
+constexpr auto kPacketDecoderPhaseDiversitySetting = "Ax25PacketDecoderPhaseDiversity";
+constexpr auto kPacketDecoderPolaritySetting       = "Ax25PacketDecoderPolarity";
 constexpr int kAudioCaptureSeconds = 180;
 constexpr int kTxDaxSettleMs = 150;
 constexpr int kTxLeadMs = 200;
@@ -705,6 +706,11 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     m_vhfModeCombo->addItem(QStringLiteral("B+   —  FM discriminator · 9 slicers"));
     m_vhfModeCombo->addItem(QStringLiteral("AB+  —  IQ-mix + FM discriminator · 9 slicers each"));
     polarityLayout->addWidget(m_vhfModeCombo);
+    m_phaseDiversityCheck = new QCheckBox(QStringLiteral("Phase diversity"), polarityCell);
+    m_phaseDiversityCheck->setToolTip(QStringLiteral(
+        "Sample the symbol period at 18 timing offsets (10 free-run + 4×2 tracked).\n"
+        "Improves timing recovery. Has no effect on HF 300 baud."));
+    polarityLayout->addWidget(m_phaseDiversityCheck);
     controls->addWidget(polarityCell, 2);
 
     m_captureButton = new QPushButton(QStringLiteral("Capture 3m"), controlsFrame);
@@ -803,7 +809,8 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     const Ax25ModemProfile savedProfile = profileFromSettingsValue(
         AppSettings::instance().value(kPacketDecoderProfileSetting, QStringLiteral("Hf300")).toString());
     const bool savedDebug = AppSettings::instance().value(kPacketDecoderDebugSetting, false).toBool();
-    const int  savedVhfMode = AppSettings::instance().value(kPacketDecoderVhfModeSetting, 3).toInt(); // default A+
+    const int  savedVhfMode        = AppSettings::instance().value(kPacketDecoderVhfModeSetting, 3).toInt(); // default A+
+    const bool savedPhaseDiversity = AppSettings::instance().value(kPacketDecoderPhaseDiversitySetting, true).toBool();
     const Ax25TonePolarity savedPolarity = polarityFromSettingsValue(
         AppSettings::instance().value(kPacketDecoderPolaritySetting, QStringLiteral("Normal")).toString());
     m_hf300Profile->setChecked(savedProfile == Ax25ModemProfile::Hf300);
@@ -811,6 +818,7 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     m_polarityNormal->setChecked(savedPolarity == Ax25TonePolarity::Normal);
     m_polarityReverse->setChecked(savedPolarity == Ax25TonePolarity::Inverted);
     m_vhfModeCombo->setCurrentIndex(std::clamp(savedVhfMode, 0, m_vhfModeCombo->count() - 1));
+    m_phaseDiversityCheck->setChecked(savedPhaseDiversity);
     setDiagnosticsDebugEnabled(savedDebug, false);
     setModemProfile(savedProfile, false);
 
@@ -873,6 +881,19 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     };
     connect(m_vhfModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [applyVhfMode](int) { applyVhfMode(); });
+    connect(m_phaseDiversityCheck, &QCheckBox::toggled, this, [this](bool on) {
+        auto cfg = m_shimConfig;
+        cfg.phaseDiversity = on;
+        m_shimConfig = cfg;
+        QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
+            shim->configure(cfg);
+        }, Qt::QueuedConnection);
+        AppSettings::instance().setValue(kPacketDecoderPhaseDiversitySetting, on);
+        AppSettings::instance().save();
+        appendSystemLine(QStringLiteral("Phase diversity: %1. Configured %2.")
+            .arg(on ? QStringLiteral("on") : QStringLiteral("off"),
+                 ax25DemodDescription(m_shimConfig)));
+    });
     connect(m_shim, &AetherAx25LibmodemShim::frameDecoded,
             this, &Ax25HfPacketDecodeDialog::appendFrame);
     // RX -> KISS clients: forward every decoded frame to connected hosts.
@@ -1008,6 +1029,10 @@ void Ax25HfPacketDecodeDialog::setModemProfile(Ax25ModemProfile profile, bool pe
     if (m_vhfModeCombo) {
         m_vhfModeCombo->setEnabled(isVhf);
         cfg.vhfMode = static_cast<VhfMode>(m_vhfModeCombo->currentIndex() + 1);
+    }
+    if (m_phaseDiversityCheck) {
+        m_phaseDiversityCheck->setEnabled(isVhf);
+        cfg.phaseDiversity = isVhf && m_phaseDiversityCheck->isChecked();
     }
     m_shimConfig = cfg;
     QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
