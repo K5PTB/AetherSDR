@@ -71,8 +71,9 @@ constexpr int kMaxKissTxQueueDepth   = 64;
 // ride out an ATU tune or a long voice transmission, short enough that a
 // stuck-PTT radio doesn't permanently jam the queue.
 constexpr int kMaxKissTxBusyRetries  = 60;
-constexpr auto kPacketDecoderVhfModeSetting       = "Ax25PacketDecoderVhfMode"; // 0=Off..6=AB+
+constexpr auto kPacketDecoderVhfModeSetting        = "Ax25PacketDecoderVhfMode"; // 0=Off..6=AB+
 constexpr auto kPacketDecoderPhaseDiversitySetting = "Ax25PacketDecoderPhaseDiversity";
+constexpr auto kPacketDecoderPolaritySetting       = "Ax25PacketDecoderPolarity";
 constexpr int kAudioCaptureSeconds = 180;
 constexpr int kTxDaxSettleMs = 150;
 constexpr int kTxLeadMs = 200;
@@ -267,6 +268,20 @@ Ax25ModemProfile profileFromSettingsValue(const QString& value)
     if (value == QStringLiteral("Vhf1200"))
         return Ax25ModemProfile::Vhf1200;
     return Ax25ModemProfile::Hf300;
+}
+
+QString polaritySettingsValue(Ax25TonePolarity polarity)
+{
+    return polarity == Ax25TonePolarity::Inverted
+        ? QStringLiteral("Inverted")
+        : QStringLiteral("Normal");
+}
+
+Ax25TonePolarity polarityFromSettingsValue(const QString& value)
+{
+    if (value == QStringLiteral("Inverted"))
+        return Ax25TonePolarity::Inverted;
+    return Ax25TonePolarity::Normal;
 }
 
 QLabel* sectionLabel(const QString& text, QWidget* parent)
@@ -796,6 +811,8 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     const bool savedDebug = AppSettings::instance().value(kPacketDecoderDebugSetting, false).toBool();
     const int  savedVhfMode       = AppSettings::instance().value(kPacketDecoderVhfModeSetting, 3).toInt(); // default A+
     const bool savedPhaseDiversity = AppSettings::instance().value(kPacketDecoderPhaseDiversitySetting, true).toBool();
+    const Ax25TonePolarity savedPolarity = polarityFromSettingsValue(
+        AppSettings::instance().value(kPacketDecoderPolaritySetting, QStringLiteral("Normal")).toString());
     m_hf300Profile->setChecked(savedProfile == Ax25ModemProfile::Hf300);
     m_vhf1200Profile->setChecked(savedProfile == Ax25ModemProfile::Vhf1200);
     m_polarityNormal->setChecked(savedPolarity == Ax25TonePolarity::Normal);
@@ -1032,6 +1049,13 @@ void Ax25HfPacketDecodeDialog::setModemProfile(Ax25ModemProfile profile, bool pe
     if (m_log)
         appendSystemLine(QStringLiteral("Configured %1.").arg(ax25DemodDescription(m_shimConfig)));
     refreshStatus();
+}
+
+Ax25TonePolarity Ax25HfPacketDecodeDialog::selectedTonePolarity() const
+{
+    if (m_polarityReverse && m_polarityReverse->isChecked())
+        return Ax25TonePolarity::Inverted;
+    return Ax25TonePolarity::Normal;
 }
 
 void Ax25HfPacketDecodeDialog::setTonePolarity(Ax25TonePolarity polarity, bool persist)

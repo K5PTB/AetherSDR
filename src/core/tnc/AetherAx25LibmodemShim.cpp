@@ -1213,6 +1213,7 @@ Ax25TransmitResult ax25BuildTransmitAudio(
             .arg(cfg.sampleRate)
             .arg(cfg.baud);
         return result;
+    }
 
     QString error;
     const std::optional<lm::packet> maybePacket =

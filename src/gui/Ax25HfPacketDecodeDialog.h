@@ -94,6 +94,7 @@ public:
 private:
     void startTransmit(const QString& text);
     Ax25TonePolarity selectedTonePolarity() const;
+    void setTonePolarity(Ax25TonePolarity polarity, bool persist);
     void setModemProfile(Ax25ModemProfile profile, bool persist);
     void setDecodeEnabled(bool enabled);
     void handleRxAudio(const QByteArray& monoFloat32Pcm, int sampleRate);
