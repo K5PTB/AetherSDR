@@ -10,6 +10,13 @@
 #include "models/RadioModel.h"
 #include "models/SliceModel.h"
 #include "models/TransmitModel.h"
+#ifdef HAVE_MQTT
+#include "core/MqttClient.h"
+#include "core/MqttSettings.h"
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#endif
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -64,6 +71,8 @@ constexpr int kMaxKissTxQueueDepth   = 64;
 // ride out an ATU tune or a long voice transmission, short enough that a
 // stuck-PTT radio doesn't permanently jam the queue.
 constexpr int kMaxKissTxBusyRetries  = 60;
+constexpr auto kPacketDecoderVhfModeSetting       = "Ax25PacketDecoderVhfMode"; // 0=Off..6=AB+
+constexpr auto kPacketDecoderPhaseDiversitySetting = "Ax25PacketDecoderPhaseDiversity";
 constexpr int kAudioCaptureSeconds = 180;
 constexpr int kTxDaxSettleMs = 150;
 constexpr int kTxLeadMs = 200;
@@ -587,7 +596,10 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     theme::setContainer(this, QStringLiteral("dialog/ax25Decode"));
     setMinimumSize(1080, 680);
 
-    m_shim = new AetherAx25LibmodemShim(this);
+    m_shim = new AetherAx25LibmodemShim();
+    m_shim->moveToThread(&m_shimThread);
+    connect(&m_shimThread, &QThread::finished, m_shim, &QObject::deleteLater);
+    m_shimThread.start();
     m_kissServer = new KissTncServer(this);
     m_heartbeatTimer = new QTimer(this);
     m_heartbeatTimer->setInterval(1000);
@@ -654,7 +666,37 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     m_enableDecode = new QCheckBox(QStringLiteral("Enable Modem"), modemCell);
     modemLayout->addWidget(m_enableDecode);
     controls->addWidget(modemCell, 1);
-    controls->addStretch(2);
+
+    auto* polarityCell = panel(QStringLiteral("ControlCell"), controlsFrame);
+    auto* polarityLayout = new QVBoxLayout(polarityCell);
+    polarityLayout->setContentsMargins(0, 0, 20, 0);
+    polarityLayout->setSpacing(12);
+    polarityLayout->addWidget(sectionLabel(QStringLiteral("TONE POLARITY"), polarityCell));
+    auto* polarityButtons = new QHBoxLayout;
+    polarityButtons->setSpacing(34);
+    m_polarityNormal = new QRadioButton(QStringLiteral("Normal"), polarityCell);
+    m_polarityReverse = new QRadioButton(QStringLiteral("Reverse"), polarityCell);
+    m_polarityNormal->setChecked(true);
+    polarityButtons->addWidget(m_polarityNormal);
+    polarityButtons->addWidget(m_polarityReverse);
+    polarityButtons->addStretch(1);
+    polarityLayout->addLayout(polarityButtons);
+    // VHF demod mode selector (ordered by compute cost; matches Direwolf MODEM line options)
+    polarityLayout->addWidget(sectionLabel(QStringLiteral("VHF DEMOD MODE"), polarityCell));
+    m_vhfModeCombo = new QComboBox(polarityCell);
+    m_vhfModeCombo->addItem(QStringLiteral("A    —  IQ-mix · 1 slicer"));
+    m_vhfModeCombo->addItem(QStringLiteral("B    —  FM discriminator · 1 slicer"));
+    m_vhfModeCombo->addItem(QStringLiteral("AB   —  IQ-mix + FM discriminator · 1 slicer each"));
+    m_vhfModeCombo->addItem(QStringLiteral("A+   —  IQ-mix · 9 slicers  (Direwolf default)"));
+    m_vhfModeCombo->addItem(QStringLiteral("B+   —  FM discriminator · 9 slicers"));
+    m_vhfModeCombo->addItem(QStringLiteral("AB+  —  IQ-mix + FM discriminator · 9 slicers each"));
+    polarityLayout->addWidget(m_vhfModeCombo);
+    m_phaseDiversityCheck = new QCheckBox(QStringLiteral("Phase diversity"), polarityCell);
+    m_phaseDiversityCheck->setToolTip(QStringLiteral(
+        "Sample the symbol period at 18 timing offsets (10 free-run + 4×2 tracked).\n"
+        "Improves timing recovery. Has no effect on HF 300 baud."));
+    polarityLayout->addWidget(m_phaseDiversityCheck);
+    controls->addWidget(polarityCell, 2);
 
     m_captureButton = new QPushButton(QStringLiteral("Capture 3m"), controlsFrame);
     m_captureButton->setMinimumHeight(42);
@@ -752,8 +794,14 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     const Ax25ModemProfile savedProfile = profileFromSettingsValue(
         AppSettings::instance().value(kPacketDecoderProfileSetting, QStringLiteral("Hf300")).toString());
     const bool savedDebug = AppSettings::instance().value(kPacketDecoderDebugSetting, false).toBool();
+    const int  savedVhfMode       = AppSettings::instance().value(kPacketDecoderVhfModeSetting, 3).toInt(); // default A+
+    const bool savedPhaseDiversity = AppSettings::instance().value(kPacketDecoderPhaseDiversitySetting, true).toBool();
     m_hf300Profile->setChecked(savedProfile == Ax25ModemProfile::Hf300);
     m_vhf1200Profile->setChecked(savedProfile == Ax25ModemProfile::Vhf1200);
+    m_polarityNormal->setChecked(savedPolarity == Ax25TonePolarity::Normal);
+    m_polarityReverse->setChecked(savedPolarity == Ax25TonePolarity::Inverted);
+    m_vhfModeCombo->setCurrentIndex(std::clamp(savedVhfMode, 0, m_vhfModeCombo->count() - 1));
+    m_phaseDiversityCheck->setChecked(savedPhaseDiversity);
     setDiagnosticsDebugEnabled(savedDebug, false);
     setModemProfile(savedProfile, false);
 
@@ -791,6 +839,44 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
             this, &Ax25HfPacketDecodeDialog::startTransmitFromUi);
     connect(m_txPaceTimer, &QTimer::timeout,
             this, &Ax25HfPacketDecodeDialog::paceTransmitAudio);
+    connect(m_polarityNormal, &QRadioButton::toggled, this, [this](bool checked) {
+        if (!checked)
+            return;
+        setTonePolarity(Ax25TonePolarity::Normal, true);
+    });
+    connect(m_polarityReverse, &QRadioButton::toggled, this, [this](bool checked) {
+        if (!checked)
+            return;
+        setTonePolarity(Ax25TonePolarity::Inverted, true);
+    });
+    auto applyVhfMode = [this] {
+        auto cfg = m_shimConfig;
+        cfg.vhfMode = static_cast<VhfMode>(m_vhfModeCombo->currentIndex() + 1);
+        m_shimConfig = cfg;
+        QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
+            shim->configure(cfg);
+        }, Qt::QueuedConnection);
+        AppSettings::instance().setValue(kPacketDecoderVhfModeSetting, m_vhfModeCombo->currentIndex());
+        AppSettings::instance().save();
+        appendSystemLine(QStringLiteral("VHF mode: %1. Configured %2.")
+            .arg(m_vhfModeCombo->currentText().section(QStringLiteral("  —  "), 0, 0).trimmed(),
+                 ax25DemodDescription(m_shimConfig)));
+    };
+    connect(m_vhfModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [applyVhfMode](int) { applyVhfMode(); });
+    connect(m_phaseDiversityCheck, &QCheckBox::toggled, this, [this](bool on) {
+        auto cfg = m_shimConfig;
+        cfg.phaseDiversity = on;
+        m_shimConfig = cfg;
+        QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
+            shim->configure(cfg);
+        }, Qt::QueuedConnection);
+        AppSettings::instance().setValue(kPacketDecoderPhaseDiversitySetting, on);
+        AppSettings::instance().save();
+        appendSystemLine(QStringLiteral("Phase diversity: %1. Configured %2.")
+            .arg(on ? QStringLiteral("on") : QStringLiteral("off"),
+                 ax25DemodDescription(m_shimConfig)));
+    });
     connect(m_shim, &AetherAx25LibmodemShim::frameDecoded,
             this, &Ax25HfPacketDecodeDialog::appendFrame);
     // RX -> KISS clients: forward every decoded frame to connected hosts.
@@ -875,6 +961,8 @@ Ax25HfPacketDecodeDialog::~Ax25HfPacketDecodeDialog()
         m_kissServer->stop();
     if (m_audio)
         m_audio->setTncRxTapEnabled(false);
+    m_shimThread.quit();
+    m_shimThread.wait();
 }
 
 void Ax25HfPacketDecodeDialog::setAttachedSlice(SliceModel* slice)
@@ -918,8 +1006,21 @@ void Ax25HfPacketDecodeDialog::setAttachedSlice(SliceModel* slice)
 
 void Ax25HfPacketDecodeDialog::setModemProfile(Ax25ModemProfile profile, bool persist)
 {
-    // Tone polarity is always Normal for the supported HF DIGU / VHF FM paths.
-    m_shim->configure(ax25DemodConfigForProfile(profile, Ax25TonePolarity::Normal));
+    const auto polarity = selectedTonePolarity();
+    auto cfg = ax25DemodConfigForProfile(profile, polarity);
+    const bool isVhf = (profile == Ax25ModemProfile::Vhf1200);
+    if (m_vhfModeCombo) {
+        m_vhfModeCombo->setEnabled(isVhf);
+        cfg.vhfMode = static_cast<VhfMode>(m_vhfModeCombo->currentIndex() + 1);
+    }
+    if (m_phaseDiversityCheck) {
+        m_phaseDiversityCheck->setEnabled(isVhf);
+        cfg.phaseDiversity = isVhf && m_phaseDiversityCheck->isChecked();
+    }
+    m_shimConfig = cfg;
+    QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
+        shim->configure(cfg);
+    }, Qt::QueuedConnection);
     m_lastDiagnostics = {};
     m_lastDiagnosticsUtc = {};
 
@@ -929,14 +1030,41 @@ void Ax25HfPacketDecodeDialog::setModemProfile(Ax25ModemProfile profile, bool pe
     }
 
     if (m_log)
-        appendSystemLine(QStringLiteral("Configured %1.").arg(m_shim->demodDescription()));
+        appendSystemLine(QStringLiteral("Configured %1.").arg(ax25DemodDescription(m_shimConfig)));
     refreshStatus();
 }
+
+void Ax25HfPacketDecodeDialog::setTonePolarity(Ax25TonePolarity polarity, bool persist)
+{
+    auto cfg = m_shimConfig;
+    if (cfg.polarity == polarity && persist)
+        return;
+
+    cfg.polarity = polarity;
+    m_shimConfig = cfg;
+    QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
+        shim->configure(cfg);
+    }, Qt::QueuedConnection);
+    m_lastDiagnostics = {};
+    m_lastDiagnosticsUtc = {};
+
+    if (persist) {
+        AppSettings::instance().setValue(kPacketDecoderPolaritySetting, polaritySettingsValue(polarity));
+        AppSettings::instance().save();
+    }
+
+    appendSystemLine(QStringLiteral("Tone polarity changed to %1. Configured %2.")
+        .arg(polaritySettingsValue(polarity), ax25DemodDescription(m_shimConfig)));
+    refreshStatus();
+}
+
 
 void Ax25HfPacketDecodeDialog::setDecodeEnabled(bool enabled)
 {
     if (enabled) {
-        m_shim->reset();
+        QMetaObject::invokeMethod(m_shim, [shim = m_shim]() {
+            shim->reset();
+        }, Qt::QueuedConnection);
         m_lastDiagnostics = {};
         m_enabledUtc = QDateTime::currentDateTimeUtc();
         m_lastDiagnosticsUtc = {};
@@ -953,7 +1081,9 @@ void Ax25HfPacketDecodeDialog::setDecodeEnabled(bool enabled)
             finishAudioCapture(false);
         if (m_audio)
             m_audio->setTncRxTapEnabled(false);
-        m_shim->reset();
+        QMetaObject::invokeMethod(m_shim, [shim = m_shim]() {
+            shim->reset();
+        }, Qt::QueuedConnection);
         m_lastDiagnostics = {};
         m_lastDiagnosticsUtc = {};
         m_lastActivityHdlc = 0;
@@ -992,7 +1122,9 @@ void Ax25HfPacketDecodeDialog::handleRxAudio(const QByteArray& monoFloat32Pcm, i
         }
     }
 
-    m_shim->feedAudio(monoFloat32Pcm, sampleRate);
+    QMetaObject::invokeMethod(m_shim, [shim = m_shim, pcm = monoFloat32Pcm, sr = sampleRate]() {
+        shim->feedAudio(pcm, sr);
+    }, Qt::QueuedConnection);
 }
 
 void Ax25HfPacketDecodeDialog::startAudioCapture()
@@ -1006,7 +1138,9 @@ void Ax25HfPacketDecodeDialog::startAudioCapture()
     m_captureSampleRate = 0;
     m_captureTargetBytes = 0;
     m_captureActive = true;
-    m_shim->reset();
+    QMetaObject::invokeMethod(m_shim, [shim = m_shim]() {
+        shim->reset();
+    }, Qt::QueuedConnection);
     m_lastDiagnostics = {};
     m_lastDiagnosticsUtc = {};
     m_lastActivityHdlc = 0;
@@ -1049,12 +1183,17 @@ void Ax25HfPacketDecodeDialog::finishAudioCapture(bool save)
 
 void Ax25HfPacketDecodeDialog::startTransmitFromUi()
 {
+    if (!m_txText)
+        return;
+    startTransmit(m_txText->text());
+}
+
+void Ax25HfPacketDecodeDialog::startTransmit(const QString& text)
+{
     if (m_txActive || m_txPendingStream) {
         appendSystemLine(QStringLiteral("TX already in progress."));
         return;
     }
-    if (!m_txText)
-        return;
     if (!m_audio || !m_radio) {
         appendSystemLine(QStringLiteral("TX unavailable: audio engine or radio model is not ready."));
         return;
@@ -1064,8 +1203,7 @@ void Ax25HfPacketDecodeDialog::startTransmitFromUi()
         return;
     }
 
-    const QString text = m_txText->text();
-    Ax25TransmitResult tx = m_shim->buildTransmitAudio(text, defaultTransmitSource());
+    Ax25TransmitResult tx = ax25BuildTransmitAudio(m_shimConfig, text, defaultTransmitSource());
     if (!tx.ok) {
         appendSystemLine(QStringLiteral("TX packetization failed: %1.").arg(tx.error));
         qCWarning(lcAx25).noquote() << "AX.25 TX packetization failed:" << tx.error;
@@ -1116,6 +1254,50 @@ void Ax25HfPacketDecodeDialog::beginTransmission(const Ax25TransmitResult& tx, b
 
     beginTransmitWhenReady();
 }
+
+#ifdef HAVE_MQTT
+void Ax25HfPacketDecodeDialog::setMqttClient(MqttClient* mqtt)
+{
+    if (m_mqtt == mqtt)
+        return;
+    if (m_mqtt)
+        disconnect(m_mqtt, &MqttClient::messageReceived,
+                   this, &Ax25HfPacketDecodeDialog::handleMqttMessage);
+    m_mqtt = mqtt;
+    if (m_mqtt)
+        connect(m_mqtt, &MqttClient::messageReceived,
+                this, &Ax25HfPacketDecodeDialog::handleMqttMessage);
+}
+
+void Ax25HfPacketDecodeDialog::publishFrameMqtt(const Ax25DecodedFrame& frame)
+{
+    if (!m_mqtt)
+        return;
+    QString display = frame.source + QStringLiteral(">") + frame.destination;
+    if (!frame.path.isEmpty())
+        display += QStringLiteral(",") + frame.path.join(QStringLiteral(","));
+    display += QStringLiteral(":")
+        + (frame.payloadText.isEmpty() ? frame.payloadHex : frame.payloadText);
+    QJsonObject obj;
+    obj[QStringLiteral("timestamp")] = frame.timestampUtc.toString(Qt::ISODateWithMs);
+    obj[QStringLiteral("source")]    = frame.source;
+    obj[QStringLiteral("dest")]      = frame.destination;
+    if (!frame.path.isEmpty())
+        obj[QStringLiteral("path")] = QJsonArray::fromStringList(frame.path);
+    obj[QStringLiteral("payload")]   = frame.payloadText.isEmpty() ? frame.payloadHex : frame.payloadText;
+    obj[QStringLiteral("display")]   = display;
+    obj[QStringLiteral("confidence")] = frame.confidenceOrQuality;
+    m_mqtt->publish(QString::fromLatin1(kAx25RxTopic),
+                    QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+void Ax25HfPacketDecodeDialog::handleMqttMessage(const QString& topic, const QByteArray& payload)
+{
+    if (topic != QString::fromLatin1(kAx25TxTopic))
+        return;
+    startTransmit(QString::fromUtf8(payload).trimmed());
+}
+#endif
 
 void Ax25HfPacketDecodeDialog::beginTransmitWhenReady()
 {
@@ -1233,7 +1415,7 @@ void Ax25HfPacketDecodeDialog::paceTransmitAudio()
         qCInfo(lcAx25).noquote()
             << QStringLiteral("AX.25 TX pacing summary: baud=%1 chunks=%2 audioMs=%3 wallMs=%4 "
                               "stretch=%5x maxChunkGapMs=%6 lateChunks=%7 nominalChunkMs=%8")
-                .arg(m_shim->config().baud)
+                .arg(m_shimConfig.baud)
                 .arg(m_txChunkIndex)
                 .arg(audioMs, 0, 'f', 0)
                 .arg(wallMs)
@@ -1363,6 +1545,9 @@ void Ax25HfPacketDecodeDialog::appendFrame(const Ax25DecodedFrame& frame)
     m_log->verticalScrollBar()->setValue(m_log->verticalScrollBar()->maximum());
     if (m_packetActivity)
         m_packetActivity->recordFrame();
+#ifdef HAVE_MQTT
+    publishFrameMqtt(frame);
+#endif
     refreshStatus();
 }
 
@@ -1453,7 +1638,7 @@ void Ax25HfPacketDecodeDialog::refreshStatus()
         m_modemStatusValue->setText(status);
         m_modemStatusValue->setToolTip(QStringLiteral(
             "%1\nSlice: %2\nSquelch: %3\nFrames: %4\nLast decode: %5\nDecode lanes: %6\nHDLC starts: %7\nHDLC candidates: %8\nAX.25-like candidates: %9\nAccepted: %10\nRejected: %11\nToo short: %12\nBad FCS: %13\nMalformed: %14\nLast reject: %15\nState: %16, bits: %17, ones: %18%\nReceive gate: %19, rms %20 dBFS, floor %21 dBFS, resets %22")
-            .arg(m_shim->demodDescription())
+            .arg(ax25DemodDescription(m_shimConfig))
             .arg(m_attachedSliceId >= 0 ? QString::number(m_attachedSliceId) : QStringLiteral("-"))
             .arg(squelchText)
             .arg(m_frameCount)
@@ -1518,7 +1703,7 @@ void Ax25HfPacketDecodeDialog::refreshTransmitControls()
         m_txText->setEnabled(!m_txActive && !m_txPendingStream);
         m_txText->setToolTip(
             QStringLiteral("Transmit a %1 AX.25 UI frame. Raw text uses %2>APRS; full SRC>DST,path:payload syntax is also accepted.")
-                .arg(ax25ModemProfileName(m_shim->config().profile), defaultTransmitSource()));
+                .arg(ax25ModemProfileName(m_shimConfig.profile), defaultTransmitSource()));
     }
 }
 
@@ -1529,7 +1714,9 @@ void Ax25HfPacketDecodeDialog::setDiagnosticsDebugEnabled(bool enabled, bool per
 
     m_diagnosticsDebugEnabled = enabled;
     if (m_shim)
-        m_shim->setDiagnosticsLoggingEnabled(enabled);
+        QMetaObject::invokeMethod(m_shim, [shim = m_shim, enabled]() {
+            shim->setDiagnosticsLoggingEnabled(enabled);
+        }, Qt::QueuedConnection);
     if (m_packetActivity)
         m_packetActivity->setDebugEnabled(enabled);
     if (m_packetActivityTitle) {

@@ -577,6 +577,7 @@ set(CORE_SOURCES
     src/core/MemoryRecallPolicy.cpp
     src/core/tnc/AetherAx25LibmodemShim.cpp
     src/core/tnc/Ax25FrameFormatter.cpp
+    src/core/tnc/HdlcCodec.cpp
     src/core/tnc/KissFraming.cpp
     src/core/tnc/KissTncServer.cpp
 )
@@ -860,6 +861,21 @@ else()
     target_compile_options(aether_libmodem_core PRIVATE -w)
 endif()
 
+# AetherAFSKDemod — Direwolf profile-A + profile-B AFSK demodulators (GPL-3).
+# Profile A: IQ-mix + RRC + AGC/multi-slicer (best for amplitude-imbalanced signals).
+# Profile B: FM discriminator (best for frequency-offset/Doppler signals).
+# Both VHF 1200 baud only; HF 300 baud stays on aether_libmodem_core.
+# AX.25 framing (bitstream, HDLC, FCS) continues to use aether_libmodem_core.
+add_library(aether_afskdemod STATIC
+    third_party/direwolf_afsk/AetherAFSKDemod.cpp
+    third_party/direwolf_afsk/AetherFMDiscrimDemod.cpp
+)
+target_include_directories(aether_afskdemod PUBLIC
+    ${CMAKE_SOURCE_DIR}/third_party/direwolf_afsk
+)
+target_compile_features(aether_afskdemod PUBLIC cxx_std_20)
+message(STATUS "AetherAFSKDemod: Direwolf profile-A + profile-B (VHF 1200 baud), GPL-3")
+
 # Bundled liquid-dsp (MIT) — comprehensive DSP toolkit covering modems
 # (PSK/QAM/FSK/GMSK/OFDM), FEC (Hamming/Golay/RS/convolutional), adaptive
 # filters (LMS/RLS), AGC, NCO, polyphase resampling, and equalizers.
@@ -1097,6 +1113,7 @@ target_link_libraries(AetherSDR PRIVATE
     Qt6::Network
     Qt6::Multimedia
     aether_libmodem_core
+    aether_afskdemod
     ${CMAKE_DL_LIBS}   # dlopen/dlsym for tolerant X11 error handler (#1839)
 )
 
@@ -1948,8 +1965,17 @@ add_executable(ax25_libmodem_shim_test
     src/core/AppSettings.cpp
 )
 target_include_directories(ax25_libmodem_shim_test PRIVATE src)
-target_link_libraries(ax25_libmodem_shim_test PRIVATE Qt6::Core aether_libmodem_core)
+target_link_libraries(ax25_libmodem_shim_test PRIVATE Qt6::Core aether_libmodem_core
+    aether_afskdemod)
 add_test(NAME ax25_libmodem_shim_test COMMAND ax25_libmodem_shim_test)
+
+add_executable(hdlc_codec_test
+    tests/hdlc_codec_test.cpp
+    src/core/tnc/HdlcCodec.cpp
+)
+target_include_directories(hdlc_codec_test PRIVATE src)
+target_link_libraries(hdlc_codec_test PRIVATE aether_libmodem_core)
+add_test(NAME hdlc_codec_test COMMAND hdlc_codec_test)
 
 add_executable(cwx_panel_test
     tests/cwx_panel_test.cpp
