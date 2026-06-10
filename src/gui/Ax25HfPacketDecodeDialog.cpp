@@ -887,6 +887,10 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
             this, &Ax25HfPacketDecodeDialog::paceTransmitAudio);
     connect(m_shim, &AetherAx25LibmodemShim::frameDecoded,
             this, &Ax25HfPacketDecodeDialog::appendFrame);
+#ifdef HAVE_MQTT
+    connect(m_shim, &AetherAx25LibmodemShim::frameDecoded,
+            this, &Ax25HfPacketDecodeDialog::publishFrameMqtt);
+#endif
     // RX -> KISS clients: forward every decoded frame to connected hosts.
     connect(m_shim, &AetherAx25LibmodemShim::frameDecoded, this,
             [this](const Ax25DecodedFrame& frame) {
