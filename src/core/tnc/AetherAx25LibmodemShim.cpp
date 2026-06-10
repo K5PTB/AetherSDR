@@ -84,7 +84,7 @@ struct DirewolfFMDiscrimGroupDemod : IAfskDemod {
     {}
 
     void processBlock(const float* samples, int count, quint64 sampleBase,
-                      std::vector<BitResult>& out) noexcept override
+                      std::vector<BitResult>& out) override
     {
         if (isLeader) {
             normRateCache->resize(static_cast<size_t>(count));
@@ -506,6 +506,7 @@ struct AetherAx25LibmodemShim::Impl {
     };
 
     std::vector<DecodeLane> lanes;
+    size_t diagLaneIndex{0};
     quint64 totalAudioSamplesProcessed{0};
     quint64 currentDecodeSampleIndex{0};
     std::vector<RecentFrame> recentFrames;
@@ -630,6 +631,7 @@ struct AetherAx25LibmodemShim::Impl {
             // HF: free-running lanes (pll_alpha 0), recovery by phase diversity.
             for (int phaseOffset : kHf300DecodePhaseOffsets)
                 addLaneHf(phaseOffset, 0.0);
+            diagLaneIndex = lanes.size() / 2;
         } else {
             // VHF 1200: one DPLL lane per slicer for each enabled algorithm.
             const auto [wantA, wantB, aSlicers, bSlicers] = vhfModeLayout(config.vhfMode);
@@ -656,6 +658,8 @@ struct AetherAx25LibmodemShim::Impl {
                         s == 0);
                 }
             }
+            // Pick the middle A-lane for diagnostics; if A-only absent, pick middle B-lane.
+            diagLaneIndex = static_cast<size_t>(wantA ? aSlicers / 2 : bSlicers / 2);
         }
         resetDecoderState(true, true);
 
@@ -1201,7 +1205,7 @@ QVector<Ax25DecodedFrame> AetherAx25LibmodemShim::processMonoFloat(const float* 
 
         for (const auto& b : laneBits) {
             m_impl->currentDecodeSampleIndex = b.sampleIndex;
-            if (laneIndex == m_impl->lanes.size() / 2)
+            if (laneIndex == m_impl->diagLaneIndex)
                 m_impl->recordDemodSymbol(b.bit, b.confidence);
             if (auto decoded = m_impl->processBit(lane, b.bit, b.confidence);
                 decoded && m_impl->shouldEmitFrame(*decoded)) {

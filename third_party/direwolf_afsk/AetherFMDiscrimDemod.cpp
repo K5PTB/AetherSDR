@@ -66,7 +66,7 @@ void AetherFMDiscrimFrontEnd::buildCosTable() noexcept
 // ── AetherFMDiscrimFrontEnd — filter design ───────────────────────────────────
 
 void AetherFMDiscrimFrontEnd::buildPrefilter(double fMark, double fSpace,
-                                              int bitrate, int sampleRate) noexcept
+                                              int bitrate, int sampleRate)
 {
     buildBandpassCoeffs(fMark, fSpace, bitrate, sampleRate,
                         kPrefilterBaud, kPrefilterLenSym, kMaxFilterTaps,
@@ -74,7 +74,7 @@ void AetherFMDiscrimFrontEnd::buildPrefilter(double fMark, double fSpace,
     m_preBuf.assign(m_preTaps, 0.0f);
 }
 
-void AetherFMDiscrimFrontEnd::buildRrcLowpass(int bitrate, int sampleRate) noexcept
+void AetherFMDiscrimFrontEnd::buildRrcLowpass(int bitrate, int sampleRate)
 {
     float sps  = static_cast<float>(sampleRate) / static_cast<float>(bitrate);
     int   taps = (static_cast<int>(kRrcWidthSym * sps)) | 1;

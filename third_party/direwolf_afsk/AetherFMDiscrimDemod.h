@@ -38,7 +38,7 @@ namespace AetherDemod {
 // instances in the group.
 class AetherFMDiscrimFrontEnd {
 public:
-    AetherFMDiscrimFrontEnd() = default;
+    AetherFMDiscrimFrontEnd() = delete;
     AetherFMDiscrimFrontEnd(double fMark, double fSpace, int bitrate, int sampleRate);
 
     // Fill normRates[0..count-1] from samples[0..count-1].
@@ -71,8 +71,8 @@ private:
     static inline float fsin(uint32_t phase) noexcept
         { return s_cosTable[((phase >> 24) - 64u) & 0xffu]; }
 
-    void buildPrefilter(double fMark, double fSpace, int bitrate, int sampleRate) noexcept;
-    void buildRrcLowpass(int bitrate, int sampleRate) noexcept;
+    void buildPrefilter(double fMark, double fSpace, int bitrate, int sampleRate);
+    void buildRrcLowpass(int bitrate, int sampleRate);
 };
 
 // Per-slicer DPLL.  Consumes norm_rate values produced by AetherFMDiscrimFrontEnd.
@@ -80,7 +80,7 @@ private:
 // evenly spread -0.5 → +0.5 for B+ multi-slicer mode.
 class AetherFMDiscrimSlicer {
 public:
-    AetherFMDiscrimSlicer() = default;
+    AetherFMDiscrimSlicer() = delete;
     AetherFMDiscrimSlicer(int bitrate, int sampleRate, float sliceOffset = 0.0f);
 
     // Returns true and fills result when a bit clock fires.
@@ -111,7 +111,7 @@ private:
 // Preserves the try_demodulate() API for unit tests and standalone callers.
 class AetherFMDiscrimDemod {
 public:
-    AetherFMDiscrimDemod() = default;
+    AetherFMDiscrimDemod() = delete;
 
     AetherFMDiscrimDemod(double fMark, double fSpace, int bitrate, int sampleRate,
                          float sliceOffset = 0.0f);
