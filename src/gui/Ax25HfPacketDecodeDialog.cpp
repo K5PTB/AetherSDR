@@ -66,6 +66,16 @@ namespace {
 constexpr auto kPacketDecoderProfileSetting  = "Ax25PacketDecoderProfile";
 constexpr auto kPacketDecoderDebugSetting    = "Ax25PacketDecoderDiagnosticsDebug";
 constexpr auto kPacketDecoderVhfModeSetting  = "Ax25PacketDecoderVhfMode"; // 0=A..5=AB+
+
+// Guard: combo items are mapped to VhfMode by static_cast<VhfMode>(index + 1).
+// If a new VhfMode value is inserted into the enum, these asserts fire at
+// compile time before any saved user preference can be silently misread.
+static_assert(static_cast<int>(VhfMode::A)      == 1);
+static_assert(static_cast<int>(VhfMode::B)      == 2);
+static_assert(static_cast<int>(VhfMode::AB)     == 3);
+static_assert(static_cast<int>(VhfMode::APlus)  == 4);
+static_assert(static_cast<int>(VhfMode::BPlus)  == 5);
+static_assert(static_cast<int>(VhfMode::ABPlus) == 6);
 // TNC settings live as nested JSON under "AetherModemKissTnc" — see
 // TncSettings class in the header. Legacy flat-key migration in
 // TncSettings::migrateLegacy() is run from MainWindow at startup.
@@ -880,6 +890,8 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     connect(m_enableDecode, &QCheckBox::toggled,
             this, &Ax25HfPacketDecodeDialog::setDecodeEnabled);
     auto applyVhfMode = [this] {
+        if (m_shimConfig.profile != Ax25ModemProfile::Vhf1200)
+            return;
         auto cfg = m_shimConfig;
         cfg.vhfMode = static_cast<VhfMode>(m_vhfModeCombo->currentIndex() + 1);
         m_shimConfig = cfg;

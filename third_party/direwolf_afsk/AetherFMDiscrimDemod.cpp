@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <numeric>
 
@@ -72,6 +73,7 @@ void AetherFMDiscrimFrontEnd::buildPrefilter(double fMark, double fSpace,
                         kPrefilterBaud, kPrefilterLenSym, kMaxFilterTaps,
                         m_preCoeffs, m_preTaps);
     m_preBuf.assign(m_preTaps, 0.0f);
+    m_preBufPos = 0;
 }
 
 void AetherFMDiscrimFrontEnd::buildRrcLowpass(int bitrate, int sampleRate)
@@ -93,6 +95,7 @@ void AetherFMDiscrimFrontEnd::buildRrcLowpass(int bitrate, int sampleRate)
     m_lpTaps = taps;
     m_cIBuf.assign(taps, 0.0f);
     m_cQBuf.assign(taps, 0.0f);
+    m_lpBufPos = 0;
 }
 
 // ── AetherFMDiscrimFrontEnd — constructor ─────────────────────────────────────
@@ -110,6 +113,7 @@ AetherFMDiscrimFrontEnd::AetherFMDiscrimFrontEnd(
         std::round(std::pow(2.0, 32.0) * fCenter / sampleRate));
 
     // Scale factor: radians/sample → ±1.0 for expected mark/space tones.
+    assert(fMark != fSpace);
     m_normalizeRpsam = static_cast<float>(
         1.0 / (0.5 * std::abs(fMark - fSpace) * 2.0 * M_PI / sampleRate));
 }

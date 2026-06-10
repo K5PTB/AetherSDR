@@ -90,6 +90,7 @@ struct DirewolfFMDiscrimGroupDemod : IAfskDemod {
             normRateCache->resize(static_cast<size_t>(count));
             frontEnd->processBlock(samples, count, normRateCache->data());
         }
+        Q_ASSERT(static_cast<int>(normRateCache->size()) >= count);
         const float* normRates = normRateCache->data();
         for (int i = 0; i < count; ++i) {
             AetherDemod::demod_result r;
