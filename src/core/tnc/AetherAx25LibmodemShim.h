@@ -110,7 +110,8 @@ struct Ax25TransmitResult {
 
 Ax25DemodConfig ax25DemodConfigForProfile(
     Ax25ModemProfile profile,
-    Ax25TonePolarity polarity = Ax25TonePolarity::Normal);
+    Ax25TonePolarity polarity = Ax25TonePolarity::Normal,
+    VhfMode vhfMode = VhfMode::APlus);
 QString ax25ModemProfileName(Ax25ModemProfile profile);
 int ax25DemodLaneCount(const Ax25DemodConfig& cfg);
 QString ax25DemodDescription(const Ax25DemodConfig& cfg);

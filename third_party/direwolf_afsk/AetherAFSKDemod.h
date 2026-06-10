@@ -58,11 +58,13 @@ private:
     std::vector<float> preCoeffs_;
     std::vector<float> preBuf_;
     int preTaps_ {0};
+    int preBufPos_ {0};
 
     // RRC lowpass — one set of coefficients, four delay lines (m_I, m_Q, s_I, s_Q)
     std::vector<float> lpCoeffs_;
     std::vector<float> mIBuf_, mQBuf_, sIBuf_, sQBuf_;
     int lpTaps_ {0};
+    int lpBufPos_ {0};
 
     // Mark/space free-running oscillators (32-bit unsigned phase)
     uint32_t mOscPhase_ {0};
@@ -87,9 +89,8 @@ private:
     bool    prevDemod_   {false};
     bool    dataDetect_  {false};
 
-    // Simple DCD sliding-window history
+    // Simple DCD sliding-window history (g+b==8 always, so g-b>=2 ⟺ g>=5)
     uint32_t goodHist_ {0};
-    uint32_t badHist_  {0};
     uint32_t dcdScore_ {0};
 
     // Output latch — set by nudgePll, consumed by try_demodulate
@@ -110,16 +111,12 @@ private:
     void buildPrefilter(double fMark, double fSpace, int bitrate, int sampleRate) noexcept;
     void buildRrcLowpass(int bitrate, int sampleRate) noexcept;
 
-    static float  convolve  (const float* __restrict__ data,
-                              const float* __restrict__ coeffs, int taps) noexcept;
-    static void   pushSample(float val, float* buf, int size) noexcept;
+    static float  convolve  (const float* buf, int wrPos, const float* coeffs, int taps) noexcept;
+    static void   pushSample(float val, float* buf, int& wrPos, int taps) noexcept;
     static float  agcStep   (float in, float fast, float slow,
                               float& peak, float& valley) noexcept;
 
     void nudgePll(float demodOut, float amplitude) noexcept;
 };
-
-// API alias — makes AetherDemod a drop-in for aether_libmodem_core's class.
-using sinc_corr_afsk_demodulator = AetherAFSKDemod;
 
 } // namespace AetherDemod

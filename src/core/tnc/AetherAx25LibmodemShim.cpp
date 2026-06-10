@@ -11,6 +11,7 @@
 #include "AetherAFSKDemod.h"
 
 #include <QDateTime>
+#include <QVarLengthArray>
 
 #include <algorithm>
 #include <array>
@@ -26,9 +27,16 @@ namespace lm = aether_libmodem_core;
 
 // Abstract demodulator interface — allows VHF (Direwolf-derived) and HF
 // (libmodem) demod types to coexist in the same lane vector.
+struct BitResult {
+    quint64 sampleIndex;
+    uint8_t bit;
+    double  confidence;
+};
+
 struct IAfskDemod {
     virtual ~IAfskDemod() = default;
-    virtual bool try_demodulate(float sample, uint8_t& bit, double& confidence) noexcept = 0;
+    virtual void processBlock(const float* samples, int count, quint64 sampleBase,
+                               std::vector<BitResult>& out) noexcept = 0;
     virtual void reset() noexcept = 0;
 };
 
@@ -36,10 +44,13 @@ struct LibmodemAfskDemod : IAfskDemod {
     lm::sinc_corr_afsk_demodulator inner;
     template<typename... Args>
     explicit LibmodemAfskDemod(Args&&... args) : inner(std::forward<Args>(args)...) {}
-    bool try_demodulate(float sample, uint8_t& bit, double& confidence) noexcept override {
-        lm::demod_result r;
-        if (!inner.try_demodulate(sample, r)) return false;
-        bit = r.bit; confidence = r.confidence; return true;
+    void processBlock(const float* samples, int count, quint64 sampleBase,
+                      std::vector<BitResult>& out) noexcept override {
+        for (int i = 0; i < count; ++i) {
+            lm::demod_result r;
+            if (inner.try_demodulate(static_cast<double>(samples[i]), r))
+                out.push_back({sampleBase + static_cast<quint64>(i), r.bit, r.confidence});
+        }
     }
     void reset() noexcept override { inner.reset(); }
 };
@@ -47,12 +58,14 @@ struct LibmodemAfskDemod : IAfskDemod {
 struct DirewolfAfskDemod : IAfskDemod {
     AetherDemod::AetherAFSKDemod inner;
     template<typename... Args>
-    explicit DirewolfAfskDemod(Args&&... args) : inner(std::forward<Args>(args)...)
-    {}
-    bool try_demodulate(float sample, uint8_t& bit, double& confidence) noexcept override {
-        AetherDemod::demod_result r;
-        if (!inner.try_demodulate(sample, r)) return false;
-        bit = r.bit; confidence = r.confidence; return true;
+    explicit DirewolfAfskDemod(Args&&... args) : inner(std::forward<Args>(args)...) {}
+    void processBlock(const float* samples, int count, quint64 sampleBase,
+                      std::vector<BitResult>& out) noexcept override {
+        for (int i = 0; i < count; ++i) {
+            AetherDemod::demod_result r;
+            if (inner.try_demodulate(static_cast<double>(samples[i]), r))
+                out.push_back({sampleBase + static_cast<quint64>(i), r.bit, r.confidence});
+        }
     }
     void reset() noexcept override { inner.reset(); }
 };
@@ -382,12 +395,13 @@ Ax25TransmitFrame transmitFrameFromBytes(const QByteArray& ax25NoFcs)
 
 } // namespace
 
-Ax25DemodConfig ax25DemodConfigForProfile(Ax25ModemProfile profile, Ax25TonePolarity polarity)
+Ax25DemodConfig ax25DemodConfigForProfile(Ax25ModemProfile profile, Ax25TonePolarity polarity, VhfMode vhfMode)
 {
     Ax25DemodConfig config;
     config.profile = profile;
     config.sampleRate = 24000;
     config.polarity = polarity;
+    config.vhfMode = vhfMode;
 
     switch (profile) {
     case Ax25ModemProfile::Hf300:
@@ -561,6 +575,7 @@ struct AetherAx25LibmodemShim::Impl {
             case VhfMode::Off:                         break;
             case VhfMode::A:     wantA = true;         break;
             case VhfMode::APlus: wantA = true; aMulti = true; break;
+            default: Q_UNREACHABLE();
             }
             const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1;
 
@@ -588,7 +603,7 @@ struct AetherAx25LibmodemShim::Impl {
     void resetDecoderState(bool clearCounters, bool clearDiagnostics)
     {
         for (auto& lane : lanes) {
-            if (lane.demod)
+            if (clearCounters && lane.demod)
                 lane.demod->reset();
             resetLaneBitstream(lane);
             lane.lastQuality = 0.0;
@@ -893,11 +908,16 @@ struct AetherAx25LibmodemShim::Impl {
         const quint64 duplicateWindowSamples = static_cast<quint64>(
             std::max(1, config.sampleRate) * kDuplicateSuppressSeconds);
 
+        auto sampleGap = [&](quint64 a) -> quint64 {
+            return currentDecodeSampleIndex >= a
+                ? currentDecodeSampleIndex - a
+                : a - currentDecodeSampleIndex;
+        };
+
         recentFrames.erase(std::remove_if(recentFrames.begin(),
                                           recentFrames.end(),
                                           [&](const RecentFrame& recent) {
-                                              return currentDecodeSampleIndex >= recent.sampleIndex
-                                                  && currentDecodeSampleIndex - recent.sampleIndex > duplicateWindowSamples;
+                                              return sampleGap(recent.sampleIndex) > duplicateWindowSamples;
                                           }),
                            recentFrames.end());
 
@@ -905,8 +925,7 @@ struct AetherAx25LibmodemShim::Impl {
                                             recentFrames.end(),
                                             [&](const RecentFrame& recent) {
                                                 return recent.signature == signature
-                                                    && currentDecodeSampleIndex >= recent.sampleIndex
-                                                    && currentDecodeSampleIndex - recent.sampleIndex <= duplicateWindowSamples;
+                                                    && sampleGap(recent.sampleIndex) <= duplicateWindowSamples;
                                             });
         if (duplicate != recentFrames.end())
             return false;
@@ -1076,31 +1095,40 @@ QVector<Ax25DecodedFrame> AetherAx25LibmodemShim::processMonoFloat(const float* 
 
     m_impl->updateReceiveGate(samples, sampleCount, sampleRate);
 
+    // Normalise and record audio metrics in one pass.
+    QVarLengthArray<float, 2048> norm(sampleCount);
     for (int i = 0; i < sampleCount; ++i) {
-        const float sample = std::isfinite(samples[i])
-            ? std::clamp(samples[i], -1.0f, 1.0f)
-            : 0.0f;
-        m_impl->recordAudioSample(sample, sampleRate);
-        m_impl->currentDecodeSampleIndex = m_impl->totalAudioSamplesProcessed;
-        for (size_t laneIndex = 0; laneIndex < m_impl->lanes.size(); ++laneIndex) {
-            auto& lane = m_impl->lanes[laneIndex];
-            if (lane.samplesUntilStart > 0) {
-                --lane.samplesUntilStart;
-                continue;
-            }
+        norm[i] = std::isfinite(samples[i]) ? std::clamp(samples[i], -1.0f, 1.0f) : 0.0f;
+        m_impl->recordAudioSample(norm[i], sampleRate);
+    }
 
-            uint8_t bit = 0;
-            double confidence = 0.0;
-            if (!lane.demod || !lane.demod->try_demodulate(sample, bit, confidence))
-                continue;
+    const quint64 baseIndex = m_impl->totalAudioSamplesProcessed;
+    m_impl->totalAudioSamplesProcessed += static_cast<quint64>(sampleCount);
+
+    std::vector<BitResult> laneBits;
+    laneBits.reserve(static_cast<size_t>(sampleCount / 20 + 4));
+
+    for (size_t laneIndex = 0; laneIndex < m_impl->lanes.size(); ++laneIndex) {
+        auto& lane = m_impl->lanes[laneIndex];
+        if (!lane.demod) continue;
+
+        const int skip = std::min(lane.samplesUntilStart, sampleCount);
+        lane.samplesUntilStart -= skip;
+        if (skip >= sampleCount) continue;
+
+        laneBits.clear();
+        lane.demod->processBlock(norm.constData() + skip, sampleCount - skip,
+                                  baseIndex + static_cast<quint64>(skip), laneBits);
+
+        for (const auto& b : laneBits) {
+            m_impl->currentDecodeSampleIndex = b.sampleIndex;
             if (laneIndex == 0)
-                m_impl->recordDemodSymbol(bit, confidence);
-            if (auto decoded = m_impl->processBit(lane, bit, confidence);
+                m_impl->recordDemodSymbol(b.bit, b.confidence);
+            if (auto decoded = m_impl->processBit(lane, b.bit, b.confidence);
                 decoded && m_impl->shouldEmitFrame(*decoded)) {
                 frames.append(*decoded);
             }
         }
-        ++m_impl->totalAudioSamplesProcessed;
     }
     return frames;
 }
@@ -1133,6 +1161,7 @@ int ax25DemodLaneCount(const Ax25DemodConfig& cfg)
     case VhfMode::Off:                         break;
     case VhfMode::A:     wantA = true;         break;
     case VhfMode::APlus: wantA = true; aMulti = true; break;
+    default: Q_UNREACHABLE();
     }
     const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1;
     return wantA ? aSlicers : 0;

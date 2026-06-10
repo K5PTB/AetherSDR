@@ -13,7 +13,6 @@
 #include <bit>
 #include <cassert>
 #include <cmath>
-#include <cstring>
 #include <numeric>
 
 #ifndef M_PI
@@ -48,19 +47,22 @@ void AetherAFSKDemod::buildCosTable() noexcept
 
 // ── Inner helpers ─────────────────────────────────────────────────────────────
 
-void AetherAFSKDemod::pushSample(float val, float* buf, int size) noexcept
+void AetherAFSKDemod::pushSample(float val, float* buf, int& wrPos, int taps) noexcept
 {
-    std::memmove(buf + 1, buf, static_cast<size_t>(size - 1) * sizeof(float));
-    buf[0] = val;
+    buf[wrPos] = val;
+    if (++wrPos >= taps) wrPos = 0;
 }
 
-float AetherAFSKDemod::convolve(const float* __restrict__ data,
-                                 const float* __restrict__ coeffs,
-                                 int taps) noexcept
+float AetherAFSKDemod::convolve(const float* buf, int wrPos, const float* coeffs, int taps) noexcept
 {
+    // Ring-buffer dot product: coeffs[0] matches the newest sample (wrPos-1), etc.
     float sum = 0.0f;
-    for (int j = 0; j < taps; ++j)
-        sum += coeffs[j] * data[j];
+    int idx = wrPos - 1;
+    if (idx < 0) idx += taps;
+    for (int j = 0; j < taps; ++j) {
+        sum += coeffs[j] * buf[idx];
+        if (--idx < 0) idx += taps;
+    }
     return sum;
 }
 
@@ -134,6 +136,7 @@ void AetherAFSKDemod::buildPrefilter(double fMark, double fSpace,
 
     preTaps_ = taps;
     preBuf_.assign(taps, 0.0f);
+    preBufPos_ = 0;
 }
 
 void AetherAFSKDemod::buildRrcLowpass(int bitrate, int sampleRate) noexcept
@@ -158,6 +161,7 @@ void AetherAFSKDemod::buildRrcLowpass(int bitrate, int sampleRate) noexcept
     mQBuf_.assign(taps, 0.0f);
     sIBuf_.assign(taps, 0.0f);
     sQBuf_.assign(taps, 0.0f);
+    lpBufPos_ = 0;
 }
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -208,11 +212,9 @@ void AetherAFSKDemod::nudgePll(float demodOut, float amplitude) noexcept
         // Sliding-window DCD heuristic.
         bool good = (conf > 0.1f);
         goodHist_ = (goodHist_ << 1) | (good ? 1u : 0u);
-        badHist_  = (badHist_  << 1) | (good ? 0u : 1u);
         dcdScore_ = (dcdScore_ << 1);
-        int g = std::popcount(goodHist_ & 0xffu);
-        int b = std::popcount(badHist_  & 0xffu);
-        if (g - b >= 2) dcdScore_ |= 1u;
+        // goodHist_ and its complement always sum to 8 in the low byte; g-b>=2 ⟺ g>=5.
+        if (std::popcount(goodHist_ & 0xffu) >= 5) dcdScore_ |= 1u;
         int sc = std::popcount(dcdScore_ & 0xffu);
         if (!dataDetect_ && sc >= 6) dataDetect_ = true;
         if ( dataDetect_ && sc <  2) dataDetect_ = false;
@@ -235,23 +237,25 @@ bool AetherAFSKDemod::try_demodulate(double sample, demod_result& result) noexce
     float fsam = static_cast<float>(sample);
 
     // 1. Bandpass prefilter.
-    pushSample(fsam, preBuf_.data(), preTaps_);
-    fsam = convolve(preBuf_.data(), preCoeffs_.data(), preTaps_);
+    pushSample(fsam, preBuf_.data(), preBufPos_, preTaps_);
+    fsam = convolve(preBuf_.data(), preBufPos_, preCoeffs_.data(), preTaps_);
 
     // 2. Mix with mark and space local oscillators.
     float mC = fcos(mOscPhase_),  mS = fsin(mOscPhase_);  mOscPhase_ += mOscDelta_;
     float sC = fcos(sOscPhase_),  sS = fsin(sOscPhase_);  sOscPhase_ += sOscDelta_;
 
-    pushSample(fsam * mC, mIBuf_.data(), lpTaps_);
-    pushSample(fsam * mS, mQBuf_.data(), lpTaps_);
-    pushSample(fsam * sC, sIBuf_.data(), lpTaps_);
-    pushSample(fsam * sS, sQBuf_.data(), lpTaps_);
+    // Write all four LP channels at the same ring slot, then advance once.
+    mIBuf_[lpBufPos_] = fsam * mC;
+    mQBuf_[lpBufPos_] = fsam * mS;
+    sIBuf_[lpBufPos_] = fsam * sC;
+    sQBuf_[lpBufPos_] = fsam * sS;
+    if (++lpBufPos_ >= lpTaps_) lpBufPos_ = 0;
 
     // 3. RRC lowpass then envelope (amplitude).
-    float mI = convolve(mIBuf_.data(), lpCoeffs_.data(), lpTaps_);
-    float mQ = convolve(mQBuf_.data(), lpCoeffs_.data(), lpTaps_);
-    float sI = convolve(sIBuf_.data(), lpCoeffs_.data(), lpTaps_);
-    float sQ = convolve(sQBuf_.data(), lpCoeffs_.data(), lpTaps_);
+    float mI = convolve(mIBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
+    float mQ = convolve(mQBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
+    float sI = convolve(sIBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
+    float sQ = convolve(sQBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
 
     float mAmp = std::hypot(mI, mQ);
     float sAmp = std::hypot(sI, sQ);
@@ -318,7 +322,8 @@ void AetherAFSKDemod::reset() noexcept
     mPeak_ = mValley_ = sPeak_ = sValley_ = 0.0f;
     pll_ = prevPll_ = 0;
     prevDemod_ = dataDetect_ = false;
-    goodHist_ = badHist_ = dcdScore_ = 0;
+    goodHist_ = dcdScore_ = 0;
+    preBufPos_ = lpBufPos_ = 0;
     bitReady_ = false;
     readyBit_ = 0;
     readyConf_ = 0.0f;
