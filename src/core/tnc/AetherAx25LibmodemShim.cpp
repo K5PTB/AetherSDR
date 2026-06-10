@@ -11,6 +11,8 @@
 #include "AetherAFSKDemod.h"
 #include "AetherFMDiscrimDemod.h"
 
+#include <memory>
+
 #include <QDateTime>
 #include <QVarLengthArray>
 
@@ -60,20 +62,46 @@ struct AfskDemodWrapper : IAfskDemod {
 using LibmodemAfskDemod = AfskDemodWrapper<lm::sinc_corr_afsk_demodulator, lm::demod_result>;
 using DirewolfAfskDemod = AfskDemodWrapper<AetherDemod::AetherAFSKDemod, AetherDemod::demod_result>;
 
-struct DirewolfFMDiscrimDemod : IAfskDemod {
-    AetherDemod::AetherFMDiscrimDemod inner;
-    template<typename... Args>
-    explicit DirewolfFMDiscrimDemod(Args&&... args) : inner(std::forward<Args>(args)...)
+// Profile-B group: one shared AetherFMDiscrimFrontEnd (BPF+IQ+LP+atan2+d/dt+normalize)
+// plus one per-slicer AetherFMDiscrimSlicer (DPLL + threshold offset).
+// Mirrors Direwolf demod_afsk.c: norm_rate is computed once per sample and
+// then consumed by each slicer with only a threshold-offset addition.
+// isLeader=true on the first lane in the group; it fills the shared normRateCache.
+// Follower lanes skip the front-end and read from the already-filled cache.
+struct DirewolfFMDiscrimGroupDemod : IAfskDemod {
+    std::shared_ptr<AetherDemod::AetherFMDiscrimFrontEnd> frontEnd;
+    std::shared_ptr<std::vector<float>>                   normRateCache;
+    AetherDemod::AetherFMDiscrimSlicer                    slicer;
+    bool                                                   isLeader;
+
+    DirewolfFMDiscrimGroupDemod(
+            std::shared_ptr<AetherDemod::AetherFMDiscrimFrontEnd> fe,
+            std::shared_ptr<std::vector<float>>                   cache,
+            AetherDemod::AetherFMDiscrimSlicer                    sl,
+            bool                                                   leader)
+        : frontEnd(std::move(fe)), normRateCache(std::move(cache))
+        , slicer(std::move(sl)), isLeader(leader)
     {}
+
     void processBlock(const float* samples, int count, quint64 sampleBase,
-                      std::vector<BitResult>& out) noexcept override {
+                      std::vector<BitResult>& out) noexcept override
+    {
+        if (isLeader) {
+            normRateCache->resize(static_cast<size_t>(count));
+            frontEnd->processBlock(samples, count, normRateCache->data());
+        }
+        const float* normRates = normRateCache->data();
         for (int i = 0; i < count; ++i) {
             AetherDemod::demod_result r;
-            if (inner.try_demodulate(static_cast<double>(samples[i]), r))
+            if (slicer.process(normRates[i], r))
                 out.push_back({sampleBase + static_cast<quint64>(i), r.bit, r.confidence});
         }
     }
-    void reset() noexcept override { inner.reset(); }
+
+    void reset() noexcept override {
+        if (isLeader) frontEnd->reset();
+        slicer.reset();
+    }
 };
 
 namespace {
@@ -130,6 +158,26 @@ constexpr std::array<float, 9> kVhf1200BSliceOffsets = {
     -0.500f, -0.375f, -0.250f, -0.125f, 0.000f,
      0.125f,  0.250f,  0.375f, 0.500f
 };
+
+struct VhfModeLayout { bool wantA, wantB; int aSlicers, bSlicers; };
+
+static VhfModeLayout vhfModeLayout(VhfMode mode) noexcept
+{
+    bool wantA = false, wantB = false, aMulti = false, bMulti = false;
+    switch (mode) {
+    case VhfMode::Off:                                              break;
+    case VhfMode::A:      wantA = true;                            break;
+    case VhfMode::B:                       wantB = true;           break;
+    case VhfMode::AB:     wantA = true;    wantB = true;           break;
+    case VhfMode::APlus:  wantA = true;               aMulti=true; break;
+    case VhfMode::BPlus:               wantB = true;  bMulti=true; break;
+    case VhfMode::ABPlus: wantA = true; wantB = true; aMulti=true; bMulti=true; break;
+    default: Q_UNREACHABLE();
+    }
+    return { wantA, wantB,
+             aMulti ? static_cast<int>(kVhf1200SpaceGains.size())    : 1,
+             bMulti ? static_cast<int>(kVhf1200BSliceOffsets.size()) : 1 };
+}
 
 QString fcsToString(const std::array<uint8_t, 2>& fcs)
 {
@@ -590,15 +638,6 @@ struct AetherAx25LibmodemShim::Impl {
                 0.75, 6.0, 0.75, 3.0, 0.008, 0.005, pllAlpha, spaceGain);
         };
 
-        auto addLaneB = [&](int phaseOffsetSamples, double pllAlpha, float sliceOffset = 0.0f) {
-            auto& lane = lanes.emplace_back();
-            lane.phaseOffsetSamples = phaseOffsetSamples;
-            lane.samplesUntilStart  = phaseOffsetSamples;
-            lane.demod = std::make_unique<DirewolfFMDiscrimDemod>(
-                mark, space, config.baud, config.sampleRate, sliceOffset);
-            (void)pllAlpha; // B's DPLL is internal; pllAlpha unused for now
-        };
-
         auto addLaneHf = [&](int phaseOffsetSamples, double pllAlpha) {
             auto& lane = lanes.emplace_back();
             lane.phaseOffsetSamples = phaseOffsetSamples;
@@ -614,15 +653,30 @@ struct AetherAx25LibmodemShim::Impl {
                 addLaneHf(phaseOffset, 0.0);
         } else {
             // VHF 1200: one DPLL lane per slicer for each enabled algorithm.
-            const auto layout = vhfModeLayout(config.vhfMode);
-            if (layout.wantA)
-                for (int s = 0; s < layout.aSlicers; ++s)
-                    addLaneA(0, kVhf1200PllAlpha,
-                             layout.aSlicers > 1 ? kVhf1200SpaceGains[s] : 0.0f);
-            if (layout.wantB)
-                for (int s = 0; s < layout.bSlicers; ++s)
-                    addLaneB(0, kVhf1200PllAlpha,
-                             layout.bSlicers > 1 ? kVhf1200BSliceOffsets[s] : 0.0f);
+            const auto [wantA, wantB, aSlicers, bSlicers] = vhfModeLayout(config.vhfMode);
+
+            if (wantA)
+                for (int s = 0; s < aSlicers; ++s)
+                    addLaneA(0, kVhf1200PllAlpha, aSlicers > 1 ? kVhf1200SpaceGains[s] : 0.0f);
+
+            // B group: one shared front-end + norm_rate cache; one slicer per lane.
+            // The lane loop processes lanes in construction order, so s==0 (isLeader)
+            // always runs before followers, fills the cache, and they read from it.
+            if (wantB) {
+                auto fe    = std::make_shared<AetherDemod::AetherFMDiscrimFrontEnd>(
+                                 mark, space, config.baud, config.sampleRate);
+                auto cache = std::make_shared<std::vector<float>>();
+                for (int s = 0; s < bSlicers; ++s) {
+                    const float offset = bSlicers > 1 ? kVhf1200BSliceOffsets[s] : 0.0f;
+                    auto& lane = lanes.emplace_back();
+                    lane.phaseOffsetSamples = 0;
+                    lane.samplesUntilStart  = 0;
+                    lane.demod = std::make_unique<DirewolfFMDiscrimGroupDemod>(
+                        fe, cache,
+                        AetherDemod::AetherFMDiscrimSlicer(config.baud, config.sampleRate, offset),
+                        s == 0);
+                }
+            }
         }
         resetDecoderState(true, true);
 
@@ -1202,8 +1256,8 @@ int ax25DemodLaneCount(const Ax25DemodConfig& cfg)
     if (cfg.profile == Ax25ModemProfile::Hf300)
         return static_cast<int>(kHf300DecodePhaseOffsets.size());
 
-    const auto layout = vhfModeLayout(cfg.vhfMode);
-    return (layout.wantA ? layout.aSlicers : 0) + (layout.wantB ? layout.bSlicers : 0);
+    const auto [wantA, wantB, aSlicers, bSlicers] = vhfModeLayout(cfg.vhfMode);
+    return (wantA ? aSlicers : 0) + (wantB ? bSlicers : 0);
 }
 
 QString ax25DemodDescription(const Ax25DemodConfig& cfg)

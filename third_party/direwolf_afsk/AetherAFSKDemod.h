@@ -120,4 +120,11 @@ private:
     void nudgePll(float demodOut, float amplitude) noexcept;
 };
 
+// Shared DSP utilities used by both profile-A and profile-B filter design.
+float rrcKernel(float t, float a) noexcept;
+
+void buildBandpassCoeffs(double fMark, double fSpace, int bitrate, int sampleRate,
+                          float bwBaud, float lenSym, int maxTaps,
+                          std::vector<float>& coeffs, int& tapsOut) noexcept;
+
 } // namespace AetherDemod

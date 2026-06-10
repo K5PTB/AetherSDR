@@ -12,76 +12,59 @@
 //
 // Complements AetherAFSKDemod (profile A).  A uses separate mark/space
 // correlators; B uses a single FM discriminator at the center frequency.
-// They fail on different signal types so running both in parallel (AD+)
+// They fail on different signal types so running both in parallel (AB+)
 // captures the widest range of real-world VHF FM packets.
+//
+// For multi-slicer use (B+ mode) the pipeline is split into two classes that
+// mirror Direwolf's own structure: one AetherFMDiscrimFrontEnd shared across
+// all slicers in a group computes norm_rate once per sample; each
+// AetherFMDiscrimSlicer adds its own threshold offset and runs an independent
+// DPLL.  This matches Direwolf demod_afsk.c exactly and avoids recomputing
+// the BPF/IQ/LP/atan2 chain N times for N slicers.
 
 #pragma once
 
 #include "AetherAFSKDemod.h"   // for demod_result
 
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace AetherDemod {
 
-class AetherFMDiscrimDemod {
+// Shared signal-processing front-end.
+// BPF → center-freq IQ mix → RRC LPF → atan2 → d/dt → normalize.
+// Construct once per B-mode group; share across all AetherFMDiscrimSlicer
+// instances in the group.
+class AetherFMDiscrimFrontEnd {
 public:
-    AetherFMDiscrimDemod() = default;
+    AetherFMDiscrimFrontEnd() = default;
+    AetherFMDiscrimFrontEnd(double fMark, double fSpace, int bitrate, int sampleRate);
 
-    // sliceOffset: additive offset on the normalized discriminator output.
-    //   0.0f = single-slicer (B): decision at zero-crossing of norm_rate
-    //   non-zero = multi-slicer (B+): evenly spread -0.5 → +0.5 across bank
-    AetherFMDiscrimDemod(double fMark, double fSpace, int bitrate, int sampleRate,
-                         float sliceOffset = 0.0f);
-
-    bool try_demodulate(double sample, demod_result& result) noexcept;
-    bool try_demodulate(double sample, uint8_t& bit)         noexcept;
-
+    // Fill normRates[0..count-1] from samples[0..count-1].
+    void processBlock(const float* samples, int count, float* normRates) noexcept;
     void reset() noexcept;
 
 private:
-    // Bandpass prefilter (wider than profile A: 0.19 × baud each side)
     std::vector<float> preCoeffs_;
     std::vector<float> preBuf_;
     int preTaps_{0};
+    int preBufPos_{0};  // ring-buffer write position
 
-    // Center-frequency free-running oscillator
     uint32_t cOscPhase_{0};
     uint32_t cOscDelta_{0};
 
-    // RRC lowpass — one coefficient set, two delay lines (I and Q)
     std::vector<float> lpCoeffs_;
     std::vector<float> cIBuf_, cQBuf_;
     int lpTaps_{0};
+    int lpBufPos_{0};   // ring-buffer write position (shared by cIBuf_ and cQBuf_)
 
-    // FM discriminator state
     float prevPhase_{0.0f};
-    float normalizeRpsam_{0.0f};  // scales radians/sample → ±1 for mark/space
+    float normalizeRpsam_{0.0f};
 
-    // Additive slice offset (B+ mode)
-    float sliceOffset_{0.0f};
-
-    // DPLL state (identical to profile A)
-    int32_t pll_{0};
-    int32_t prevPll_{0};
-    int32_t pllStep_{0};
-    bool    prevDemod_{false};
-    bool    dataDetect_{false};
-
-    // DCD sliding-window history
-    uint32_t goodHist_{0};
-    uint32_t badHist_{0};
-    uint32_t dcdScore_{0};
-
-    // Output latch
-    bool    bitReady_{false};
-    uint8_t readyBit_{0};
-    float   readyConf_{0.0f};
-
-    // 256-entry cosine table (shared across all instances of this class)
-    static float s_cosTable[256];
-    static bool  s_cosTableReady;
-    static void  buildCosTable() noexcept;
+    static float             s_cosTable[256];
+    static std::once_flag    s_cosOnce;
+    static void              buildCosTable() noexcept;
 
     static inline float fcos(uint32_t phase) noexcept
         { return s_cosTable[(phase >> 24) & 0xffu]; }
@@ -90,12 +73,56 @@ private:
 
     void buildPrefilter(double fMark, double fSpace, int bitrate, int sampleRate) noexcept;
     void buildRrcLowpass(int bitrate, int sampleRate) noexcept;
+};
 
-    static float  convolve  (const float* __restrict__ data,
-                              const float* __restrict__ coeffs, int taps) noexcept;
-    static void   pushSample(float val, float* buf, int size) noexcept;
+// Per-slicer DPLL.  Consumes norm_rate values produced by AetherFMDiscrimFrontEnd.
+// sliceOffset shifts the decision threshold: 0.0f for single-slicer B mode,
+// evenly spread -0.5 → +0.5 for B+ multi-slicer mode.
+class AetherFMDiscrimSlicer {
+public:
+    AetherFMDiscrimSlicer() = default;
+    AetherFMDiscrimSlicer(int bitrate, int sampleRate, float sliceOffset = 0.0f);
+
+    // Returns true and fills result when a bit clock fires.
+    bool process(float normRate, demod_result& result) noexcept;
+    void reset() noexcept;
+
+private:
+    float sliceOffset_{0.0f};
+
+    int32_t pll_{0};
+    int32_t prevPll_{0};
+    int32_t pllStep_{0};
+    bool    prevDemod_{false};
+    bool    dataDetect_{false};
+
+    uint32_t goodHist_{0};
+    uint32_t badHist_{0};
+    uint32_t dcdScore_{0};
+
+    bool    bitReady_{false};
+    uint8_t readyBit_{0};
+    float   readyConf_{0.0f};
 
     void nudgePll(float demodOut) noexcept;
+};
+
+// Convenience single-sample wrapper: one front-end + one slicer.
+// Preserves the try_demodulate() API for unit tests and standalone callers.
+class AetherFMDiscrimDemod {
+public:
+    AetherFMDiscrimDemod() = default;
+
+    AetherFMDiscrimDemod(double fMark, double fSpace, int bitrate, int sampleRate,
+                         float sliceOffset = 0.0f);
+
+    bool try_demodulate(double sample, demod_result& result) noexcept;
+    bool try_demodulate(double sample, uint8_t& bit)         noexcept;
+    void reset() noexcept;
+
+private:
+    AetherFMDiscrimFrontEnd frontEnd_;
+    AetherFMDiscrimSlicer   slicer_;
 };
 
 } // namespace AetherDemod

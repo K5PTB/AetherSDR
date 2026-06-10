@@ -92,7 +92,7 @@ float AetherAFSKDemod::agcStep(float in, float fast, float slow,
 // ── Filter design ─────────────────────────────────────────────────────────────
 
 // RRC kernel: sinc × raised-cosine window (from Dire Wolf dsp.c).
-static float rrcKernel(float t, float a) noexcept
+float rrcKernel(float t, float a) noexcept
 {
     float sinc = (std::fabs(t) < 0.001f)
                ? 1.0f
@@ -108,42 +108,47 @@ static float rrcKernel(float t, float a) noexcept
     return sinc * win;
 }
 
-void AetherAFSKDemod::buildPrefilter(double fMark, double fSpace,
-                                      int bitrate, int sampleRate)
+void buildBandpassCoeffs(double fMark, double fSpace, int bitrate, int sampleRate,
+                          float bwBaud, float lenSym, int maxTaps,
+                          std::vector<float>& coeffs, int& tapsOut)
 {
-    int taps = (static_cast<int>(kPrefilterLenSym * sampleRate / bitrate)) | 1;
-    taps = std::min(taps, kMaxFilterTaps);
+    int taps = (static_cast<int>(lenSym * sampleRate / bitrate)) | 1;
+    taps = std::min(taps, maxTaps);
 
-    // Normalised cutoff frequencies
     float f1 = static_cast<float>(
-        (std::min(fMark, fSpace) - kPrefilterBaud * bitrate) / sampleRate);
+        (std::min(fMark, fSpace) - bwBaud * bitrate) / sampleRate);
     float f2 = static_cast<float>(
-        (std::max(fMark, fSpace) + kPrefilterBaud * bitrate) / sampleRate);
-    f1 = std::max(f1, 1.0f / sampleRate);
+        (std::max(fMark, fSpace) + bwBaud * bitrate) / sampleRate);
+    f1 = std::max(f1, 1.0f / static_cast<float>(sampleRate));
     f2 = std::min(f2, 0.499f);
 
     float center = 0.5f * (taps - 1);
-    m_preCoeffs.resize(taps);
-
+    coeffs.resize(taps);
     for (int j = 0; j < taps; ++j) {
         float d = j - center;
-        m_preCoeffs[j] = (std::fabs(d) < 1e-6f)
+        coeffs[j] = (std::fabs(d) < 1e-6f)
             ? 2.0f * (f2 - f1)
             : std::sin(2.0f * float(M_PI) * f2 * d) / (float(M_PI) * d)
             - std::sin(2.0f * float(M_PI) * f1 * d) / (float(M_PI) * d);
-        // Truncated (rectangular) window — matches Dire Wolf profile A.
     }
 
-    // Normalise for unity gain at midband.
     float w = 2.0f * float(M_PI) * 0.5f * (f1 + f2);
     float G = 0.0f;
     for (int j = 0; j < taps; ++j)
-        G += 2.0f * m_preCoeffs[j] * std::cos((j - center) * w);
+        G += 2.0f * coeffs[j] * std::cos((j - center) * w);
     if (G != 0.0f)
-        for (auto& c : m_preCoeffs) c /= G;
+        for (auto& c : coeffs) c /= G;
 
-    m_preTaps = taps;
-    m_preBuf.assign(taps, 0.0f);
+    tapsOut = taps;
+}
+
+void AetherAFSKDemod::buildPrefilter(double fMark, double fSpace,
+                                      int bitrate, int sampleRate)
+{
+    buildBandpassCoeffs(fMark, fSpace, bitrate, sampleRate,
+                        kPrefilterBaud, kPrefilterLenSym, kMaxFilterTaps,
+                        m_preCoeffs, m_preTaps);
+    m_preBuf.assign(m_preTaps, 0.0f);
     m_preBufPos = 0;
 }
 
