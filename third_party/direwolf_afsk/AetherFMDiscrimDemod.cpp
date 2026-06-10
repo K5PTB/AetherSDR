@@ -70,8 +70,8 @@ void AetherFMDiscrimFrontEnd::buildPrefilter(double fMark, double fSpace,
 {
     buildBandpassCoeffs(fMark, fSpace, bitrate, sampleRate,
                         kPrefilterBaud, kPrefilterLenSym, kMaxFilterTaps,
-                        preCoeffs_, preTaps_);
-    preBuf_.assign(preTaps_, 0.0f);
+                        m_preCoeffs, m_preTaps);
+    m_preBuf.assign(m_preTaps, 0.0f);
 }
 
 void AetherFMDiscrimFrontEnd::buildRrcLowpass(int bitrate, int sampleRate) noexcept
@@ -80,19 +80,19 @@ void AetherFMDiscrimFrontEnd::buildRrcLowpass(int bitrate, int sampleRate) noexc
     int   taps = (static_cast<int>(kRrcWidthSym * sps)) | 1;
     taps = std::min(taps, kMaxFilterTaps);
 
-    lpCoeffs_.resize(taps);
+    m_lpCoeffs.resize(taps);
     for (int k = 0; k < taps; ++k) {
         float t = (k - (taps - 1.0f) * 0.5f) / sps;
-        lpCoeffs_[k] = rrcKernel(t, kRrcRolloff);
+        m_lpCoeffs[k] = rrcKernel(t, kRrcRolloff);
     }
 
-    float sum = std::accumulate(lpCoeffs_.begin(), lpCoeffs_.end(), 0.0f);
+    float sum = std::accumulate(m_lpCoeffs.begin(), m_lpCoeffs.end(), 0.0f);
     if (sum != 0.0f)
-        for (auto& c : lpCoeffs_) c /= sum;
+        for (auto& c : m_lpCoeffs) c /= sum;
 
-    lpTaps_ = taps;
-    cIBuf_.assign(taps, 0.0f);
-    cQBuf_.assign(taps, 0.0f);
+    m_lpTaps = taps;
+    m_cIBuf.assign(taps, 0.0f);
+    m_cQBuf.assign(taps, 0.0f);
 }
 
 // ── AetherFMDiscrimFrontEnd — constructor ─────────────────────────────────────
@@ -106,11 +106,11 @@ AetherFMDiscrimFrontEnd::AetherFMDiscrimFrontEnd(
     buildRrcLowpass(bitrate, sampleRate);
 
     const double fCenter = 0.5 * (fMark + fSpace);
-    cOscDelta_ = static_cast<uint32_t>(
+    m_cOscDelta = static_cast<uint32_t>(
         std::round(std::pow(2.0, 32.0) * fCenter / sampleRate));
 
     // Scale factor: radians/sample → ±1.0 for expected mark/space tones.
-    normalizeRpsam_ = static_cast<float>(
+    m_normalizeRpsam = static_cast<float>(
         1.0 / (0.5 * std::abs(fMark - fSpace) * 2.0 * M_PI / sampleRate));
 }
 
@@ -123,33 +123,33 @@ void AetherFMDiscrimFrontEnd::processBlock(const float* samples, int count,
         float fsam = samples[i];
 
         // 1. Bandpass prefilter.
-        pushSample(fsam, preBuf_.data(), preBufPos_, preTaps_);
-        fsam = convolve(preBuf_.data(), preBufPos_, preCoeffs_.data(), preTaps_);
+        pushSample(fsam, m_preBuf.data(), m_preBufPos, m_preTaps);
+        fsam = convolve(m_preBuf.data(), m_preBufPos, m_preCoeffs.data(), m_preTaps);
 
         // 2. Mix with center-frequency oscillator.
-        const float cC = fcos(cOscPhase_), cS = fsin(cOscPhase_);
-        cOscPhase_ += cOscDelta_;
+        const float cC = fcos(m_cOscPhase), cS = fsin(m_cOscPhase);
+        m_cOscPhase += m_cOscDelta;
 
         // Write both LP channels at the same ring slot, then advance once.
-        cIBuf_[lpBufPos_] = fsam * cC;
-        cQBuf_[lpBufPos_] = fsam * cS;
-        if (++lpBufPos_ >= lpTaps_) lpBufPos_ = 0;
+        m_cIBuf[m_lpBufPos] = fsam * cC;
+        m_cQBuf[m_lpBufPos] = fsam * cS;
+        if (++m_lpBufPos >= m_lpTaps) m_lpBufPos = 0;
 
         // 3. RRC lowpass.
-        const float cI = convolve(cIBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
-        const float cQ = convolve(cQBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
+        const float cI = convolve(m_cIBuf.data(), m_lpBufPos, m_lpCoeffs.data(), m_lpTaps);
+        const float cQ = convolve(m_cQBuf.data(), m_lpBufPos, m_lpCoeffs.data(), m_lpTaps);
 
         // 4. Instantaneous phase via atan2.
         const float phase = std::atan2(cQ, cI);
 
         // 5. Differentiate phase → frequency deviation; handle ±π wrap.
-        float rate = phase - prevPhase_;
+        float rate = phase - m_prevPhase;
         if (rate >  float(M_PI)) rate -= 2.0f * float(M_PI);
         if (rate < -float(M_PI)) rate += 2.0f * float(M_PI);
-        prevPhase_ = phase;
+        m_prevPhase = phase;
 
         // 6. Normalize: mark deviation ≈ −1, space ≈ +1.
-        normRates[i] = rate * normalizeRpsam_;
+        normRates[i] = rate * m_normalizeRpsam;
     }
 }
 
@@ -157,21 +157,21 @@ void AetherFMDiscrimFrontEnd::processBlock(const float* samples, int count,
 
 void AetherFMDiscrimFrontEnd::reset() noexcept
 {
-    std::fill(preBuf_.begin(), preBuf_.end(), 0.0f);
-    std::fill(cIBuf_.begin(), cIBuf_.end(), 0.0f);
-    std::fill(cQBuf_.begin(), cQBuf_.end(), 0.0f);
-    cOscPhase_ = 0;
-    prevPhase_ = 0.0f;
-    preBufPos_ = 0;
-    lpBufPos_  = 0;
+    std::fill(m_preBuf.begin(), m_preBuf.end(), 0.0f);
+    std::fill(m_cIBuf.begin(), m_cIBuf.end(), 0.0f);
+    std::fill(m_cQBuf.begin(), m_cQBuf.end(), 0.0f);
+    m_cOscPhase = 0;
+    m_prevPhase = 0.0f;
+    m_preBufPos = 0;
+    m_lpBufPos  = 0;
 }
 
 // ── AetherFMDiscrimSlicer — constructor ──────────────────────────────────────
 
 AetherFMDiscrimSlicer::AetherFMDiscrimSlicer(int bitrate, int sampleRate, float sliceOffset)
-    : sliceOffset_(sliceOffset)
+    : m_sliceOffset(sliceOffset)
 {
-    pllStep_ = static_cast<int32_t>(
+    m_pllStep = static_cast<int32_t>(
         std::round(4294967296.0 * bitrate / sampleRate));
 }
 
@@ -179,46 +179,46 @@ AetherFMDiscrimSlicer::AetherFMDiscrimSlicer(int bitrate, int sampleRate, float 
 
 void AetherFMDiscrimSlicer::nudgePll(float demodOut) noexcept
 {
-    prevPll_ = pll_;
-    pll_ = static_cast<int32_t>(
-        static_cast<uint32_t>(pll_) + static_cast<uint32_t>(pllStep_));
+    m_prevPll = m_pll;
+    m_pll = static_cast<int32_t>(
+        static_cast<uint32_t>(m_pll) + static_cast<uint32_t>(m_pllStep));
 
-    if (pll_ < 0 && prevPll_ >= 0) {
+    if (m_pll < 0 && m_prevPll >= 0) {
         float conf = std::min(std::fabs(demodOut), 1.0f);
-        readyBit_  = (demodOut > 0.0f) ? 1u : 0u;
-        readyConf_ = conf;
-        bitReady_  = true;
+        m_readyBit  = (demodOut > 0.0f) ? 1u : 0u;
+        m_readyConf = conf;
+        m_bitReady  = true;
 
         bool good = (conf > 0.1f);
-        goodHist_ = (goodHist_ << 1) | (good ? 1u : 0u);
-        badHist_  = (badHist_  << 1) | (good ? 0u : 1u);
-        dcdScore_ = (dcdScore_ << 1);
-        int g = std::popcount(goodHist_ & 0xffu);
-        int b = std::popcount(badHist_  & 0xffu);
-        if (g - b >= 2) dcdScore_ |= 1u;
-        int sc = std::popcount(dcdScore_ & 0xffu);
-        if (!dataDetect_ && sc >= 6) dataDetect_ = true;
-        if ( dataDetect_ && sc <  2) dataDetect_ = false;
+        m_goodHist = (m_goodHist << 1) | (good ? 1u : 0u);
+        m_badHist  = (m_badHist  << 1) | (good ? 0u : 1u);
+        m_dcdScore = (m_dcdScore << 1);
+        int g = std::popcount(m_goodHist & 0xffu);
+        int b = std::popcount(m_badHist  & 0xffu);
+        if (g - b >= 2) m_dcdScore |= 1u;
+        int sc = std::popcount(m_dcdScore & 0xffu);
+        if (!m_dataDetect && sc >= 6) m_dataDetect = true;
+        if ( m_dataDetect && sc <  2) m_dataDetect = false;
     }
 
     bool d = (demodOut > 0.0f);
-    if (d != prevDemod_) {
-        float inertia = dataDetect_ ? kPllLockedInertia : kPllSearchingInertia;
-        pll_ = static_cast<int32_t>(static_cast<float>(pll_) * inertia);
+    if (d != m_prevDemod) {
+        float inertia = m_dataDetect ? kPllLockedInertia : kPllSearchingInertia;
+        m_pll = static_cast<int32_t>(static_cast<float>(m_pll) * inertia);
     }
-    prevDemod_ = d;
+    m_prevDemod = d;
 }
 
 // ── AetherFMDiscrimSlicer — process ──────────────────────────────────────────
 
 bool AetherFMDiscrimSlicer::process(float normRate, demod_result& result) noexcept
 {
-    nudgePll(normRate + sliceOffset_);
-    if (!bitReady_)
+    nudgePll(normRate + m_sliceOffset);
+    if (!m_bitReady)
         return false;
-    bitReady_         = false;
-    result.bit        = readyBit_;
-    result.confidence = static_cast<double>(readyConf_);
+    m_bitReady         = false;
+    result.bit        = m_readyBit;
+    result.confidence = static_cast<double>(m_readyConf);
     return true;
 }
 
@@ -226,12 +226,12 @@ bool AetherFMDiscrimSlicer::process(float normRate, demod_result& result) noexce
 
 void AetherFMDiscrimSlicer::reset() noexcept
 {
-    pll_ = prevPll_ = 0;
-    prevDemod_ = dataDetect_ = false;
-    goodHist_ = badHist_ = dcdScore_ = 0;
-    bitReady_ = false;
-    readyBit_ = 0;
-    readyConf_ = 0.0f;
+    m_pll = m_prevPll = 0;
+    m_prevDemod = m_dataDetect = false;
+    m_goodHist = m_badHist = m_dcdScore = 0;
+    m_bitReady = false;
+    m_readyBit = 0;
+    m_readyConf = 0.0f;
 }
 
 // ── AetherFMDiscrimDemod — convenience wrapper ────────────────────────────────

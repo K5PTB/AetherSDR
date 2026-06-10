@@ -46,21 +46,21 @@ public:
     void reset() noexcept;
 
 private:
-    std::vector<float> preCoeffs_;
-    std::vector<float> preBuf_;
-    int preTaps_{0};
-    int preBufPos_{0};  // ring-buffer write position
+    std::vector<float> m_preCoeffs;
+    std::vector<float> m_preBuf;
+    int m_preTaps{0};
+    int m_preBufPos{0};  // ring-buffer write position
 
-    uint32_t cOscPhase_{0};
-    uint32_t cOscDelta_{0};
+    uint32_t m_cOscPhase{0};
+    uint32_t m_cOscDelta{0};
 
-    std::vector<float> lpCoeffs_;
-    std::vector<float> cIBuf_, cQBuf_;
-    int lpTaps_{0};
-    int lpBufPos_{0};   // ring-buffer write position (shared by cIBuf_ and cQBuf_)
+    std::vector<float> m_lpCoeffs;
+    std::vector<float> m_cIBuf, m_cQBuf;
+    int m_lpTaps{0};
+    int m_lpBufPos{0};   // ring-buffer write position (shared by m_cIBuf and m_cQBuf)
 
-    float prevPhase_{0.0f};
-    float normalizeRpsam_{0.0f};
+    float m_prevPhase{0.0f};
+    float m_normalizeRpsam{0.0f};
 
     static float             s_cosTable[256];
     static std::once_flag    s_cosOnce;
@@ -88,21 +88,21 @@ public:
     void reset() noexcept;
 
 private:
-    float sliceOffset_{0.0f};
+    float m_sliceOffset{0.0f};
 
-    int32_t pll_{0};
-    int32_t prevPll_{0};
-    int32_t pllStep_{0};
-    bool    prevDemod_{false};
-    bool    dataDetect_{false};
+    int32_t m_pll{0};
+    int32_t m_prevPll{0};
+    int32_t m_pllStep{0};
+    bool    m_prevDemod{false};
+    bool    m_dataDetect{false};
 
-    uint32_t goodHist_{0};
-    uint32_t badHist_{0};
-    uint32_t dcdScore_{0};
+    uint32_t m_goodHist{0};
+    uint32_t m_badHist{0};
+    uint32_t m_dcdScore{0};
 
-    bool    bitReady_{false};
-    uint8_t readyBit_{0};
-    float   readyConf_{0.0f};
+    bool    m_bitReady{false};
+    uint8_t m_readyBit{0};
+    float   m_readyConf{0.0f};
 
     void nudgePll(float demodOut) noexcept;
 };
