@@ -125,6 +125,6 @@ float rrcKernel(float t, float a) noexcept;
 
 void buildBandpassCoeffs(double fMark, double fSpace, int bitrate, int sampleRate,
                           float bwBaud, float lenSym, int maxTaps,
-                          std::vector<float>& coeffs, int& tapsOut) noexcept;
+                          std::vector<float>& coeffs, int& tapsOut);
 
 } // namespace AetherDemod

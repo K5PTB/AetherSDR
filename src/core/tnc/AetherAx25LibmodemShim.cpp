@@ -454,27 +454,6 @@ Ax25TransmitFrame transmitFrameFromBytes(const QByteArray& ax25NoFcs)
     return out;
 }
 
-struct VhfLayout { bool wantA; int aSlicers; bool wantB; int bSlicers; };
-
-VhfLayout vhfModeLayout(VhfMode mode)
-{
-    bool wantA = false, wantB = false, aMulti = false, bMulti = false;
-    switch (mode) {
-    case VhfMode::Off:                                               break;
-    case VhfMode::A:      wantA = true;                             break;
-    case VhfMode::B:                        wantB = true;           break;
-    case VhfMode::AB:     wantA = true;     wantB = true;           break;
-    case VhfMode::APlus:  wantA = true;                aMulti=true; break;
-    case VhfMode::BPlus:                wantB = true;  bMulti=true; break;
-    case VhfMode::ABPlus: wantA = true; wantB = true; aMulti=true; bMulti=true; break;
-    default: Q_UNREACHABLE();
-    }
-    return {
-        wantA, aMulti ? static_cast<int>(kVhf1200SpaceGains.size())    : 1,
-        wantB, bMulti ? static_cast<int>(kVhf1200BSliceOffsets.size()) : 1
-    };
-}
-
 } // namespace
 
 Ax25DemodConfig ax25DemodConfigForProfile(Ax25ModemProfile profile, Ax25TonePolarity polarity, VhfMode vhfMode)
