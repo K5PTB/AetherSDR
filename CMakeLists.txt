@@ -870,18 +870,20 @@ else()
     target_compile_options(aether_libmodem_core PRIVATE -w)
 endif()
 
-# AetherAFSKDemod — Direwolf profile-A AFSK demodulator (GPL-3).
+# AetherAFSKDemod — Direwolf profile-A + profile-B AFSK demodulators (GPL-3).
 # Profile A: IQ-mix + RRC + AGC/multi-slicer (best for amplitude-imbalanced signals).
-# VHF 1200 baud only; HF 300 baud stays on aether_libmodem_core.
+# Profile B: FM discriminator (best for frequency-offset/Doppler signals).
+# Both VHF 1200 baud only; HF 300 baud stays on aether_libmodem_core.
 # AX.25 framing (bitstream, HDLC, FCS) continues to use aether_libmodem_core.
 add_library(aether_afskdemod STATIC
     third_party/direwolf_afsk/AetherAFSKDemod.cpp
+    third_party/direwolf_afsk/AetherFMDiscrimDemod.cpp
 )
 target_include_directories(aether_afskdemod PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/direwolf_afsk
 )
 target_compile_features(aether_afskdemod PUBLIC cxx_std_20)
-message(STATUS "AetherAFSKDemod: Direwolf profile-A (VHF 1200 baud), GPL-3")
+message(STATUS "AetherAFSKDemod: Direwolf profile-A + profile-B (VHF 1200 baud), GPL-3")
 
 # Bundled liquid-dsp (MIT) — comprehensive DSP toolkit covering modems
 # (PSK/QAM/FSK/GMSK/OFDM), FEC (Hamming/Golay/RS/convolutional), adaptive

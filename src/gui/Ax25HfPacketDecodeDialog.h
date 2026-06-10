@@ -167,6 +167,7 @@ private:
     QRadioButton* m_hf300Profile{nullptr};
     QRadioButton* m_vhf1200Profile{nullptr};
     QCheckBox* m_enableDecode{nullptr};
+    QComboBox* m_vhfModeCombo{nullptr};
     QLineEdit* m_txText{nullptr};
     QPushButton* m_txButton{nullptr};
     QTextEdit* m_log{nullptr};

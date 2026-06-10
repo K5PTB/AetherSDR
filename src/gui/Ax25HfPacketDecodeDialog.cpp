@@ -65,6 +65,7 @@ namespace {
 
 constexpr auto kPacketDecoderProfileSetting  = "Ax25PacketDecoderProfile";
 constexpr auto kPacketDecoderDebugSetting    = "Ax25PacketDecoderDiagnosticsDebug";
+constexpr auto kPacketDecoderVhfModeSetting  = "Ax25PacketDecoderVhfMode"; // 0=A..5=AB+
 // TNC settings live as nested JSON under "AetherModemKissTnc" — see
 // TncSettings class in the header. Legacy flat-key migration in
 // TncSettings::migrateLegacy() is run from MainWindow at startup.
@@ -722,6 +723,21 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     modemLayout->addWidget(m_enableDecode);
     controls->addWidget(modemCell, 1);
 
+    auto* vhfModeCell = panel(QStringLiteral("ControlCell"), controlsFrame);
+    auto* vhfModeLayout = new QVBoxLayout(vhfModeCell);
+    vhfModeLayout->setContentsMargins(0, 0, 20, 0);
+    vhfModeLayout->setSpacing(12);
+    vhfModeLayout->addWidget(sectionLabel(QStringLiteral("VHF DEMOD MODE"), vhfModeCell));
+    m_vhfModeCombo = new QComboBox(vhfModeCell);
+    m_vhfModeCombo->addItem(QStringLiteral("A    —  IQ-mix · 1 slicer"));
+    m_vhfModeCombo->addItem(QStringLiteral("B    —  FM discriminator · 1 slicer"));
+    m_vhfModeCombo->addItem(QStringLiteral("AB   —  IQ-mix + FM discriminator · 1 slicer each"));
+    m_vhfModeCombo->addItem(QStringLiteral("A+   —  IQ-mix · 9 slicers  (Direwolf default)"));
+    m_vhfModeCombo->addItem(QStringLiteral("B+   —  FM discriminator · 9 slicers"));
+    m_vhfModeCombo->addItem(QStringLiteral("AB+  —  IQ-mix + FM discriminator · 9 slicers each"));
+    vhfModeLayout->addWidget(m_vhfModeCombo);
+    controls->addWidget(vhfModeCell, 2);
+
     m_captureButton = new QPushButton(QStringLiteral("Capture 3m"), controlsFrame);
     m_captureButton->setMinimumHeight(42);
     controls->addWidget(m_captureButton);
@@ -846,8 +862,10 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     const Ax25ModemProfile savedProfile = profileFromSettingsValue(
         AppSettings::instance().value(kPacketDecoderProfileSetting, QStringLiteral("Hf300")).toString());
     const bool savedDebug = AppSettings::instance().value(kPacketDecoderDebugSetting, false).toBool();
+    const int savedVhfMode = AppSettings::instance().value(kPacketDecoderVhfModeSetting, 3).toInt(); // default A+ (index 3)
     m_hf300Profile->setChecked(savedProfile == Ax25ModemProfile::Hf300);
     m_vhf1200Profile->setChecked(savedProfile == Ax25ModemProfile::Vhf1200);
+    m_vhfModeCombo->setCurrentIndex(std::clamp(savedVhfMode, 0, m_vhfModeCombo->count() - 1));
     setDiagnosticsDebugEnabled(savedDebug, false);
     setModemProfile(savedProfile, false);
 
@@ -861,6 +879,21 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     });
     connect(m_enableDecode, &QCheckBox::toggled,
             this, &Ax25HfPacketDecodeDialog::setDecodeEnabled);
+    auto applyVhfMode = [this] {
+        auto cfg = m_shimConfig;
+        cfg.vhfMode = static_cast<VhfMode>(m_vhfModeCombo->currentIndex() + 1);
+        m_shimConfig = cfg;
+        QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
+            shim->configure(cfg);
+        }, Qt::QueuedConnection);
+        AppSettings::instance().setValue(kPacketDecoderVhfModeSetting, m_vhfModeCombo->currentIndex());
+        AppSettings::instance().save();
+        appendSystemLine(QStringLiteral("VHF mode: %1. Configured %2.")
+            .arg(m_vhfModeCombo->currentText().section(QStringLiteral("  —  "), 0, 0).trimmed(),
+                 ax25DemodDescription(m_shimConfig)));
+    };
+    connect(m_vhfModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [applyVhfMode](int) { applyVhfMode(); });
     connect(m_clearButton, &QPushButton::clicked, this, [this] {
         m_log->clear();
         m_frameCount = 0;
@@ -1133,7 +1166,13 @@ void Ax25HfPacketDecodeDialog::setAttachedSlice(SliceModel* slice)
 
 void Ax25HfPacketDecodeDialog::setModemProfile(Ax25ModemProfile profile, bool persist)
 {
+    const bool isVhf = (profile == Ax25ModemProfile::Vhf1200);
     auto cfg = ax25DemodConfigForProfile(profile, Ax25TonePolarity::Normal);
+    if (m_vhfModeCombo) {
+        m_vhfModeCombo->setEnabled(isVhf);
+        if (isVhf)
+            cfg.vhfMode = static_cast<VhfMode>(m_vhfModeCombo->currentIndex() + 1);
+    }
     m_shimConfig = cfg;
     QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
         shim->configure(cfg);

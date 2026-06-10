@@ -17,11 +17,16 @@ enum class Ax25TonePolarity {
     Inverted,
 };
 
-// VHF 1200 baud demodulator mode.
+// VHF 1200 baud demodulator mode. Matches Direwolf's MODEM line options.
+// Ordered by compute cost: Off < A ≈ B < AB < A+ ≈ B+ < AB+
 enum class VhfMode {
     Off,    // VHF demodulation disabled
     A,      // IQ-mix · 1 slicer
+    B,      // FM discriminator · 1 slicer
+    AB,     // IQ-mix + FM discriminator · 1 slicer each
     APlus,  // IQ-mix · 9 slicers (Direwolf default)
+    BPlus,  // FM discriminator · 9 slicers
+    ABPlus, // IQ-mix + FM discriminator · 9 slicers each
 };
 
 struct Ax25DemodConfig {

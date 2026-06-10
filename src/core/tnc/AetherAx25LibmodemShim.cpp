@@ -9,6 +9,7 @@
 #include "core/tnc/HdlcCodec.h"
 
 #include "AetherAFSKDemod.h"
+#include "AetherFMDiscrimDemod.h"
 
 #include <QDateTime>
 #include <QVarLengthArray>
@@ -59,6 +60,22 @@ struct AfskDemodWrapper : IAfskDemod {
 using LibmodemAfskDemod = AfskDemodWrapper<lm::sinc_corr_afsk_demodulator, lm::demod_result>;
 using DirewolfAfskDemod = AfskDemodWrapper<AetherDemod::AetherAFSKDemod, AetherDemod::demod_result>;
 
+struct DirewolfFMDiscrimDemod : IAfskDemod {
+    AetherDemod::AetherFMDiscrimDemod inner;
+    template<typename... Args>
+    explicit DirewolfFMDiscrimDemod(Args&&... args) : inner(std::forward<Args>(args)...)
+    {}
+    void processBlock(const float* samples, int count, quint64 sampleBase,
+                      std::vector<BitResult>& out) noexcept override {
+        for (int i = 0; i < count; ++i) {
+            AetherDemod::demod_result r;
+            if (inner.try_demodulate(static_cast<double>(samples[i]), r))
+                out.push_back({sampleBase + static_cast<quint64>(i), r.bit, r.confidence});
+        }
+    }
+    void reset() noexcept override { inner.reset(); }
+};
+
 namespace {
 
 double toDbfs(double value)
@@ -105,6 +122,13 @@ constexpr double kVhf1200PllAlpha = 0.010;
 constexpr std::array<float, 9> kVhf1200SpaceGains = {
     0.500000f, 0.648420f, 0.840896f, 1.090508f, 1.414214f,
     1.834008f, 2.378414f, 3.084422f, 4.000000f
+};
+
+// Profile B+ additive slice offsets — exact Direwolf B+ values (MAX_SLICERS=9).
+// Linear series: -0.5 + s*(1/(N-1)) for s in 0..8.
+constexpr std::array<float, 9> kVhf1200BSliceOffsets = {
+    -0.500f, -0.375f, -0.250f, -0.125f, 0.000f,
+     0.125f,  0.250f,  0.375f, 0.500f
 };
 
 QString fcsToString(const std::array<uint8_t, 2>& fcs)
@@ -382,18 +406,25 @@ Ax25TransmitFrame transmitFrameFromBytes(const QByteArray& ax25NoFcs)
     return out;
 }
 
-struct VhfLayout { bool wantA; int aSlicers; };
+struct VhfLayout { bool wantA; int aSlicers; bool wantB; int bSlicers; };
 
 VhfLayout vhfModeLayout(VhfMode mode)
 {
-    bool wantA = false, aMulti = false;
+    bool wantA = false, wantB = false, aMulti = false, bMulti = false;
     switch (mode) {
-    case VhfMode::Off:                         break;
-    case VhfMode::A:     wantA = true;         break;
-    case VhfMode::APlus: wantA = true; aMulti = true; break;
+    case VhfMode::Off:                                               break;
+    case VhfMode::A:      wantA = true;                             break;
+    case VhfMode::B:                        wantB = true;           break;
+    case VhfMode::AB:     wantA = true;     wantB = true;           break;
+    case VhfMode::APlus:  wantA = true;                aMulti=true; break;
+    case VhfMode::BPlus:                wantB = true;  bMulti=true; break;
+    case VhfMode::ABPlus: wantA = true; wantB = true; aMulti=true; bMulti=true; break;
     default: Q_UNREACHABLE();
     }
-    return { wantA, aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1 };
+    return {
+        wantA, aMulti ? static_cast<int>(kVhf1200SpaceGains.size())    : 1,
+        wantB, bMulti ? static_cast<int>(kVhf1200BSliceOffsets.size()) : 1
+    };
 }
 
 } // namespace
@@ -559,6 +590,15 @@ struct AetherAx25LibmodemShim::Impl {
                 0.75, 6.0, 0.75, 3.0, 0.008, 0.005, pllAlpha, spaceGain);
         };
 
+        auto addLaneB = [&](int phaseOffsetSamples, double pllAlpha, float sliceOffset = 0.0f) {
+            auto& lane = lanes.emplace_back();
+            lane.phaseOffsetSamples = phaseOffsetSamples;
+            lane.samplesUntilStart  = phaseOffsetSamples;
+            lane.demod = std::make_unique<DirewolfFMDiscrimDemod>(
+                mark, space, config.baud, config.sampleRate, sliceOffset);
+            (void)pllAlpha; // B's DPLL is internal; pllAlpha unused for now
+        };
+
         auto addLaneHf = [&](int phaseOffsetSamples, double pllAlpha) {
             auto& lane = lanes.emplace_back();
             lane.phaseOffsetSamples = phaseOffsetSamples;
@@ -579,6 +619,10 @@ struct AetherAx25LibmodemShim::Impl {
                 for (int s = 0; s < layout.aSlicers; ++s)
                     addLaneA(0, kVhf1200PllAlpha,
                              layout.aSlicers > 1 ? kVhf1200SpaceGains[s] : 0.0f);
+            if (layout.wantB)
+                for (int s = 0; s < layout.bSlicers; ++s)
+                    addLaneB(0, kVhf1200PllAlpha,
+                             layout.bSlicers > 1 ? kVhf1200BSliceOffsets[s] : 0.0f);
         }
         resetDecoderState(true, true);
 
@@ -1159,7 +1203,7 @@ int ax25DemodLaneCount(const Ax25DemodConfig& cfg)
         return static_cast<int>(kHf300DecodePhaseOffsets.size());
 
     const auto layout = vhfModeLayout(cfg.vhfMode);
-    return layout.wantA ? layout.aSlicers : 0;
+    return (layout.wantA ? layout.aSlicers : 0) + (layout.wantB ? layout.bSlicers : 0);
 }
 
 QString ax25DemodDescription(const Ax25DemodConfig& cfg)
