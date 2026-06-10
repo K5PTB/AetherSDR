@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 // MSVC uses __restrict; GCC/Clang use __restrict__
@@ -55,53 +56,53 @@ public:
 
 private:
     // Bandpass prefilter
-    std::vector<float> preCoeffs_;
-    std::vector<float> preBuf_;
-    int preTaps_ {0};
-    int preBufPos_ {0};
+    std::vector<float> m_preCoeffs;
+    std::vector<float> m_preBuf;
+    int m_preTaps {0};
+    int m_preBufPos {0};
 
     // RRC lowpass — one set of coefficients, four delay lines (m_I, m_Q, s_I, s_Q)
-    std::vector<float> lpCoeffs_;
-    std::vector<float> mIBuf_, mQBuf_, sIBuf_, sQBuf_;
-    int lpTaps_ {0};
-    int lpBufPos_ {0};
+    std::vector<float> m_lpCoeffs;
+    std::vector<float> m_mIBuf, m_mQBuf, m_sIBuf, m_sQBuf;
+    int m_lpTaps {0};
+    int m_lpBufPos {0};
 
     // Mark/space free-running oscillators (32-bit unsigned phase)
-    uint32_t mOscPhase_ {0};
-    uint32_t mOscDelta_ {0};
-    uint32_t sOscPhase_ {0};
-    uint32_t sOscDelta_ {0};
+    uint32_t m_mOscPhase {0};
+    uint32_t m_mOscDelta {0};
+    uint32_t m_sOscPhase {0};
+    uint32_t m_sOscDelta {0};
 
     // Per-tone peak/valley AGC
-    float mPeak_   {0.0f};
-    float mValley_ {0.0f};
-    float sPeak_   {0.0f};
-    float sValley_ {0.0f};
+    float m_mPeak   {0.0f};
+    float m_mValley {0.0f};
+    float m_sPeak   {0.0f};
+    float m_sValley {0.0f};
 
     // 0.0f = single-slicer (AGC mode: mNorm−sNorm)
-    // non-zero = multi-slicer (raw: mAmp−sAmp*spaceGain_, Direwolf A+ method)
-    float   spaceGain_ {0.0f};
+    // non-zero = multi-slicer (raw: mAmp−sAmp*m_spaceGain, Direwolf A+ method)
+    float   m_spaceGain {0.0f};
 
     // DPLL state
-    int32_t pll_         {0};
-    int32_t prevPll_     {0};
-    int32_t pllStep_     {0};
-    bool    prevDemod_   {false};
-    bool    dataDetect_  {false};
+    int32_t m_pll         {0};
+    int32_t m_prevPll     {0};
+    int32_t m_pllStep     {0};
+    bool    m_prevDemod   {false};
+    bool    m_dataDetect  {false};
 
     // Simple DCD sliding-window history (g+b==8 always, so g-b>=2 ⟺ g>=5)
-    uint32_t goodHist_ {0};
-    uint32_t dcdScore_ {0};
+    uint32_t m_goodHist {0};
+    uint32_t m_dcdScore {0};
 
     // Output latch — set by nudgePll, consumed by try_demodulate
-    bool    bitReady_  {false};
-    uint8_t readyBit_  {0};
-    float   readyConf_ {0.0f};
+    bool    m_bitReady  {false};
+    uint8_t m_readyBit  {0};
+    float   m_readyConf {0.0f};
 
     // 256-entry cosine lookup (shared across all instances)
-    static float s_cosTable[256];
-    static bool  s_cosTableReady;
-    static void  buildCosTable() noexcept;
+    static float             s_cosTable[256];
+    static std::once_flag    s_cosOnce;
+    static void              buildCosTable() noexcept;
 
     static inline float fcos(uint32_t phase) noexcept
         { return s_cosTable[(phase >> 24) & 0xffu]; }

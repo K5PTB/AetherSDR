@@ -35,14 +35,13 @@ static constexpr int   kMaxFilterTaps    = 2048;
 
 // ── Static members ────────────────────────────────────────────────────────────
 
-float AetherAFSKDemod::s_cosTable[256];
-bool  AetherAFSKDemod::s_cosTableReady = false;
+float             AetherAFSKDemod::s_cosTable[256];
+std::once_flag    AetherAFSKDemod::s_cosOnce;
 
 void AetherAFSKDemod::buildCosTable() noexcept
 {
     for (int j = 0; j < 256; ++j)
         s_cosTable[j] = std::cos(static_cast<float>(j) * 2.0f * float(M_PI) / 256.0f);
-    s_cosTableReady = true;
 }
 
 // ── Inner helpers ─────────────────────────────────────────────────────────────
@@ -115,11 +114,11 @@ void AetherAFSKDemod::buildPrefilter(double fMark, double fSpace,
     f2 = std::min(f2, 0.499f);
 
     float center = 0.5f * (taps - 1);
-    preCoeffs_.resize(taps);
+    m_preCoeffs.resize(taps);
 
     for (int j = 0; j < taps; ++j) {
         float d = j - center;
-        preCoeffs_[j] = (std::fabs(d) < 1e-6f)
+        m_preCoeffs[j] = (std::fabs(d) < 1e-6f)
             ? 2.0f * (f2 - f1)
             : std::sin(2.0f * float(M_PI) * f2 * d) / (float(M_PI) * d)
             - std::sin(2.0f * float(M_PI) * f1 * d) / (float(M_PI) * d);
@@ -130,13 +129,13 @@ void AetherAFSKDemod::buildPrefilter(double fMark, double fSpace,
     float w = 2.0f * float(M_PI) * 0.5f * (f1 + f2);
     float G = 0.0f;
     for (int j = 0; j < taps; ++j)
-        G += 2.0f * preCoeffs_[j] * std::cos((j - center) * w);
+        G += 2.0f * m_preCoeffs[j] * std::cos((j - center) * w);
     if (G != 0.0f)
-        for (auto& c : preCoeffs_) c /= G;
+        for (auto& c : m_preCoeffs) c /= G;
 
-    preTaps_ = taps;
-    preBuf_.assign(taps, 0.0f);
-    preBufPos_ = 0;
+    m_preTaps = taps;
+    m_preBuf.assign(taps, 0.0f);
+    m_preBufPos = 0;
 }
 
 void AetherAFSKDemod::buildRrcLowpass(int bitrate, int sampleRate) noexcept
@@ -145,23 +144,23 @@ void AetherAFSKDemod::buildRrcLowpass(int bitrate, int sampleRate) noexcept
     int   taps = (static_cast<int>(kRrcWidthSym * sps)) | 1;
     taps = std::min(taps, kMaxFilterTaps);
 
-    lpCoeffs_.resize(taps);
+    m_lpCoeffs.resize(taps);
     for (int k = 0; k < taps; ++k) {
         float t = (k - (taps - 1.0f) * 0.5f) / sps;
-        lpCoeffs_[k] = rrcKernel(t, kRrcRolloff);
+        m_lpCoeffs[k] = rrcKernel(t, kRrcRolloff);
     }
 
     // Normalise for unity DC gain.
-    float sum = std::accumulate(lpCoeffs_.begin(), lpCoeffs_.end(), 0.0f);
+    float sum = std::accumulate(m_lpCoeffs.begin(), m_lpCoeffs.end(), 0.0f);
     if (sum != 0.0f)
-        for (auto& c : lpCoeffs_) c /= sum;
+        for (auto& c : m_lpCoeffs) c /= sum;
 
-    lpTaps_ = taps;
-    mIBuf_.assign(taps, 0.0f);
-    mQBuf_.assign(taps, 0.0f);
-    sIBuf_.assign(taps, 0.0f);
-    sQBuf_.assign(taps, 0.0f);
-    lpBufPos_ = 0;
+    m_lpTaps = taps;
+    m_mIBuf.assign(taps, 0.0f);
+    m_mQBuf.assign(taps, 0.0f);
+    m_sIBuf.assign(taps, 0.0f);
+    m_sQBuf.assign(taps, 0.0f);
+    m_lpBufPos = 0;
 }
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -173,21 +172,21 @@ AetherAFSKDemod::AetherAFSKDemod(
         double /*dfbAlphaMark*/,  double /*dfbAlphaSpace*/,
         double /*pllAlpha*/,
         float  spaceGain)
-    : spaceGain_(spaceGain)
+    : m_spaceGain(spaceGain)
 {
-    if (!s_cosTableReady) buildCosTable();
+    std::call_once(s_cosOnce, buildCosTable);
 
     buildPrefilter(fMark, fSpace, bitrate, sampleRate);
     buildRrcLowpass(bitrate, sampleRate);
 
     // Oscillator phase increments — 32-bit unsigned wrapping accumulator.
-    mOscDelta_ = static_cast<uint32_t>(
+    m_mOscDelta = static_cast<uint32_t>(
         std::round(std::pow(2.0, 32.0) * fMark  / sampleRate));
-    sOscDelta_ = static_cast<uint32_t>(
+    m_sOscDelta = static_cast<uint32_t>(
         std::round(std::pow(2.0, 32.0) * fSpace / sampleRate));
 
     // DPLL: one full 2³² cycle per symbol period.
-    pllStep_ = static_cast<int32_t>(
+    m_pllStep = static_cast<int32_t>(
         std::round(4294967296.0 * bitrate / sampleRate));
 }
 
@@ -195,38 +194,38 @@ AetherAFSKDemod::AetherAFSKDemod(
 
 void AetherAFSKDemod::nudgePll(float demodOut, float amplitude) noexcept
 {
-    prevPll_ = pll_;
+    m_prevPll = m_pll;
     // Unsigned add so wrap-around is well-defined.
-    pll_ = static_cast<int32_t>(
-        static_cast<uint32_t>(pll_) + static_cast<uint32_t>(pllStep_));
+    m_pll = static_cast<int32_t>(
+        static_cast<uint32_t>(m_pll) + static_cast<uint32_t>(m_pllStep));
 
     // Overflow from positive to negative → sample point.
-    if (pll_ < 0 && prevPll_ >= 0) {
+    if (m_pll < 0 && m_prevPll >= 0) {
         float conf = (amplitude > 1e-7f)
                    ? std::min(std::fabs(demodOut) / amplitude, 1.0f)
                    : 0.0f;
-        readyBit_  = (demodOut > 0.0f) ? 1u : 0u;
-        readyConf_ = conf;
-        bitReady_  = true;
+        m_readyBit  = (demodOut > 0.0f) ? 1u : 0u;
+        m_readyConf = conf;
+        m_bitReady  = true;
 
         // Sliding-window DCD heuristic.
         bool good = (conf > 0.1f);
-        goodHist_ = (goodHist_ << 1) | (good ? 1u : 0u);
-        dcdScore_ = (dcdScore_ << 1);
-        // goodHist_ and its complement always sum to 8 in the low byte; g-b>=2 ⟺ g>=5.
-        if (std::popcount(goodHist_ & 0xffu) >= 5) dcdScore_ |= 1u;
-        int sc = std::popcount(dcdScore_ & 0xffu);
-        if (!dataDetect_ && sc >= 6) dataDetect_ = true;
-        if ( dataDetect_ && sc <  2) dataDetect_ = false;
+        m_goodHist = (m_goodHist << 1) | (good ? 1u : 0u);
+        m_dcdScore = (m_dcdScore << 1);
+        // m_goodHist and its complement always sum to 8 in the low byte; g-b>=2 ⟺ g>=5.
+        if (std::popcount(m_goodHist & 0xffu) >= 5) m_dcdScore |= 1u;
+        int sc = std::popcount(m_dcdScore & 0xffu);
+        if (!m_dataDetect && sc >= 6) m_dataDetect = true;
+        if ( m_dataDetect && sc <  2) m_dataDetect = false;
     }
 
     // Nudge phase toward signal on transitions.
     bool d = (demodOut > 0.0f);
-    if (d != prevDemod_) {
-        float inertia = dataDetect_ ? kPllLockedInertia : kPllSearchingInertia;
-        pll_ = static_cast<int32_t>(static_cast<float>(pll_) * inertia);
+    if (d != m_prevDemod) {
+        float inertia = m_dataDetect ? kPllLockedInertia : kPllSearchingInertia;
+        m_pll = static_cast<int32_t>(static_cast<float>(m_pll) * inertia);
     }
-    prevDemod_ = d;
+    m_prevDemod = d;
 }
 
 // ── Main demodulator ──────────────────────────────────────────────────────────
@@ -237,62 +236,62 @@ bool AetherAFSKDemod::try_demodulate(double sample, demod_result& result) noexce
     float fsam = static_cast<float>(sample);
 
     // 1. Bandpass prefilter.
-    pushSample(fsam, preBuf_.data(), preBufPos_, preTaps_);
-    fsam = convolve(preBuf_.data(), preBufPos_, preCoeffs_.data(), preTaps_);
+    pushSample(fsam, m_preBuf.data(), m_preBufPos, m_preTaps);
+    fsam = convolve(m_preBuf.data(), m_preBufPos, m_preCoeffs.data(), m_preTaps);
 
     // 2. Mix with mark and space local oscillators.
-    float mC = fcos(mOscPhase_),  mS = fsin(mOscPhase_);  mOscPhase_ += mOscDelta_;
-    float sC = fcos(sOscPhase_),  sS = fsin(sOscPhase_);  sOscPhase_ += sOscDelta_;
+    float mC = fcos(m_mOscPhase),  mS = fsin(m_mOscPhase);  m_mOscPhase += m_mOscDelta;
+    float sC = fcos(m_sOscPhase),  sS = fsin(m_sOscPhase);  m_sOscPhase += m_sOscDelta;
 
     // Write all four LP channels at the same ring slot, then advance once.
-    mIBuf_[lpBufPos_] = fsam * mC;
-    mQBuf_[lpBufPos_] = fsam * mS;
-    sIBuf_[lpBufPos_] = fsam * sC;
-    sQBuf_[lpBufPos_] = fsam * sS;
-    if (++lpBufPos_ >= lpTaps_) lpBufPos_ = 0;
+    m_mIBuf[m_lpBufPos] = fsam * mC;
+    m_mQBuf[m_lpBufPos] = fsam * mS;
+    m_sIBuf[m_lpBufPos] = fsam * sC;
+    m_sQBuf[m_lpBufPos] = fsam * sS;
+    if (++m_lpBufPos >= m_lpTaps) m_lpBufPos = 0;
 
     // 3. RRC lowpass then envelope (amplitude).
-    float mI = convolve(mIBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
-    float mQ = convolve(mQBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
-    float sI = convolve(sIBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
-    float sQ = convolve(sQBuf_.data(), lpBufPos_, lpCoeffs_.data(), lpTaps_);
+    float mI = convolve(m_mIBuf.data(), m_lpBufPos, m_lpCoeffs.data(), m_lpTaps);
+    float mQ = convolve(m_mQBuf.data(), m_lpBufPos, m_lpCoeffs.data(), m_lpTaps);
+    float sI = convolve(m_sIBuf.data(), m_lpBufPos, m_lpCoeffs.data(), m_lpTaps);
+    float sQ = convolve(m_sQBuf.data(), m_lpBufPos, m_lpCoeffs.data(), m_lpTaps);
 
     float mAmp = std::hypot(mI, mQ);
     float sAmp = std::hypot(sI, sQ);
 
     // 4. AGC — always run to track peak/valley for amplitude reporting.
-    float mNorm = agcStep(mAmp, kAgcFastAttack, kAgcSlowDecay, mPeak_, mValley_);
-    float sNorm = agcStep(sAmp, kAgcFastAttack, kAgcSlowDecay, sPeak_, sValley_);
+    float mNorm = agcStep(mAmp, kAgcFastAttack, kAgcSlowDecay, m_mPeak, m_mValley);
+    float sNorm = agcStep(sAmp, kAgcFastAttack, kAgcSlowDecay, m_sPeak, m_sValley);
 
     // 5. Decision — two modes matching Direwolf demod_afsk_process_sample:
     //
-    // Single-slicer (spaceGain_==0): AGC-normalised comparison. Both tones
+    // Single-slicer (m_spaceGain==0): AGC-normalised comparison. Both tones
     // scaled to ±0.5 before subtraction, so amplitude imbalance is cancelled.
     // Direwolf passes amplitude=1.0 to nudge_pll in this path.
     //
-    // Multi-slicer (spaceGain_!=0): raw-amplitude comparison. Space amplitude
-    // is multiplied by spaceGain_ (logarithmically spread 0.5→4.0 across the
+    // Multi-slicer (m_spaceGain!=0): raw-amplitude comparison. Space amplitude
+    // is multiplied by m_spaceGain (logarithmically spread 0.5→4.0 across the
     // slicer bank) before subtraction. This directly compensates for VHF FM
     // de-emphasis attenuating the 2200 Hz space tone relative to 1200 Hz mark.
     // Confidence is scaled by the signal envelope, as Direwolf does.
     float demodOut;
     float amplitude;
-    if (spaceGain_ == 0.0f) {
+    if (m_spaceGain == 0.0f) {
         demodOut  = mNorm - sNorm;
         amplitude = 1.0f;
     } else {
-        demodOut  = mAmp - sAmp * spaceGain_;
-        amplitude = 0.5f * ((mPeak_ - mValley_) + (sPeak_ - sValley_) * spaceGain_);
+        demodOut  = mAmp - sAmp * m_spaceGain;
+        amplitude = 0.5f * ((m_mPeak - m_mValley) + (m_sPeak - m_sValley) * m_spaceGain);
         if (amplitude < 1e-7f) amplitude = 1.0f;
     }
 
     // 6. DPLL — fires a bit at each symbol centre.
     nudgePll(demodOut, amplitude);
 
-    if (bitReady_) {
-        bitReady_        = false;
-        result.bit       = readyBit_;
-        result.confidence = static_cast<double>(readyConf_);
+    if (m_bitReady) {
+        m_bitReady        = false;
+        result.bit       = m_readyBit;
+        result.confidence = static_cast<double>(m_readyConf);
         return true;
     }
     return false;
@@ -312,21 +311,21 @@ bool AetherAFSKDemod::try_demodulate(double sample, uint8_t& bit) noexcept
 
 void AetherAFSKDemod::reset() noexcept
 {
-    std::fill(preBuf_.begin(), preBuf_.end(), 0.0f);
-    std::fill(mIBuf_.begin(), mIBuf_.end(), 0.0f);
-    std::fill(mQBuf_.begin(), mQBuf_.end(), 0.0f);
-    std::fill(sIBuf_.begin(), sIBuf_.end(), 0.0f);
-    std::fill(sQBuf_.begin(), sQBuf_.end(), 0.0f);
+    std::fill(m_preBuf.begin(), m_preBuf.end(), 0.0f);
+    std::fill(m_mIBuf.begin(), m_mIBuf.end(), 0.0f);
+    std::fill(m_mQBuf.begin(), m_mQBuf.end(), 0.0f);
+    std::fill(m_sIBuf.begin(), m_sIBuf.end(), 0.0f);
+    std::fill(m_sQBuf.begin(), m_sQBuf.end(), 0.0f);
 
-    mOscPhase_ = sOscPhase_ = 0;
-    mPeak_ = mValley_ = sPeak_ = sValley_ = 0.0f;
-    pll_ = prevPll_ = 0;
-    prevDemod_ = dataDetect_ = false;
-    goodHist_ = dcdScore_ = 0;
-    preBufPos_ = lpBufPos_ = 0;
-    bitReady_ = false;
-    readyBit_ = 0;
-    readyConf_ = 0.0f;
+    m_mOscPhase = m_sOscPhase = 0;
+    m_mPeak = m_mValley = m_sPeak = m_sValley = 0.0f;
+    m_pll = m_prevPll = 0;
+    m_prevDemod = m_dataDetect = false;
+    m_goodHist = m_dcdScore = 0;
+    m_preBufPos = m_lpBufPos = 0;
+    m_bitReady = false;
+    m_readyBit = 0;
+    m_readyConf = 0.0f;
 }
 
 } // namespace AetherDemod
