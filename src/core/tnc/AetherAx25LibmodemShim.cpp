@@ -36,18 +36,19 @@ struct BitResult {
 struct IAfskDemod {
     virtual ~IAfskDemod() = default;
     virtual void processBlock(const float* samples, int count, quint64 sampleBase,
-                               std::vector<BitResult>& out) noexcept = 0;
+                               std::vector<BitResult>& out) = 0;
     virtual void reset() noexcept = 0;
 };
 
-struct LibmodemAfskDemod : IAfskDemod {
-    lm::sinc_corr_afsk_demodulator inner;
+template<typename Demod, typename Result>
+struct AfskDemodWrapper : IAfskDemod {
+    Demod inner;
     template<typename... Args>
-    explicit LibmodemAfskDemod(Args&&... args) : inner(std::forward<Args>(args)...) {}
+    explicit AfskDemodWrapper(Args&&... args) : inner(std::forward<Args>(args)...) {}
     void processBlock(const float* samples, int count, quint64 sampleBase,
-                      std::vector<BitResult>& out) noexcept override {
+                      std::vector<BitResult>& out) override {
         for (int i = 0; i < count; ++i) {
-            lm::demod_result r;
+            Result r;
             if (inner.try_demodulate(static_cast<double>(samples[i]), r))
                 out.push_back({sampleBase + static_cast<quint64>(i), r.bit, r.confidence});
         }
@@ -55,20 +56,8 @@ struct LibmodemAfskDemod : IAfskDemod {
     void reset() noexcept override { inner.reset(); }
 };
 
-struct DirewolfAfskDemod : IAfskDemod {
-    AetherDemod::AetherAFSKDemod inner;
-    template<typename... Args>
-    explicit DirewolfAfskDemod(Args&&... args) : inner(std::forward<Args>(args)...) {}
-    void processBlock(const float* samples, int count, quint64 sampleBase,
-                      std::vector<BitResult>& out) noexcept override {
-        for (int i = 0; i < count; ++i) {
-            AetherDemod::demod_result r;
-            if (inner.try_demodulate(static_cast<double>(samples[i]), r))
-                out.push_back({sampleBase + static_cast<quint64>(i), r.bit, r.confidence});
-        }
-    }
-    void reset() noexcept override { inner.reset(); }
-};
+using LibmodemAfskDemod = AfskDemodWrapper<lm::sinc_corr_afsk_demodulator, lm::demod_result>;
+using DirewolfAfskDemod = AfskDemodWrapper<AetherDemod::AetherAFSKDemod, AetherDemod::demod_result>;
 
 namespace {
 
@@ -393,6 +382,20 @@ Ax25TransmitFrame transmitFrameFromBytes(const QByteArray& ax25NoFcs)
     return out;
 }
 
+struct VhfLayout { bool wantA; int aSlicers; };
+
+VhfLayout vhfModeLayout(VhfMode mode)
+{
+    bool wantA = false, aMulti = false;
+    switch (mode) {
+    case VhfMode::Off:                         break;
+    case VhfMode::A:     wantA = true;         break;
+    case VhfMode::APlus: wantA = true; aMulti = true; break;
+    default: Q_UNREACHABLE();
+    }
+    return { wantA, aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1 };
+}
+
 } // namespace
 
 Ax25DemodConfig ax25DemodConfigForProfile(Ax25ModemProfile profile, Ax25TonePolarity polarity, VhfMode vhfMode)
@@ -449,6 +452,7 @@ struct AetherAx25LibmodemShim::Impl {
     quint64 currentDecodeSampleIndex{0};
     std::vector<RecentFrame> recentFrames;
     quint64 totalHdlcFrameStarts{0};
+    quint64 lastHdlcFrameStartSampleIndex{0};
     quint64 totalHdlcFrameCandidates{0};
     quint64 totalPlausibleAx25Candidates{0};
     quint64 totalFramesAccepted{0};
@@ -570,18 +574,11 @@ struct AetherAx25LibmodemShim::Impl {
                 addLaneHf(phaseOffset, 0.0);
         } else {
             // VHF 1200: one DPLL lane per slicer for each enabled algorithm.
-            bool wantA = false, aMulti = false;
-            switch (config.vhfMode) {
-            case VhfMode::Off:                         break;
-            case VhfMode::A:     wantA = true;         break;
-            case VhfMode::APlus: wantA = true; aMulti = true; break;
-            default: Q_UNREACHABLE();
-            }
-            const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1;
-
-            if (wantA)
-                for (int s = 0; s < aSlicers; ++s)
-                    addLaneA(0, kVhf1200PllAlpha, aMulti ? kVhf1200SpaceGains[s] : 0.0f);
+            const auto layout = vhfModeLayout(config.vhfMode);
+            if (layout.wantA)
+                for (int s = 0; s < layout.aSlicers; ++s)
+                    addLaneA(0, kVhf1200PllAlpha,
+                             layout.aSlicers > 1 ? kVhf1200SpaceGains[s] : 0.0f);
         }
         resetDecoderState(true, true);
 
@@ -603,7 +600,7 @@ struct AetherAx25LibmodemShim::Impl {
     void resetDecoderState(bool clearCounters, bool clearDiagnostics)
     {
         for (auto& lane : lanes) {
-            if (clearCounters && lane.demod)
+            if (lane.demod)
                 lane.demod->reset();
             resetLaneBitstream(lane);
             lane.lastQuality = 0.0;
@@ -615,6 +612,7 @@ struct AetherAx25LibmodemShim::Impl {
             currentDecodeSampleIndex = 0;
             recentFrames.clear();
             totalHdlcFrameStarts = 0;
+            lastHdlcFrameStartSampleIndex = 0;
             totalHdlcFrameCandidates = 0;
             totalPlausibleAx25Candidates = 0;
             totalFramesAccepted = 0;
@@ -829,8 +827,12 @@ struct AetherAx25LibmodemShim::Impl {
 
         const bool frameComplete = lane.hdlcCodec.processBit(bit ? 1 : 0);
 
-        if (lane.hdlcCodec.inFrame() && !wasInFrame)
-            ++totalHdlcFrameStarts;
+        if (lane.hdlcCodec.inFrame() && !wasInFrame) {
+            if (currentDecodeSampleIndex > lastHdlcFrameStartSampleIndex + 10) {
+                lastHdlcFrameStartSampleIndex = currentDecodeSampleIndex;
+                ++totalHdlcFrameStarts;
+            }
+        }
 
         if (!frameComplete)
             return std::nullopt;
@@ -905,8 +907,8 @@ struct AetherAx25LibmodemShim::Impl {
     bool shouldEmitFrame(const Ax25DecodedFrame& frame)
     {
         const QByteArray signature = frameSignature(frame);
-        const quint64 duplicateWindowSamples = static_cast<quint64>(
-            std::max(1, config.sampleRate) * kDuplicateSuppressSeconds);
+        const quint64 duplicateWindowSamples =
+            static_cast<quint64>(std::max(1, config.sampleRate)) * kDuplicateSuppressSeconds;
 
         auto sampleGap = [&](quint64 a) -> quint64 {
             return currentDecodeSampleIndex >= a
@@ -1122,7 +1124,7 @@ QVector<Ax25DecodedFrame> AetherAx25LibmodemShim::processMonoFloat(const float* 
 
         for (const auto& b : laneBits) {
             m_impl->currentDecodeSampleIndex = b.sampleIndex;
-            if (laneIndex == 0)
+            if (laneIndex == m_impl->lanes.size() / 2)
                 m_impl->recordDemodSymbol(b.bit, b.confidence);
             if (auto decoded = m_impl->processBit(lane, b.bit, b.confidence);
                 decoded && m_impl->shouldEmitFrame(*decoded)) {
@@ -1156,15 +1158,8 @@ int ax25DemodLaneCount(const Ax25DemodConfig& cfg)
     if (cfg.profile == Ax25ModemProfile::Hf300)
         return static_cast<int>(kHf300DecodePhaseOffsets.size());
 
-    bool wantA = false, aMulti = false;
-    switch (cfg.vhfMode) {
-    case VhfMode::Off:                         break;
-    case VhfMode::A:     wantA = true;         break;
-    case VhfMode::APlus: wantA = true; aMulti = true; break;
-    default: Q_UNREACHABLE();
-    }
-    const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1;
-    return wantA ? aSlicers : 0;
+    const auto layout = vhfModeLayout(cfg.vhfMode);
+    return layout.wantA ? layout.aSlicers : 0;
 }
 
 QString ax25DemodDescription(const Ax25DemodConfig& cfg)

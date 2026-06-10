@@ -35,7 +35,7 @@ struct demod_result {
 
 class AetherAFSKDemod {
 public:
-    AetherAFSKDemod() = default;
+    AetherAFSKDemod() = delete;
 
     // Constructor signature matches aether_libmodem_core::sinc_corr_afsk_demodulator.
     // fMark, fSpace, bitrate, sampleRate are used directly.
@@ -50,7 +50,6 @@ public:
 
     // Returns true and fills result when a bit is ready (once per symbol period).
     bool try_demodulate(double sample, demod_result& result) noexcept;
-    bool try_demodulate(double sample, uint8_t& bit)         noexcept;
 
     void reset() noexcept;
 
@@ -109,11 +108,12 @@ private:
     static inline float fsin(uint32_t phase) noexcept
         { return s_cosTable[((phase >> 24) - 64u) & 0xffu]; }
 
-    void buildPrefilter(double fMark, double fSpace, int bitrate, int sampleRate) noexcept;
-    void buildRrcLowpass(int bitrate, int sampleRate) noexcept;
+    void buildPrefilter(double fMark, double fSpace, int bitrate, int sampleRate);
+    void buildRrcLowpass(int bitrate, int sampleRate);
 
     static float  convolve  (const float* buf, int wrPos, const float* coeffs, int taps) noexcept;
     static void   pushSample(float val, float* buf, int& wrPos, int taps) noexcept;
+    void          pushLP    (float mI, float mQ, float sI, float sQ) noexcept;
     static float  agcStep   (float in, float fast, float slow,
                               float& peak, float& valley) noexcept;
 

@@ -52,6 +52,15 @@ void AetherAFSKDemod::pushSample(float val, float* buf, int& wrPos, int taps) no
     if (++wrPos >= taps) wrPos = 0;
 }
 
+void AetherAFSKDemod::pushLP(float mI, float mQ, float sI, float sQ) noexcept
+{
+    m_mIBuf[m_lpBufPos] = mI;
+    m_mQBuf[m_lpBufPos] = mQ;
+    m_sIBuf[m_lpBufPos] = sI;
+    m_sQBuf[m_lpBufPos] = sQ;
+    if (++m_lpBufPos >= m_lpTaps) m_lpBufPos = 0;
+}
+
 float AetherAFSKDemod::convolve(const float* buf, int wrPos, const float* coeffs, int taps) noexcept
 {
     // Ring-buffer dot product: coeffs[0] matches the newest sample (wrPos-1), etc.
@@ -100,7 +109,7 @@ static float rrcKernel(float t, float a) noexcept
 }
 
 void AetherAFSKDemod::buildPrefilter(double fMark, double fSpace,
-                                      int bitrate, int sampleRate) noexcept
+                                      int bitrate, int sampleRate)
 {
     int taps = (static_cast<int>(kPrefilterLenSym * sampleRate / bitrate)) | 1;
     taps = std::min(taps, kMaxFilterTaps);
@@ -138,7 +147,7 @@ void AetherAFSKDemod::buildPrefilter(double fMark, double fSpace,
     m_preBufPos = 0;
 }
 
-void AetherAFSKDemod::buildRrcLowpass(int bitrate, int sampleRate) noexcept
+void AetherAFSKDemod::buildRrcLowpass(int bitrate, int sampleRate)
 {
     float sps  = static_cast<float>(sampleRate) / static_cast<float>(bitrate);
     int   taps = (static_cast<int>(kRrcWidthSym * sps)) | 1;
@@ -243,12 +252,7 @@ bool AetherAFSKDemod::try_demodulate(double sample, demod_result& result) noexce
     float mC = fcos(m_mOscPhase),  mS = fsin(m_mOscPhase);  m_mOscPhase += m_mOscDelta;
     float sC = fcos(m_sOscPhase),  sS = fsin(m_sOscPhase);  m_sOscPhase += m_sOscDelta;
 
-    // Write all four LP channels at the same ring slot, then advance once.
-    m_mIBuf[m_lpBufPos] = fsam * mC;
-    m_mQBuf[m_lpBufPos] = fsam * mS;
-    m_sIBuf[m_lpBufPos] = fsam * sC;
-    m_sQBuf[m_lpBufPos] = fsam * sS;
-    if (++m_lpBufPos >= m_lpTaps) m_lpBufPos = 0;
+    pushLP(fsam * mC, fsam * mS, fsam * sC, fsam * sS);
 
     // 3. RRC lowpass then envelope (amplitude).
     float mI = convolve(m_mIBuf.data(), m_lpBufPos, m_lpCoeffs.data(), m_lpTaps);
@@ -297,15 +301,6 @@ bool AetherAFSKDemod::try_demodulate(double sample, demod_result& result) noexce
     return false;
 }
 
-bool AetherAFSKDemod::try_demodulate(double sample, uint8_t& bit) noexcept
-{
-    demod_result r;
-    if (try_demodulate(sample, r)) {
-        bit = r.bit;
-        return true;
-    }
-    return false;
-}
 
 // ── Reset ─────────────────────────────────────────────────────────────────────
 
