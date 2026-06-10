@@ -17,6 +17,13 @@ enum class Ax25TonePolarity {
     Inverted,
 };
 
+// VHF 1200 baud demodulator mode.
+enum class VhfMode {
+    Off,    // VHF demodulation disabled
+    A,      // IQ-mix · 1 slicer
+    APlus,  // IQ-mix · 9 slicers (Direwolf default)
+};
+
 struct Ax25DemodConfig {
     Ax25ModemProfile profile{Ax25ModemProfile::Hf300};
     int sampleRate{24000};
@@ -24,6 +31,7 @@ struct Ax25DemodConfig {
     double markHz{1600.0};
     double spaceHz{1800.0};
     Ax25TonePolarity polarity{Ax25TonePolarity::Normal};
+    VhfMode vhfMode{VhfMode::APlus}; // VHF 1200 only; default A+ (Direwolf default)
 };
 
 struct Ax25DecoderDiagnostics {

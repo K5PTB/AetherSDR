@@ -8,6 +8,8 @@
 
 #include "core/tnc/HdlcCodec.h"
 
+#include "AetherAFSKDemod.h"
+
 #include <QDateTime>
 
 #include <algorithm>
@@ -21,6 +23,39 @@
 namespace AetherSDR {
 
 namespace lm = aether_libmodem_core;
+
+// Abstract demodulator interface — allows VHF (Direwolf-derived) and HF
+// (libmodem) demod types to coexist in the same lane vector.
+struct IAfskDemod {
+    virtual ~IAfskDemod() = default;
+    virtual bool try_demodulate(float sample, uint8_t& bit, double& confidence) noexcept = 0;
+    virtual void reset() noexcept = 0;
+};
+
+struct LibmodemAfskDemod : IAfskDemod {
+    lm::sinc_corr_afsk_demodulator inner;
+    template<typename... Args>
+    explicit LibmodemAfskDemod(Args&&... args) : inner(std::forward<Args>(args)...) {}
+    bool try_demodulate(float sample, uint8_t& bit, double& confidence) noexcept override {
+        lm::demod_result r;
+        if (!inner.try_demodulate(sample, r)) return false;
+        bit = r.bit; confidence = r.confidence; return true;
+    }
+    void reset() noexcept override { inner.reset(); }
+};
+
+struct DirewolfAfskDemod : IAfskDemod {
+    AetherDemod::AetherAFSKDemod inner;
+    template<typename... Args>
+    explicit DirewolfAfskDemod(Args&&... args) : inner(std::forward<Args>(args)...)
+    {}
+    bool try_demodulate(float sample, uint8_t& bit, double& confidence) noexcept override {
+        AetherDemod::demod_result r;
+        if (!inner.try_demodulate(sample, r)) return false;
+        bit = r.bit; confidence = r.confidence; return true;
+    }
+    void reset() noexcept override { inner.reset(); }
+};
 
 namespace {
 
@@ -57,25 +92,18 @@ constexpr std::array<int, 21> kHf300DecodePhaseOffsets = {
     43, 47, 51, 55, 59, 63, 67, 71, 75, 79
 };
 
-// 1200 baud VHF (Bell 202 / APRS): an aggressive bank of independent correlator
-// demodulators, combining two complementary strategies so the widest range of
-// bursts is captured. Duplicate suppression collapses the same frame seen by
-// several lanes into one emission, like a multi-decoder TNC (e.g. Dire Wolf).
-//
-//   * Free-running lanes (PLL alpha 0) spread evenly across the symbol period.
-//     With no timing loop they sample at a fixed phase, so on a clean burst at
-//     least one lane lands on the eye center and decodes immediately — the same
-//     proven mechanism as the HF bank. Best for short / strong / clean packets.
-//   * Gardner-tracked lanes (PLL alpha > 0) actively chase the symbol clock, so
-//     they tolerate TX/RX clock drift and fading over longer or weaker bursts
-//     where a fixed-phase lane would slip off the eye. A tight and a loose loop
-//     bandwidth bracket clean-vs-fast-acquisition trade-offs.
-//
-// Total lanes = kVhf1200FreeRunPhaseCount
-//             + kVhf1200TrackedPhaseCount * kVhf1200PllAlphas.size().
-constexpr int kVhf1200FreeRunPhaseCount = 10;
-constexpr int kVhf1200TrackedPhaseCount = 4;
-constexpr std::array<double, 2> kVhf1200PllAlphas = { 0.010, 0.025 };
+// 1200 baud VHF (Bell 202 / APRS): one DPLL lane per slicer for each enabled
+// algorithm. Duplicate suppression collapses the same frame seen by multiple
+// lanes into one emission, like Direwolf's multi_modem.c.
+constexpr double kVhf1200PllAlpha = 0.010;
+
+// Profile A+ space-gain multipliers — exact Direwolf A+ values (MAX_SUBCHANS=9).
+// Geometric series: MIN_G=0.5, MAX_G=4.0, 9 steps.
+// Formula: gain[0]=MIN_G, gain[j]=gain[j-1]*pow(10, log10(MAX_G/MIN_G)/(N-1)).
+constexpr std::array<float, 9> kVhf1200SpaceGains = {
+    0.500000f, 0.648420f, 0.840896f, 1.090508f, 1.414214f,
+    1.834008f, 2.378414f, 3.084422f, 4.000000f
+};
 
 QString fcsToString(const std::array<uint8_t, 2>& fcs)
 {
@@ -393,7 +421,7 @@ struct AetherAx25LibmodemShim::Impl {
     struct DecodeLane {
         int phaseOffsetSamples{0};
         int samplesUntilStart{0};
-        std::unique_ptr<lm::sinc_corr_afsk_demodulator> demod;
+        std::unique_ptr<IAfskDemod> demod;
         HdlcCodec hdlcCodec;
         double lastQuality{0.0};
     };
@@ -504,49 +532,41 @@ struct AetherAx25LibmodemShim::Impl {
             ? config.markHz
             : config.spaceHz;
 
-        auto addLane = [&](int phaseOffsetSamples, double pllAlpha) {
+        auto addLaneA = [&](int phaseOffsetSamples, double pllAlpha, float spaceGain = 0.0f) {
             auto& lane = lanes.emplace_back();
             lane.phaseOffsetSamples = phaseOffsetSamples;
-            lane.samplesUntilStart = phaseOffsetSamples;
-            lane.demod = std::make_unique<lm::sinc_corr_afsk_demodulator>(
-                mark,
-                space,
-                config.baud,
-                config.sampleRate,
-                0.75,
-                6.0,
-                0.75,
-                3.0,
-                0.008,
-                0.005,
-                pllAlpha);
+            lane.samplesUntilStart  = phaseOffsetSamples;
+            lane.demod = std::make_unique<DirewolfAfskDemod>(
+                mark, space, config.baud, config.sampleRate,
+                0.75, 6.0, 0.75, 3.0, 0.008, 0.005, pllAlpha, spaceGain);
+        };
+
+        auto addLaneHf = [&](int phaseOffsetSamples, double pllAlpha) {
+            auto& lane = lanes.emplace_back();
+            lane.phaseOffsetSamples = phaseOffsetSamples;
+            lane.samplesUntilStart  = phaseOffsetSamples;
+            lane.demod = std::make_unique<LibmodemAfskDemod>(
+                mark, space, config.baud, config.sampleRate,
+                0.75, 6.0, 0.75, 3.0, 0.008, 0.005, pllAlpha);
         };
 
         if (config.profile == Ax25ModemProfile::Hf300) {
             // HF: free-running lanes (pll_alpha 0), recovery by phase diversity.
             for (int phaseOffset : kHf300DecodePhaseOffsets)
-                addLane(phaseOffset, 0.0);
+                addLaneHf(phaseOffset, 0.0);
         } else {
-            // VHF 1200: hybrid bank. Phase offsets are derived from the symbol
-            // period so the spread stays correct if the sample rate ever changes.
-            const int samplesPerSymbol = config.baud > 0
-                ? config.sampleRate / config.baud
-                : 0;
-            if (samplesPerSymbol <= 0) {
-                addLane(0, 0.0);
-            } else {
-                // Free-running phase-diversity lanes — decode clean/short bursts.
-                for (int phase = 0; phase < kVhf1200FreeRunPhaseCount; ++phase) {
-                    const int phaseOffset = (samplesPerSymbol * phase) / kVhf1200FreeRunPhaseCount;
-                    addLane(phaseOffset, 0.0);
-                }
-                // Gardner-tracked lanes — follow clock drift on long/weak bursts.
-                for (int phase = 0; phase < kVhf1200TrackedPhaseCount; ++phase) {
-                    const int phaseOffset = (samplesPerSymbol * phase) / kVhf1200TrackedPhaseCount;
-                    for (double laneAlpha : kVhf1200PllAlphas)
-                        addLane(phaseOffset, laneAlpha);
-                }
+            // VHF 1200: one DPLL lane per slicer for each enabled algorithm.
+            bool wantA = false, aMulti = false;
+            switch (config.vhfMode) {
+            case VhfMode::Off:                         break;
+            case VhfMode::A:     wantA = true;         break;
+            case VhfMode::APlus: wantA = true; aMulti = true; break;
             }
+            const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1;
+
+            if (wantA)
+                for (int s = 0; s < aSlicers; ++s)
+                    addLaneA(0, kVhf1200PllAlpha, aMulti ? kVhf1200SpaceGains[s] : 0.0f);
         }
         resetDecoderState(true, true);
 
@@ -611,12 +631,6 @@ struct AetherAx25LibmodemShim::Impl {
         lane.hdlcCodec.reset();
     }
 
-    void resetBitstreamStates()
-    {
-        for (auto& lane : lanes)
-            resetLaneBitstream(lane);
-    }
-
     double measureBlockRmsDbfs(const float* samples, int sampleCount) const
     {
         if (!samples || sampleCount <= 0)
@@ -657,12 +671,11 @@ struct AetherAx25LibmodemShim::Impl {
                 receiveGateOpen = true;
                 receiveGateIdleSamples = 0;
                 ++receiveGateResets;
-                resetBitstreamStates();
                 if (diagnosticsLoggingEnabled) {
                     qCDebug(lcAx25).nospace()
                         << "receive gate opened: rms="
                         << QString::number(receiveGateRmsDbfs, 'f', 1) << "dBFS floor="
-                        << QString::number(receiveGateFloorDbfs, 'f', 1) << "dBFS resets="
+                        << QString::number(receiveGateFloorDbfs, 'f', 1) << "dBFS opens="
                         << receiveGateResets;
                 }
                 return;
@@ -754,8 +767,8 @@ struct AetherAx25LibmodemShim::Impl {
         lastRejectFrameBits = lane.hdlcCodec.frameSizeBits();
         lastRejectFrameBytes = static_cast<int>(frameBytesSize);
         lastRejectPreviewHex = framePreviewHex(lane.hdlcCodec.frameData(), frameBytesSize);
-        lastRejectActualFcs = frameBytesSize >= 17 ? fcsToString(actualFcs) : QString();
-        lastRejectExpectedFcs = frameBytesSize >= 17 ? fcsToString(expectedFcs) : QString();
+        lastRejectActualFcs = frameBytesSize >= 18 ? fcsToString(actualFcs) : QString();
+        lastRejectExpectedFcs = frameBytesSize >= 18 ? fcsToString(expectedFcs) : QString();
 
         // Minimum valid AX.25 frame is 17 bytes (14 address + 1 control + 2 FCS);
         // a no-PID U-frame (SABM/DISC/UA/DM) sits exactly at 17. Anything shorter
@@ -799,13 +812,14 @@ struct AetherAx25LibmodemShim::Impl {
         lane.lastQuality = 0.95 * lane.lastQuality + 0.05 * quality;
         const bool wasInFrame = lane.hdlcCodec.inFrame();
 
-        if (!lane.hdlcCodec.processBit(bit)) {
-            if (lane.hdlcCodec.inFrame() && !wasInFrame)
-                ++totalHdlcFrameStarts;
-            return std::nullopt;
-        }
+        const bool frameComplete = lane.hdlcCodec.processBit(bit ? 1 : 0);
 
-        // Frame closed — hdlcCodec.complete() is true.
+        if (lane.hdlcCodec.inFrame() && !wasInFrame)
+            ++totalHdlcFrameStarts;
+
+        if (!frameComplete)
+            return std::nullopt;
+
         ++totalHdlcFrameCandidates;
 
         const size_t frameSize    = lane.hdlcCodec.frameSize();
@@ -917,11 +931,11 @@ struct AetherAx25LibmodemShim::Impl {
         ++diagnosticsWindow.audioSamples;
     }
 
-    void recordDemodSymbol(const lm::demod_result& result)
+    void recordDemodSymbol(uint8_t bit, double confidence)
     {
         ++diagnosticsWindow.demodSymbols;
-        diagnosticsWindow.oneBits += result.bit ? 1 : 0;
-        diagnosticsWindow.confidenceSum += result.confidence;
+        diagnosticsWindow.oneBits += bit ? 1 : 0;
+        diagnosticsWindow.confidenceSum += confidence;
     }
 
     Ax25DecoderDiagnostics makeDiagnostics(int sampleRate) const
@@ -1075,12 +1089,13 @@ QVector<Ax25DecodedFrame> AetherAx25LibmodemShim::processMonoFloat(const float* 
                 continue;
             }
 
-            lm::demod_result result;
-            if (!lane.demod || !lane.demod->try_demodulate(sample, result))
+            uint8_t bit = 0;
+            double confidence = 0.0;
+            if (!lane.demod || !lane.demod->try_demodulate(sample, bit, confidence))
                 continue;
             if (laneIndex == 0)
-                m_impl->recordDemodSymbol(result);
-            if (auto decoded = m_impl->processBit(lane, result.bit, result.confidence);
+                m_impl->recordDemodSymbol(bit, confidence);
+            if (auto decoded = m_impl->processBit(lane, bit, confidence);
                 decoded && m_impl->shouldEmitFrame(*decoded)) {
                 frames.append(*decoded);
             }
@@ -1112,8 +1127,15 @@ int ax25DemodLaneCount(const Ax25DemodConfig& cfg)
 {
     if (cfg.profile == Ax25ModemProfile::Hf300)
         return static_cast<int>(kHf300DecodePhaseOffsets.size());
-    return kVhf1200FreeRunPhaseCount
-         + kVhf1200TrackedPhaseCount * static_cast<int>(kVhf1200PllAlphas.size());
+
+    bool wantA = false, aMulti = false;
+    switch (cfg.vhfMode) {
+    case VhfMode::Off:                         break;
+    case VhfMode::A:     wantA = true;         break;
+    case VhfMode::APlus: wantA = true; aMulti = true; break;
+    }
+    const int aSlicers = aMulti ? static_cast<int>(kVhf1200SpaceGains.size()) : 1;
+    return wantA ? aSlicers : 0;
 }
 
 QString ax25DemodDescription(const Ax25DemodConfig& cfg)
