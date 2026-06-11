@@ -67,6 +67,13 @@ lm::packet fixedVhf1200AprsTestPacket()
                       "!4742.00N/12217.00W>2m APRS via AetherModem 1200 baud");
 }
 
+lm::packet fixedVhf1200BPlusTestPacket()
+{
+    return lm::packet("W1AW-1", "APDW18",
+                      {"WIDE1-1"},
+                      "!4200.00N/07100.00W>Profile-B FM discriminator via AetherModem 1200 baud");
+}
+
 QByteArray sinePcm(int sampleRate, double frequencyHz, double amplitude)
 {
     QByteArray pcm;
@@ -549,6 +556,53 @@ void testChunkedVhf1200ReplayDecodes()
            frames.first().payloadText == QStringLiteral("!4742.00N/12217.00W>2m APRS via AetherModem 1200 baud"));
 }
 
+// Exercises the FM discriminator (profile-B) DSP path end-to-end.  The group
+// demod uses a single AetherFMDiscrimFrontEnd shared across 9 slicers via the
+// leader/follower normRateCache — this is the only test that reaches that path.
+void testSyntheticVhf1200ProfileBPlusLoopbackDecodes()
+{
+    auto cfg = ax25DemodConfigForProfile(Ax25ModemProfile::Vhf1200);
+    cfg.vhfMode = VhfMode::BPlus;
+
+    AetherAx25LibmodemShim shim;
+    shim.configure(cfg);
+
+    const auto frameBytes = lm::ax25::encode_frame(fixedVhf1200BPlusTestPacket());
+    const auto bits = lm::ax25::encode_bitstream(frameBytes, 0, 80, 8);
+    const auto packetAudio = afskPcmFromBits(bits, cfg);
+
+    // Lead-in silence so the receive gate has a noise floor to open against,
+    // then the burst, fed in 1024-sample chunks like the live RX audio tap.
+    std::vector<float> audio(static_cast<size_t>(cfg.sampleRate), 0.002f);
+    audio.insert(audio.end(), packetAudio.begin(), packetAudio.end());
+
+    QVector<Ax25DecodedFrame> frames;
+    constexpr int chunkSamples = 1024;
+    for (size_t offset = 0; offset < audio.size(); offset += chunkSamples) {
+        const int count = static_cast<int>(
+            std::min<size_t>(chunkSamples, audio.size() - offset));
+        frames += shim.processMonoFloat(audio.data() + offset, count, cfg.sampleRate);
+    }
+
+    const auto diagnostics = shim.diagnosticsSnapshot();
+    report("profile-B+ FM discriminator runs 9 lanes", diagnostics.decodeLanes == 9);
+    report("profile-B+ receive gate opened", diagnostics.receiveGateResets > 0);
+    report("profile-B+ produced symbols", diagnostics.demodSymbols > 0);
+    report("profile-B+ FM discriminator emits one frame", frames.size() == 1);
+    if (frames.isEmpty())
+        return;
+
+    const auto& frame = frames.first();
+    report("profile-B+ loopback source", frame.source == QStringLiteral("W1AW-1"));
+    report("profile-B+ loopback destination", frame.destination == QStringLiteral("APDW18"));
+    report("profile-B+ loopback path",
+           frame.path == QStringList({QStringLiteral("WIDE1-1")}));
+    report("profile-B+ loopback UI frame",
+           frame.isUiFrame && frame.control == 0x03 && frame.pid == 0xf0);
+    report("profile-B+ loopback payload",
+           frame.payloadText == QStringLiteral("!4200.00N/07100.00W>Profile-B FM discriminator via AetherModem 1200 baud"));
+}
+
 void testTransmitRawPayloadBuildsLoopbackAudio()
 {
     AetherAx25LibmodemShim txShim;
@@ -926,6 +980,7 @@ int main(int argc, char** argv)
     testSyntheticVhf1200AfskLoopbackDecodes();
     testSabmConnectFrameLoopbackDecodes();
     testChunkedVhf1200ReplayDecodes();
+    testSyntheticVhf1200ProfileBPlusLoopbackDecodes();
     testTransmitRawPayloadBuildsLoopbackAudio();
     testTransmitMonitorSyntaxBuildsLoopbackAudio();
     testTransmitVhf1200LoopbackDecodes();
