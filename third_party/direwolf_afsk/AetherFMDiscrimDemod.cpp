@@ -13,11 +13,8 @@
 #include <bit>
 #include <cassert>
 #include <cmath>
+#include <numbers>
 #include <numeric>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 namespace AetherDemod {
 
@@ -61,7 +58,7 @@ std::once_flag    AetherFMDiscrimFrontEnd::s_cosOnce;
 void AetherFMDiscrimFrontEnd::buildCosTable() noexcept
 {
     for (int j = 0; j < 256; ++j)
-        s_cosTable[j] = std::cos(static_cast<float>(j) * 2.0f * float(M_PI) / 256.0f);
+        s_cosTable[j] = std::cos(static_cast<float>(j) * 2.0f * std::numbers::pi_v<float> / 256.0f);
 }
 
 // ── AetherFMDiscrimFrontEnd — filter design ───────────────────────────────────
@@ -115,7 +112,7 @@ AetherFMDiscrimFrontEnd::AetherFMDiscrimFrontEnd(
     // Scale factor: radians/sample → ±1.0 for expected mark/space tones.
     assert(fMark != fSpace);
     m_normalizeRpsam = static_cast<float>(
-        1.0 / (0.5 * std::abs(fMark - fSpace) * 2.0 * M_PI / sampleRate));
+        1.0 / (0.5 * std::abs(fMark - fSpace) * 2.0 * std::numbers::pi / sampleRate));
 }
 
 // ── AetherFMDiscrimFrontEnd — processBlock ────────────────────────────────────
@@ -148,8 +145,8 @@ void AetherFMDiscrimFrontEnd::processBlock(const float* samples, int count,
 
         // 5. Differentiate phase → frequency deviation; handle ±π wrap.
         float rate = phase - m_prevPhase;
-        if (rate >  float(M_PI)) rate -= 2.0f * float(M_PI);
-        if (rate < -float(M_PI)) rate += 2.0f * float(M_PI);
+        if (rate >  std::numbers::pi_v<float>) rate -= 2.0f * std::numbers::pi_v<float>;
+        if (rate < -std::numbers::pi_v<float>) rate += 2.0f * std::numbers::pi_v<float>;
         m_prevPhase = phase;
 
         // 6. Normalize: mark deviation ≈ −1, space ≈ +1.
@@ -242,16 +239,16 @@ void AetherFMDiscrimSlicer::reset() noexcept
 
 AetherFMDiscrimDemod::AetherFMDiscrimDemod(
         double fMark, double fSpace, int bitrate, int sampleRate, float sliceOffset)
-    : frontEnd_(fMark, fSpace, bitrate, sampleRate)
-    , slicer_(bitrate, sampleRate, sliceOffset)
+    : m_frontEnd(fMark, fSpace, bitrate, sampleRate)
+    , m_slicer(bitrate, sampleRate, sliceOffset)
 {}
 
 bool AetherFMDiscrimDemod::try_demodulate(double sample, demod_result& result) noexcept
 {
     const float fsam = static_cast<float>(sample);
     float normRate;
-    frontEnd_.processBlock(&fsam, 1, &normRate);
-    return slicer_.process(normRate, result);
+    m_frontEnd.processBlock(&fsam, 1, &normRate);
+    return m_slicer.process(normRate, result);
 }
 
 bool AetherFMDiscrimDemod::try_demodulate(double sample, uint8_t& bit) noexcept
@@ -266,8 +263,8 @@ bool AetherFMDiscrimDemod::try_demodulate(double sample, uint8_t& bit) noexcept
 
 void AetherFMDiscrimDemod::reset() noexcept
 {
-    frontEnd_.reset();
-    slicer_.reset();
+    m_frontEnd.reset();
+    m_slicer.reset();
 }
 
 } // namespace AetherDemod

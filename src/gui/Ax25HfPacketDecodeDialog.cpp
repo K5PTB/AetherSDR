@@ -65,7 +65,11 @@ namespace {
 
 constexpr auto kPacketDecoderProfileSetting  = "Ax25PacketDecoderProfile";
 constexpr auto kPacketDecoderDebugSetting    = "Ax25PacketDecoderDiagnosticsDebug";
-constexpr auto kPacketDecoderVhfModeSetting  = "Ax25PacketDecoderVhfMode"; // 0=A..5=AB+
+// VHF decoder settings — nested JSON blob (Constitution Principle V).
+// kPacketDecoderProfileSetting and kPacketDecoderDebugSetting above are flat
+// keys grandfathered from commit e0618eee (2026-05-16), one day before
+// Principle V was adopted. New fields go into this blob only.
+constexpr auto kPacketDecoderSettingsKey = "Ax25PacketDecoder";
 
 // Guard: combo items are mapped to VhfMode by static_cast<VhfMode>(index + 1).
 // If a new VhfMode value is inserted into the enum, these asserts fire at
@@ -76,6 +80,24 @@ static_assert(static_cast<int>(VhfMode::AB)     == 3);
 static_assert(static_cast<int>(VhfMode::APlus)  == 4);
 static_assert(static_cast<int>(VhfMode::BPlus)  == 5);
 static_assert(static_cast<int>(VhfMode::ABPlus) == 6);
+
+int readVhfModeIndex()
+{
+    const QString json = AppSettings::instance().value(kPacketDecoderSettingsKey, QString{}).toString();
+    if (json.isEmpty()) return 3;
+    return QJsonDocument::fromJson(json.toUtf8()).object().value("vhfMode").toInt(3);
+}
+
+void writeVhfModeIndex(int idx)
+{
+    QJsonObject o = QJsonDocument::fromJson(
+        AppSettings::instance().value(kPacketDecoderSettingsKey, QString{}).toString().toUtf8()).object();
+    o["vhfMode"] = idx;
+    AppSettings::instance().setValue(kPacketDecoderSettingsKey,
+        QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+    AppSettings::instance().save();
+}
+
 // TNC settings live as nested JSON under "AetherModemKissTnc" — see
 // TncSettings class in the header. Legacy flat-key migration in
 // TncSettings::migrateLegacy() is run from MainWindow at startup.
@@ -872,7 +894,7 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     const Ax25ModemProfile savedProfile = profileFromSettingsValue(
         AppSettings::instance().value(kPacketDecoderProfileSetting, QStringLiteral("Hf300")).toString());
     const bool savedDebug = AppSettings::instance().value(kPacketDecoderDebugSetting, false).toBool();
-    const int savedVhfMode = AppSettings::instance().value(kPacketDecoderVhfModeSetting, 3).toInt(); // default A+ (index 3)
+    const int savedVhfMode = readVhfModeIndex(); // default 3 = A+
     m_hf300Profile->setChecked(savedProfile == Ax25ModemProfile::Hf300);
     m_vhf1200Profile->setChecked(savedProfile == Ax25ModemProfile::Vhf1200);
     m_vhfModeCombo->setCurrentIndex(std::clamp(savedVhfMode, 0, m_vhfModeCombo->count() - 1));
@@ -898,8 +920,7 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
         QMetaObject::invokeMethod(m_shim, [shim = m_shim, cfg]() {
             shim->configure(cfg);
         }, Qt::QueuedConnection);
-        AppSettings::instance().setValue(kPacketDecoderVhfModeSetting, m_vhfModeCombo->currentIndex());
-        AppSettings::instance().save();
+        writeVhfModeIndex(m_vhfModeCombo->currentIndex());
         appendSystemLine(QStringLiteral("VHF mode: %1. Configured %2.")
             .arg(m_vhfModeCombo->currentText().section(QStringLiteral("  —  "), 0, 0).trimmed(),
                  ax25DemodDescription(m_shimConfig)));

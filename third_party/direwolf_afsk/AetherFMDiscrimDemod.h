@@ -121,8 +121,8 @@ public:
     void reset() noexcept;
 
 private:
-    AetherFMDiscrimFrontEnd frontEnd_;
-    AetherFMDiscrimSlicer   slicer_;
+    AetherFMDiscrimFrontEnd m_frontEnd;
+    AetherFMDiscrimSlicer   m_slicer;
 };
 
 } // namespace AetherDemod
