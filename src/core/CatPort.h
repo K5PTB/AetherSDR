@@ -3,10 +3,10 @@
 #include <QObject>
 #include <QList>
 #include <QString>
+#include <memory>
 
 class QTcpServer;
 class QTcpSocket;
-class QSocketNotifier;
 
 namespace AetherSDR {
 
@@ -14,6 +14,7 @@ class RadioModel;
 class RigctlProtocol;
 class SmartCatProtocol;
 class SmartCatSession;
+class VirtualSerialPort;
 
 enum class CatDialect {
     Rigctld,   // Hamlib rigctld protocol (newline-framed)
@@ -54,8 +55,8 @@ public:
     // Per-user symlink path for the PTY slave device (GHSA-qxhr-cwrc-pvrm).
     // Mirrors RigctlPty::defaultSymlinkPath() — same platform/path logic.
     static QString defaultSymlinkPath(int portIndex);
-    void    setSymlinkPath(const QString& path) { m_symlinkPath = path; }
-    QString symlinkPath() const                 { return m_symlinkPath; }
+    void    setSymlinkPath(const QString& path);
+    QString symlinkPath() const;
 
 signals:
     void clientCountChanged(int count);
@@ -69,7 +70,7 @@ private slots:
     // SmartCAT TCP
     void onCatSessionEnded(SmartCatSession* session);
     // PTY data
-    void onPtyData();
+    void onPtyData(const QByteArray& data);
 
 private:
     void startPty();
@@ -86,23 +87,15 @@ private:
     CatDialect              m_dialect{CatDialect::Rigctld};
     int                     m_vfoA{0};
     int                     m_vfoB{kVfoNone};
-    QString                 m_symlinkPath;
+
+    std::unique_ptr<VirtualSerialPort> m_pty;
+    QByteArray                         m_ptyBuffer;
+    RigctlProtocol*                    m_ptyRigctlProtocol{nullptr};
+    SmartCatProtocol*                  m_ptyCatProtocol{nullptr};
 
     QTcpServer*             m_tcpServer{nullptr};
     QList<RigctlClient>     m_rigctlClients;
     QList<SmartCatSession*> m_catSessions;
-
-    // PTY (non-Windows only)
-#ifndef Q_OS_WIN
-    int              m_ptyMasterFd{-1};
-    int              m_ptySlaveFd{-1};
-    QString          m_ptySlavePath;
-    QSocketNotifier* m_ptyNotifier{nullptr};
-    QByteArray       m_ptyBuffer;
-    // Protocol handler for PTY (one of these is active, the other null)
-    RigctlProtocol*  m_ptyRigctlProtocol{nullptr};
-    SmartCatProtocol* m_ptyCatProtocol{nullptr};
-#endif
 };
 
 } // namespace AetherSDR

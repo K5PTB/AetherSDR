@@ -2269,6 +2269,12 @@ QWidget* Ax25HfPacketDecodeDialog::buildKissTncPage()
     m_tncPort->setRange(TncSettings::kMinPort, TncSettings::kMaxPort);
     m_tncPort->setValue(TncSettings::kDefaultPort);
     m_tncPort->setMaximumWidth(140);
+    m_tncPort->setToolTip(
+        QStringLiteral("TCP port for KISS-over-TCP clients (Xastir, YAAC, pat, …).\n\n"
+                       "A virtual serial port is also available at:\n%1\n"
+                       "Serial-only KISS clients (e.g. pat/Winlink) can open this path "
+                       "directly instead of connecting via TCP.")
+            .arg(KissTncServer::defaultKissPtyPath()));
     portLayout->addWidget(m_tncPort);
     controls->addWidget(portCell, 1);
     controls->addStretch(2);
@@ -2312,6 +2318,7 @@ void Ax25HfPacketDecodeDialog::setTncEnabled(bool enabled, bool persist)
         }
         const quint16 port = static_cast<quint16>(
             m_tncPort ? m_tncPort->value() : TncSettings::kDefaultPort);
+        m_kissServer->setKissPtyPath(KissTncServer::defaultKissPtyPath());
         if (!m_kissServer->start(port) && m_tncEnable) {
             QSignalBlocker blocker(m_tncEnable);
             m_tncEnable->setChecked(false);

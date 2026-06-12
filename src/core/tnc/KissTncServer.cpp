@@ -1,18 +1,41 @@
 #include "core/tnc/KissTncServer.h"
 
 #include "core/LogManager.h"
+#include "core/VirtualSerialPort.h"
 
+#include <QDir>
 #include <QHostAddress>
+#include <QStandardPaths>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
 
 namespace AetherSDR {
 
+QString KissTncServer::defaultKissPtyPath()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (base.isEmpty())
+        base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (base.isEmpty())
+        base = QDir::homePath() + QStringLiteral("/.cache/aethersdr");
+    if (!base.contains(QStringLiteral("aethersdr"), Qt::CaseInsensitive))
+        base += QStringLiteral("/aethersdr");
+    return base + QStringLiteral("/kiss-tnc");
+}
+
 KissTncServer::KissTncServer(QObject* parent)
     : QObject(parent)
+    , m_kissPty(std::make_unique<VirtualSerialPort>(this))
 {
+    connect(m_kissPty.get(), &VirtualSerialPort::dataReceived,
+            this, &KissTncServer::onPtyData);
+    connect(m_kissPty.get(), &VirtualSerialPort::pathChanged,
+            this, &KissTncServer::kissPtyPathChanged);
 }
+
+void KissTncServer::setKissPtyPath(const QString& path) { m_kissPty->setSymlinkPath(path); }
+QString KissTncServer::kissPtyPath() const               { return m_kissPty->slavePath(); }
 
 KissTncServer::~KissTncServer()
 {
@@ -40,6 +63,12 @@ bool KissTncServer::start(quint16 port)
     m_lastError.clear();
     m_framesToClients = 0;
     m_framesFromClients = 0;
+
+    if (m_kissPty->open()) {
+        qCInfo(lcAx25).noquote()
+            << QStringLiteral("KISS TNC PTY opened: %1").arg(m_kissPty->slavePath());
+        emit activity(QStringLiteral("KISS TNC PTY: %1").arg(m_kissPty->slavePath()));
+    }
 
     m_sweepTimer = new QTimer(this);
     m_sweepTimer->setInterval(kSweepIntervalMs);
@@ -78,6 +107,9 @@ void KissTncServer::stop()
         m_server->deleteLater();
         m_server = nullptr;
     }
+
+    m_kissPty->close();
+    m_ptyDecoder = kiss::Decoder{};
 
     if (wasListening) {
         qCInfo(lcAx25).noquote()
@@ -174,7 +206,7 @@ void KissTncServer::onReadyRead()
 
 void KissTncServer::broadcastAx25Frame(const QByteArray& ax25NoFcs)
 {
-    if (ax25NoFcs.isEmpty() || m_clients.isEmpty())
+    if (ax25NoFcs.isEmpty())
         return;
 
     const QByteArray kissFrame = kiss::encodeDataFrame(ax25NoFcs);
@@ -192,6 +224,11 @@ void KissTncServer::broadcastAx25Frame(const QByteArray& ax25NoFcs)
         ++delivered;
     }
 
+    if (m_kissPty->isOpen()) {
+        m_kissPty->write(kissFrame);
+        ++delivered;
+    }
+
     if (delivered > 0)
         ++m_framesToClients;
 
@@ -201,6 +238,36 @@ void KissTncServer::broadcastAx25Frame(const QByteArray& ax25NoFcs)
 
     for (QTcpSocket* socket : slowConsumers)
         closeClient(socket, QStringLiteral("write backlog exceeded (slow consumer)"));
+}
+
+void KissTncServer::onPtyData(const QByteArray& data)
+{
+    const QVector<QByteArray> frames = m_ptyDecoder.feed(data);
+    for (const QByteArray& frame : frames) {
+        quint8 portNibble = 0;
+        quint8 command = 0;
+        QByteArray payload;
+        if (!kiss::splitTypeByte(frame, portNibble, command, payload))
+            continue;
+
+        if (command == kiss::kCmdData) {
+            if (payload.isEmpty())
+                continue;
+            ++m_framesFromClients;
+            qCDebug(lcAx25).noquote()
+                << QStringLiteral("KISS TX from PTY: %1 AX.25 bytes (frame #%2)")
+                       .arg(payload.size()).arg(m_framesFromClients);
+            emit ax25FrameFromClient(payload);
+        } else if (command == kiss::kCmdReturn) {
+            qCDebug(lcAx25).noquote()
+                << QStringLiteral("KISS exit (return) from PTY — ignored");
+        } else {
+            qCDebug(lcAx25).noquote()
+                << QStringLiteral("KISS param from PTY: cmd=0x%1 bytes=%2")
+                       .arg(command, 2, 16, QLatin1Char('0')).arg(payload.size());
+            emit kissParameterReceived(command, payload);
+        }
+    }
 }
 
 void KissTncServer::onDisconnected()

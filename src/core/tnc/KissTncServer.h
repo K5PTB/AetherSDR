@@ -7,12 +7,15 @@
 #include <QHash>
 #include <QObject>
 #include <QString>
+#include <memory>
 
 class QTcpServer;
 class QTcpSocket;
 class QTimer;
 
 namespace AetherSDR {
+
+class VirtualSerialPort;
 
 // A KISS-over-TCP TNC server. Host applications (APRS clients, terminal/packet
 // programs, Dire Wolf-style tools) connect over TCP and exchange raw AX.25
@@ -42,6 +45,12 @@ public:
     int clientCount() const { return m_clients.size(); }
     QString lastError() const { return m_lastError; }
 
+    // PTY virtual serial port — lets pat/other serial-KISS clients connect without TCP.
+    // Call setKissPtyPath() before start(); kissPtyPath() returns the active slave path.
+    static QString defaultKissPtyPath();
+    void    setKissPtyPath(const QString& path);
+    QString kissPtyPath() const;
+
     quint64 framesToClients() const { return m_framesToClients; }
     quint64 framesFromClients() const { return m_framesFromClients; }
 
@@ -63,6 +72,7 @@ signals:
 
     void listeningChanged(bool listening);
     void clientCountChanged(int count);
+    void kissPtyPathChanged(const QString& path);
 
     // Human-readable lifecycle line for the AetherModem window terminal.
     void activity(const QString& message);
@@ -72,6 +82,7 @@ private slots:
     void onReadyRead();
     void onDisconnected();
     void onSweepTimer();
+    void onPtyData(const QByteArray& data);
 
 private:
     struct Client {
@@ -91,6 +102,9 @@ private:
     QString m_lastError;
     quint64 m_framesToClients = 0;
     quint64 m_framesFromClients = 0;
+
+    std::unique_ptr<VirtualSerialPort> m_kissPty;
+    kiss::Decoder m_ptyDecoder;
 
     // Drop a client whose unsent backlog exceeds this (slow/stuck consumer).
     static constexpr qint64 kMaxWriteBacklogBytes = 256 * 1024;

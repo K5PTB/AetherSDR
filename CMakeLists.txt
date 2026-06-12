@@ -545,6 +545,7 @@ set(CORE_SOURCES
     src/core/SmartCatProtocol.cpp
     src/core/SmartCatSession.cpp
     src/core/CatPort.cpp
+    src/core/VirtualSerialPort.cpp
     src/core/SmartLinkClient.cpp
     src/core/WanConnection.cpp
     src/core/DxClusterClient.cpp
@@ -2088,6 +2089,17 @@ add_executable(hdlc_codec_test
 target_include_directories(hdlc_codec_test PRIVATE src)
 target_link_libraries(hdlc_codec_test PRIVATE aether_libmodem_core)
 add_test(NAME hdlc_codec_test COMMAND hdlc_codec_test)
+
+add_executable(virtual_serial_port_test
+    tests/virtual_serial_port_test.cpp
+    src/core/VirtualSerialPort.cpp
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+    src/core/AppSettings.cpp
+)
+target_include_directories(virtual_serial_port_test PRIVATE src)
+target_link_libraries(virtual_serial_port_test PRIVATE Qt6::Core)
+add_test(NAME virtual_serial_port_test COMMAND virtual_serial_port_test)
 
 # Offline AX.25 decode diagnostic: replays a captured WAV through the decoder.
 # Not a ctest (needs an input file); built on demand for troubleshooting.

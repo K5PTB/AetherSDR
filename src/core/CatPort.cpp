@@ -3,6 +3,7 @@
 #include "RigctlProtocol.h"
 #include "SmartCatProtocol.h"
 #include "SmartCatSession.h"
+#include "VirtualSerialPort.h"
 #include "models/RadioModel.h"
 
 #include <utility>
@@ -12,19 +13,6 @@
 #include <QStandardPaths>
 #include <QTcpServer>
 #include <QTcpSocket>
-#include <QSocketNotifier>
-
-#ifndef Q_OS_WIN
-#include <unistd.h>
-#include <fcntl.h>
-#include <termios.h>
-#include <sys/stat.h>
-#ifdef Q_OS_MAC
-#include <util.h>
-#else
-#include <pty.h>
-#endif
-#endif
 
 namespace AetherSDR {
 
@@ -55,7 +43,16 @@ QString CatPort::defaultSymlinkPath(int portIndex)
 CatPort::CatPort(RadioModel* model, QObject* parent)
     : QObject(parent)
     , m_model(model)
-{}
+    , m_pty(std::make_unique<VirtualSerialPort>(this))
+{
+    connect(m_pty.get(), &VirtualSerialPort::dataReceived,
+            this, &CatPort::onPtyData);
+    connect(m_pty.get(), &VirtualSerialPort::pathChanged,
+            this, &CatPort::ptyPathChanged);
+}
+
+void CatPort::setSymlinkPath(const QString& path) { m_pty->setSymlinkPath(path); }
+QString CatPort::symlinkPath() const               { return m_pty->symlinkPath(); }
 
 CatPort::~CatPort()
 {
@@ -133,14 +130,7 @@ int CatPort::clientCount() const
 
 QString CatPort::ptyPath() const
 {
-#ifndef Q_OS_WIN
-    if (!isRunning()) return {};
-    if (!m_symlinkPath.isEmpty())
-        return m_symlinkPath;
-    return m_ptySlavePath;
-#else
-    return {};
-#endif
+    return m_pty->slavePath();
 }
 
 // ── New TCP connection ───────────────────────────────────────────────────────
@@ -238,50 +228,8 @@ void CatPort::onCatSessionEnded(SmartCatSession* session)
 
 void CatPort::startPty()
 {
-#ifndef Q_OS_WIN
-    char slaveName[256] = {};
-    if (openpty(&m_ptyMasterFd, &m_ptySlaveFd, slaveName, nullptr, nullptr) != 0) {
-        qCWarning(lcCat) << "CatPort: openpty() failed";
-        return;
-    }
+    if (!m_pty->open()) return;
 
-    m_ptySlavePath = QString::fromLocal8Bit(slaveName);
-
-    int flags = fcntl(m_ptyMasterFd, F_GETFL);
-    fcntl(m_ptyMasterFd, F_SETFL, flags | O_NONBLOCK);
-
-    struct termios tio;
-    if (tcgetattr(m_ptySlaveFd, &tio) == 0) {
-        cfmakeraw(&tio);
-        tio.c_cc[VMIN]  = 1;
-        tio.c_cc[VTIME] = 0;
-        tcsetattr(m_ptySlaveFd, TCSANOW, &tio);
-    }
-
-    if (!m_symlinkPath.isEmpty()) {
-        // Atomic replace: symlink to a tmp name in the same dir, then rename().
-        // rename() is atomic; avoids the TOCTOU window of unlink+symlink.
-        const QFileInfo info(m_symlinkPath);
-        const QString parentDir = info.absolutePath();
-        if (!QDir().mkpath(parentDir))
-            qCWarning(lcCat) << "CatPort: failed to mkpath" << parentDir;
-        if (::chmod(parentDir.toLocal8Bit().constData(), 0700) != 0)
-            qCWarning(lcCat) << "CatPort: chmod 0700 failed on" << parentDir;
-
-        const QString tmpPath = m_symlinkPath + QStringLiteral(".tmp");
-        ::unlink(tmpPath.toLocal8Bit().constData());
-        if (::symlink(slaveName, tmpPath.toLocal8Bit().constData()) == 0) {
-            if (::rename(tmpPath.toLocal8Bit().constData(),
-                         m_symlinkPath.toLocal8Bit().constData()) != 0) {
-                ::unlink(tmpPath.toLocal8Bit().constData());
-                qCWarning(lcCat) << "CatPort: symlink rename failed:" << m_symlinkPath;
-            }
-        } else {
-            qCWarning(lcCat) << "CatPort: symlink (tmp) failed:" << tmpPath;
-        }
-    }
-
-    // Create the right protocol handler for this dialect
     if (m_dialect == CatDialect::Rigctld) {
         m_ptyRigctlProtocol = new RigctlProtocol(m_model);
         m_ptyRigctlProtocol->setSliceIndex(m_vfoA);
@@ -290,52 +238,30 @@ void CatPort::startPty()
         m_ptyCatProtocol = new SmartCatProtocol(m_model, m_vfoA, m_vfoB, flex);
     }
 
-    m_ptyNotifier = new QSocketNotifier(m_ptyMasterFd, QSocketNotifier::Read, this);
-    connect(m_ptyNotifier, &QSocketNotifier::activated,
-            this, &CatPort::onPtyData);
-
-    qCInfo(lcCat) << "CatPort: PTY started on" << m_ptySlavePath
-                  << "symlink:" << m_symlinkPath;
-    emit ptyPathChanged(ptyPath());
-#endif
+    qCInfo(lcCat) << "CatPort: PTY started on" << m_pty->slavePath()
+                  << "symlink:" << m_pty->symlinkPath();
+    // ptyPathChanged emitted by VirtualSerialPort::open() via the pathChanged signal
 }
 
 void CatPort::stopPty()
 {
-#ifndef Q_OS_WIN
-    if (m_ptyMasterFd < 0) return;
+    if (!m_pty->isOpen()) return;
 
-    delete m_ptyNotifier;
-    m_ptyNotifier = nullptr;
+    m_pty->close();
 
     delete m_ptyRigctlProtocol;
     m_ptyRigctlProtocol = nullptr;
     delete m_ptyCatProtocol;
     m_ptyCatProtocol = nullptr;
 
-    ::close(m_ptyMasterFd);
-    ::close(m_ptySlaveFd);
-    m_ptyMasterFd = -1;
-    m_ptySlaveFd  = -1;
     m_ptyBuffer.clear();
-
-    if (!m_symlinkPath.isEmpty())
-        ::unlink(m_symlinkPath.toLocal8Bit().constData());
-
-    m_ptySlavePath.clear();
-    emit ptyPathChanged({});
     qCInfo(lcCat) << "CatPort: PTY stopped";
-#endif
+    // ptyPathChanged emitted by VirtualSerialPort::close() via the pathChanged signal
 }
 
-void CatPort::onPtyData()
+void CatPort::onPtyData(const QByteArray& data)
 {
-#ifndef Q_OS_WIN
-    char buf[4096];
-    ssize_t n = ::read(m_ptyMasterFd, buf, sizeof(buf));
-    if (n <= 0) return;
-
-    m_ptyBuffer.append(buf, static_cast<int>(n));
+    m_ptyBuffer.append(data);
 
     // Rigctld framing: newline-delimited
     if (m_dialect == CatDialect::Rigctld) {
@@ -350,11 +276,8 @@ void CatPort::onPtyData()
 
             if (m_ptyRigctlProtocol) {
                 QString resp = m_ptyRigctlProtocol->handleLine(line);
-                if (!resp.isEmpty()) {
-                    QByteArray data = resp.toUtf8();
-                    if (::write(m_ptyMasterFd, data.constData(), data.size()) < 0)
-                        qCWarning(lcCat) << "CatPort: PTY write failed";
-                }
+                if (!resp.isEmpty())
+                    m_pty->write(resp.toUtf8());
             }
         }
     } else {
@@ -367,15 +290,11 @@ void CatPort::onPtyData()
 
             if (m_ptyCatProtocol) {
                 QString resp = m_ptyCatProtocol->processCommand(cmd);
-                if (!resp.isEmpty()) {
-                    QByteArray data = resp.toUtf8();
-                    if (::write(m_ptyMasterFd, data.constData(), data.size()) < 0)
-                        qCWarning(lcCat) << "CatPort: PTY write failed";
-                }
+                if (!resp.isEmpty())
+                    m_pty->write(resp.toUtf8());
             }
         }
     }
-#endif
 }
 
 } // namespace AetherSDR
