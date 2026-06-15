@@ -16,6 +16,7 @@
 #include "core/tnc/Ax25FrameFormatter.h"
 #include "core/tnc/HeardList.h"
 #include "core/tnc/KissTncServer.h"
+#include "AgwpeServer.h"
 #include "core/tnc/TncTerminal.h"
 #include "core/pms/PmsMailbox.h"
 #include "models/RadioModel.h"
@@ -89,6 +90,7 @@ constexpr auto kPacketDecoderDebugSetting    = "Ax25PacketDecoderDiagnosticsDebu
 // TncSettings class in the header. Legacy flat-key migration in
 // TncSettings::migrateLegacy() is run from MainWindow at startup.
 constexpr auto kTncSettingsKey   = "AetherModemKissTnc";
+constexpr auto kAgwpeSettingsKey = "AetherModemAgwpe";
 
 // Symmetry with KissTncServer's kMaxWriteBacklogBytes on the RX path: cap
 // the TX queue so a misbehaving KISS client pushing frames faster than RF
@@ -547,6 +549,59 @@ void TncSettings::migrateLegacy()
     // still touches them. The nested blob is now authoritative.
 }
 
+// AgwpeSettings — nested-JSON persistence alongside TncSettings.
+
+namespace AgwpeSettings {
+
+static constexpr int kDefaultPort = AgwpeServer::kDefaultPort;
+static constexpr int kMinPort     = 1024;
+static constexpr int kMaxPort     = 65535;
+
+static QJsonObject readObj()
+{
+    const QString json =
+        AppSettings::instance().value(kAgwpeSettingsKey, QString{}).toString();
+    if (json.isEmpty()) return {};
+    return QJsonDocument::fromJson(json.toUtf8()).object();
+}
+
+static void write(const QJsonObject& o)
+{
+    auto& s = AppSettings::instance();
+    s.setValue(kAgwpeSettingsKey,
+               QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+    s.save();
+}
+
+static bool enabled()
+{
+    return readObj().value(QStringLiteral("enabled")).toString() == QLatin1String("True");
+}
+
+static int port()
+{
+    const int p = readObj().value(QStringLiteral("port"))
+                      .toString(QString::number(kDefaultPort)).toInt();
+    return (p >= kMinPort && p <= kMaxPort) ? p : kDefaultPort;
+}
+
+static void setEnabled(bool on)
+{
+    QJsonObject o = readObj();
+    o["enabled"] = on ? QStringLiteral("True") : QStringLiteral("False");
+    write(o);
+}
+
+static void setPort(int p)
+{
+    if (p < kMinPort || p > kMaxPort) p = kDefaultPort;
+    QJsonObject o = readObj();
+    o["port"] = QString::number(p);
+    write(o);
+}
+
+} // namespace AgwpeSettings
+
 class PacketActivityWidget final : public QWidget {
 public:
     // An EKG-style sweep trace, in the spirit of a hospital heart monitor:
@@ -809,7 +864,8 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     m_shim->moveToThread(&m_shimThread);
     connect(&m_shimThread, &QThread::finished, m_shim, &QObject::deleteLater);
     m_shimThread.start();
-    m_kissServer = new KissTncServer(this);
+    m_kissServer  = new KissTncServer(this);
+    m_agwpeServer = new AgwpeServer(this);
     m_heard = new HeardList(this);
     m_terminal = new TncTerminal(this);
     m_pms = new PmsMailbox(this);
@@ -1068,14 +1124,18 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     connect(m_shim, &AetherAx25LibmodemShim::frameDecoded,
             this, &Ax25HfPacketDecodeDialog::publishFrameMqtt);
 #endif
-    // RX -> KISS clients: forward every decoded frame to connected hosts.
+    // RX -> KISS + AGWPE clients: forward every decoded frame to connected hosts.
     connect(m_shim, &AetherAx25LibmodemShim::frameDecoded, this,
             [this](const Ax25DecodedFrame& frame) {
-        if (m_kissServer && m_kissServer->isListening() && !frame.ax25FrameNoFcs.isEmpty()) {
+        if (frame.ax25FrameNoFcs.isEmpty())
+            return;
+        if (m_kissServer && m_kissServer->isListening()) {
             m_kissServer->broadcastAx25Frame(frame.ax25FrameNoFcs);
             ++m_kissRxCount;
             refreshTncStatus();
         }
+        if (m_agwpeServer && m_agwpeServer->isListening())
+            m_agwpeServer->broadcastAx25Frame(frame.ax25FrameNoFcs);
     });
     // RX -> Mailbox: feed every decoded frame to the PMS (heard list always;
     // connected-mode handling only for frames addressed to our PMS callsign).
@@ -1150,6 +1210,27 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
                 .arg(value));
             setTncEnabled(false, false);
             setTncEnabled(true, false);
+        }
+    });
+
+    // AGWPE monitoring server wiring.
+    connect(m_agwpeServer, &AgwpeServer::ax25FrameFromClient,
+            this, &Ax25HfPacketDecodeDialog::handleKissFrameFromClient);
+    connect(m_agwpeServer, &AgwpeServer::activity,
+            this, &Ax25HfPacketDecodeDialog::appendSystemLine);
+    connect(m_agwpeServer, &AgwpeServer::listeningChanged,
+            this, [this](bool) { refreshAgwpeStatus(); });
+    connect(m_agwpeServer, &AgwpeServer::clientCountChanged,
+            this, [this](int) { refreshAgwpeStatus(); });
+    connect(m_agwpeEnable, &QCheckBox::toggled, this, [this](bool on) {
+        setAgwpeEnabled(on, true);
+    });
+    connect(m_agwpePort, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+        AgwpeSettings::setPort(value);
+        if (m_agwpeEnable && m_agwpeEnable->isChecked()) {
+            appendSystemLine(QStringLiteral("AGWPE port changed to %1; restarting.").arg(value));
+            setAgwpeEnabled(false, false);
+            setAgwpeEnabled(true, false);
         }
     });
 
@@ -1255,6 +1336,11 @@ Ax25HfPacketDecodeDialog::Ax25HfPacketDecodeDialog(AudioEngine* audio,
     refreshTransmitControls();
     applyTncStartOnStartup();
     refreshTncStatus();
+    if (AgwpeSettings::enabled() && m_agwpeEnable) {
+        appendSystemLine(QStringLiteral("AGWPE: enabled on last exit; starting listener."));
+        m_agwpeEnable->setChecked(true); // fires setAgwpeEnabled() via the toggled connection
+    }
+    refreshAgwpeStatus();
 
     // Restore mailbox (PMS) state and version SID.
 #ifdef AETHERSDR_VERSION
@@ -2295,6 +2381,53 @@ QWidget* Ax25HfPacketDecodeDialog::buildKissTncPage()
     m_tncPort->setValue(TncSettings::port());
     m_tncStartOnStartup->setChecked(TncSettings::startOnStartup());
 
+    // --- AGWPE monitoring server -----------------------------------------------
+    auto* agwpeControlsFrame = panel(QStringLiteral("ControlsFrame"), page);
+    auto* agwpeControls = new QHBoxLayout(agwpeControlsFrame);
+    agwpeControls->setContentsMargins(16, 14, 16, 14);
+    agwpeControls->setSpacing(20);
+
+    auto* agwpeServerCell = panel(QStringLiteral("ControlCell"), agwpeControlsFrame);
+    auto* agwpeServerLayout = new QVBoxLayout(agwpeServerCell);
+    agwpeServerLayout->setContentsMargins(0, 0, 20, 0);
+    agwpeServerLayout->setSpacing(12);
+    agwpeServerLayout->addWidget(sectionLabel(QStringLiteral("AGWPE SERVER"), agwpeServerCell));
+    m_agwpeEnable = new QCheckBox(QStringLiteral("Enable AGWPE"), agwpeServerCell);
+    agwpeServerLayout->addWidget(m_agwpeEnable);
+    agwpeControls->addWidget(agwpeServerCell, 2);
+
+    auto* agwpePortCell = panel(QStringLiteral("ControlCell"), agwpeControlsFrame);
+    auto* agwpePortLayout = new QVBoxLayout(agwpePortCell);
+    agwpePortLayout->setContentsMargins(0, 0, 20, 0);
+    agwpePortLayout->setSpacing(12);
+    agwpePortLayout->addWidget(sectionLabel(QStringLiteral("TCP PORT"), agwpePortCell));
+    m_agwpePort = new QSpinBox(agwpePortCell);
+    m_agwpePort->setRange(AgwpeSettings::kMinPort, AgwpeSettings::kMaxPort);
+    m_agwpePort->setValue(AgwpeSettings::kDefaultPort);
+    m_agwpePort->setMaximumWidth(140);
+    agwpePortLayout->addWidget(m_agwpePort);
+    agwpeControls->addWidget(agwpePortCell, 1);
+    agwpeControls->addStretch(2);
+    layout->addWidget(agwpeControlsFrame);
+
+    auto* agwpeStatusFrame = statusPanel(QStringLiteral("AGWPE STATUS"),
+                                         &m_agwpeStatusDot, &m_agwpeStatusValue, page);
+    layout->addWidget(agwpeStatusFrame);
+
+    auto* agwpeHelp = new QLabel(
+        QStringLiteral("Point an AGWPE-compatible client (pat, Winlink Express, APRSISCE/32, "
+                       "UI-View, … ) at this host and TCP port for monitoring. Decoded "
+                       "frames are forwarded to raw-mode subscribers ('k' toggle). "
+                       "Connected-mode AX.25 (Winlink email) requires a full L2 state machine "
+                       "not yet implemented — monitoring/beacon reception only for now."),
+        page);
+    agwpeHelp->setObjectName(QStringLiteral("StatusValue"));
+    agwpeHelp->setWordWrap(true);
+    layout->addWidget(agwpeHelp);
+
+    // Seed AGWPE controls from settings.
+    m_agwpePort->setValue(AgwpeSettings::port());
+
     return page;
 }
 
@@ -2433,6 +2566,51 @@ void Ax25HfPacketDecodeDialog::refreshTncStatus()
     if (m_tncStatusDot) {
         m_tncStatusDot->setFixedSize(12, 12);
         m_tncStatusDot->setStyleSheet(listening
+            ? QStringLiteral("background:#5fce66;border-radius:6px;")
+            : QStringLiteral("background:#8190a3;border-radius:6px;"));
+    }
+}
+
+void Ax25HfPacketDecodeDialog::setAgwpeEnabled(bool enabled, bool persist)
+{
+    if (persist)
+        AgwpeSettings::setEnabled(enabled);
+
+    if (enabled) {
+        if (m_enableDecode && !m_enableDecode->isChecked()) {
+            appendSystemLine(QStringLiteral("Enabling the modem for AGWPE."));
+            m_enableDecode->setChecked(true);
+        }
+        const quint16 port = static_cast<quint16>(
+            m_agwpePort ? m_agwpePort->value() : AgwpeSettings::kDefaultPort);
+        if (!m_agwpeServer->start(port) && m_agwpeEnable) {
+            QSignalBlocker blocker(m_agwpeEnable);
+            m_agwpeEnable->setChecked(false);
+        }
+    } else {
+        m_agwpeServer->stop();
+    }
+    refreshAgwpeStatus();
+}
+
+void Ax25HfPacketDecodeDialog::refreshAgwpeStatus()
+{
+    if (!m_agwpeStatusValue)
+        return;
+    const bool listening = m_agwpeServer && m_agwpeServer->isListening();
+    if (listening) {
+        m_agwpeStatusValue->setText(
+            QStringLiteral("Listening on %1  |  %2 client(s)  |  RX %3  TX %4")
+                .arg(m_agwpeServer->port())
+                .arg(m_agwpeServer->clientCount())
+                .arg(m_agwpeServer->framesToClients())
+                .arg(m_agwpeServer->framesFromClients()));
+    } else {
+        m_agwpeStatusValue->setText(QStringLiteral("Stopped"));
+    }
+    if (m_agwpeStatusDot) {
+        m_agwpeStatusDot->setFixedSize(12, 12);
+        m_agwpeStatusDot->setStyleSheet(listening
             ? QStringLiteral("background:#5fce66;border-radius:6px;")
             : QStringLiteral("background:#8190a3;border-radius:6px;"));
     }

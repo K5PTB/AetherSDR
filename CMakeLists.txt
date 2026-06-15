@@ -934,6 +934,20 @@ target_include_directories(aether_afskdemod PUBLIC
 target_compile_features(aether_afskdemod PUBLIC cxx_std_20)
 message(STATUS "AetherAFSKDemod: Direwolf profile-A (VHF 1200 baud), GPL-2.0-or-later")
 
+# AgwpeServer — Direwolf-derived AGW Packet Engine monitoring server.
+# Monitoring-only (R/G/g/k/K/X frames); connected mode pending AX.25 L2.
+# Vendored Dire Wolf source is GPL-2.0-or-later (see THIRD_PARTY_LICENSES).
+add_library(aether_agwpeserver STATIC
+    third_party/direwolf_agwpe/AgwpeServer.cpp
+)
+target_include_directories(aether_agwpeserver PUBLIC
+    ${CMAKE_SOURCE_DIR}/third_party/direwolf_agwpe
+)
+target_link_libraries(aether_agwpeserver PUBLIC Qt6::Core Qt6::Network)
+target_compile_features(aether_agwpeserver PUBLIC cxx_std_20)
+set_target_properties(aether_agwpeserver PROPERTIES AUTOMOC ON)
+message(STATUS "AgwpeServer: AGWPE monitoring server (Dire Wolf-derived), GPL-2.0-or-later")
+
 # Bundled liquid-dsp (MIT) — comprehensive DSP toolkit covering modems
 # (PSK/QAM/FSK/GMSK/OFDM), FEC (Hamming/Golay/RS/convolutional), adaptive
 # filters (LMS/RLS), AGC, NCO, polyphase resampling, and equalizers.
@@ -1172,6 +1186,7 @@ target_link_libraries(AetherSDR PRIVATE
     Qt6::Multimedia
     aether_libmodem_core
     aether_afskdemod
+    aether_agwpeserver
     qgeoview
     ${CMAKE_DL_LIBS}   # dlopen/dlsym for tolerant X11 error handler (#1839)
 )
@@ -2374,6 +2389,14 @@ add_executable(rigctld_test
 )
 target_include_directories(rigctld_test PRIVATE src)
 target_link_libraries(rigctld_test PRIVATE Qt6::Core Qt6::Network)
+
+# Self-contained unit test for the AGWPE monitoring server (no running AetherSDR needed).
+add_executable(agwpe_server_test
+    tests/agwpe_server_test.cpp
+)
+target_include_directories(agwpe_server_test PRIVATE src)
+target_link_libraries(agwpe_server_test PRIVATE aether_agwpeserver Qt6::Core Qt6::Network)
+add_test(NAME agwpe_server_test COMMAND agwpe_server_test)
 
 # Integration tests — require a running AetherSDR instance with CAT ports enabled.
 # Not added to ctest; run manually:

@@ -34,6 +34,7 @@ class AprsMessenger;
 class AprsStationList;
 class AudioEngine;
 class HeardList;
+class AgwpeServer;
 class KissTncServer;
 #ifdef HAVE_MQTT
 class MqttClient;
@@ -154,6 +155,10 @@ private:
     void handleKissFrameFromClient(const QByteArray& ax25NoFcs);
     void maybeStartNextKissTx();
     void refreshTncStatus();
+
+    // AGWPE monitoring server (section on the KISS TNC tab).
+    void setAgwpeEnabled(bool enabled, bool persist);
+    void refreshAgwpeStatus();
     void appendFrame(const Ax25DecodedFrame& frame);
     void updateDiagnostics(const Ax25DecoderDiagnostics& diagnostics);
     void updateHeartbeat();
@@ -252,6 +257,13 @@ private:
     int m_kissTxBusyRetries{0};
     quint64 m_kissTxCount{0};
     quint64 m_kissRxCount{0};
+
+    // AGWPE monitoring server (section on the KISS TNC tab).
+    AgwpeServer* m_agwpeServer{nullptr};
+    QCheckBox*   m_agwpeEnable{nullptr};
+    QSpinBox*    m_agwpePort{nullptr};
+    QLabel*      m_agwpeStatusDot{nullptr};
+    QLabel*      m_agwpeStatusValue{nullptr};
 
     // Shared station-heard log (feeds the terminal MHEARD + quick-connect).
     HeardList* m_heard{nullptr};

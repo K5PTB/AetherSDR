@@ -208,7 +208,21 @@ Used unconditionally for the VHF 1200 baud AX.25 receive path.
   Source:  https://github.com/wb2osz/direwolf
 
 
-16. QGeoView — Qt Map Widget (OSM/TMS slippy-map engine)
+16. Dire Wolf — AGWPE Server (protocol derivation)
+--------------------------------------------------
+Bundled at third_party/direwolf_agwpe/ as a monitoring-only implementation
+of the AGW Packet Engine (AGWPE) TCP protocol. Protocol frame layout, frame
+kinds, and port-capabilities payload structure derived from Dire Wolf 1.7.
+Referenced source file: src/server.c from Dire Wolf 1.7.
+Implements monitoring-only frame kinds R, G, g, k, K, m, X, x, P.
+Connected-mode frame kinds (C/D/d/Y/y) are not implemented.
+
+  Copyright (C) 2011-2020 John Langner WB2OSZ
+  License: GPL-2.0-or-later (compatible into AetherSDR's GPL-3.0-or-later)
+  Source:  https://github.com/wb2osz/direwolf
+
+
+17. QGeoView — Qt Map Widget (OSM/TMS slippy-map engine)
 --------------------------------------------------------
 Bundled at third_party/QGeoView/ (upstream tag 1.1.0) and compiled as a
 separately-linked static library. Provides the QGraphicsView-based OpenStreetMap
