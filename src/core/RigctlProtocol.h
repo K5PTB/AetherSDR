@@ -36,9 +36,9 @@ private:
     QString processCommand(const QString& cmd);
 
     // Individual command handlers
-    QString cmdGetFreq();
-    QString cmdSetFreq(const QString& arg);
-    QString cmdGetMode();
+    QString cmdGetFreq(const QString& vfo = {});
+    QString cmdSetFreq(const QString& args);
+    QString cmdGetMode(const QString& vfo = {});
     QString cmdSetMode(const QString& args);
     QString cmdGetVfo();
     QString cmdSetVfo(const QString& arg);
@@ -64,6 +64,8 @@ private:
     QString cmdSetAnt(const QString& arg);
     QString cmdGetTs();
     QString cmdSetTs(const QString& arg);
+    QString cmdGetCtcssTone();
+    QString cmdSetCtcssTone(const QString& arg);
     QString cmdGetDcd();
     QString cmdGetTrn();
     QString cmdSetTrn(const QString& arg);
@@ -78,6 +80,7 @@ private:
 
     // Helpers
     SliceModel* currentSlice() const;
+    SliceModel* sliceForVfo(const QString& vfo) const;
     SliceModel* findTxSlice();         // non-const: calls tryPromoteTxSlice()
     // If a split-enable arrived when only one slice existed, this promotes the
     // newly-created second slice to TX as soon as it appears in the model,

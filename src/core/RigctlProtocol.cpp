@@ -13,6 +13,12 @@ namespace AetherSDR {
 
 namespace {
 
+static bool isVfoName(const QString& s)
+{
+    const QString u = s.trimmed().toUpper();
+    return u == "VFOA" || u == "VFOB" || u == "MAIN" || u == "SUB" || u == "VFOMEM";
+}
+
 // Existing level bits (kept as-is for compatibility — bit 13 is MICGAIN in
 // standard Hamlib 4.x but has always been advertised as RFPOWER here; string
 // matching drives the protocol, not the mask).
@@ -24,6 +30,7 @@ constexpr quint64 kRigLevelRfPowerMeterWatts = (1ULL << 39);
 constexpr qint64  kTxMeterFreshMs            = 1500;
 
 // New level bits using correct Hamlib 4.x CONSTANT_64BIT_FLAG(n) = 1ULL << n
+constexpr quint64 kRigLevelAgc          = (1ULL << 6);  // AGC time constant
 constexpr quint64 kRigLevelVoxDelay     = (1ULL << 2);
 constexpr quint64 kRigLevelAf           = (1ULL << 3);
 constexpr quint64 kRigLevelRf           = (1ULL << 4);
@@ -43,6 +50,7 @@ constexpr quint64 kRigGetLevelMask = kRigLevelRfPower
                                    | kRigLevelSwr
                                    | kRigLevelRfPowerMeter
                                    | kRigLevelRfPowerMeterWatts
+                                   | kRigLevelAgc
                                    | kRigLevelVoxDelay
                                    | kRigLevelAf
                                    | kRigLevelRf
@@ -58,6 +66,7 @@ constexpr quint64 kRigGetLevelMask = kRigLevelRfPower
                                    | kRigLevelNbDepth;
 constexpr quint64 kRigSetLevelMask = kRigLevelRfPower
                                    | kRigLevelKeyspd
+                                   | kRigLevelAgc
                                    | kRigLevelVoxDelay
                                    | kRigLevelAf
                                    | kRigLevelRf
@@ -75,6 +84,8 @@ constexpr quint64 kRigSetLevelMask = kRigLevelRfPower
 constexpr quint32 kRigFuncNb    = (1 << 1);
 constexpr quint32 kRigFuncComp  = (1 << 2);
 constexpr quint32 kRigFuncVox   = (1 << 3);
+constexpr quint32 kRigFuncTone  = (1 << 4);  // CTCSS TX encode
+constexpr quint32 kRigFuncTsql  = (1 << 5);  // CTCSS RX squelch (read-only: always 0; Flex TX-only)
 constexpr quint32 kRigFuncFbKin = (1 << 7);
 constexpr quint32 kRigFuncAnf   = (1 << 8);
 constexpr quint32 kRigFuncNr    = (1 << 9);
@@ -83,11 +94,17 @@ constexpr quint32 kRigFuncLock  = (1 << 15);
 constexpr quint32 kRigFuncMute  = (1 << 16);
 constexpr quint32 kRigFuncSql   = (1 << 19);
 
+// TSQL is advertised for get (returns 0 = off) but NOT for set (Flex has no RX CTCSS squelch).
 constexpr quint32 kRigGetFuncMask = kRigFuncNb | kRigFuncComp | kRigFuncVox
+                                  | kRigFuncTone | kRigFuncTsql
                                   | kRigFuncFbKin | kRigFuncAnf | kRigFuncNr
                                   | kRigFuncApf | kRigFuncLock | kRigFuncMute
                                   | kRigFuncSql;
-constexpr quint32 kRigSetFuncMask = kRigGetFuncMask;
+constexpr quint32 kRigSetFuncMask = kRigFuncNb | kRigFuncComp | kRigFuncVox
+                                  | kRigFuncTone
+                                  | kRigFuncFbKin | kRigFuncAnf | kRigFuncNr
+                                  | kRigFuncApf | kRigFuncLock | kRigFuncMute
+                                  | kRigFuncSql;
 
 // S9 reference level on HF (dBm). STRENGTH = sLevel - kS9Dbm.
 constexpr double kS9Dbm = -73.0;
@@ -103,6 +120,7 @@ QStringList rigGetLevelTokens()
         QStringLiteral("RFPOWER"),     QStringLiteral("KEYSPD"),
         QStringLiteral("SWR"),         QStringLiteral("RFPOWER_METER"),
         QStringLiteral("RFPOWER_METER_WATTS"),
+        QStringLiteral("AGC"),
         QStringLiteral("AF"),          QStringLiteral("RF"),
         QStringLiteral("SQL"),         QStringLiteral("APF"),
         QStringLiteral("NR"),          QStringLiteral("NB"),
@@ -117,6 +135,7 @@ QStringList rigSetLevelTokens()
 {
     return {
         QStringLiteral("RFPOWER"),  QStringLiteral("KEYSPD"),
+        QStringLiteral("AGC"),
         QStringLiteral("AF"),       QStringLiteral("RF"),
         QStringLiteral("SQL"),      QStringLiteral("APF"),
         QStringLiteral("NR"),       QStringLiteral("NB"),
@@ -130,9 +149,22 @@ QStringList rigSetLevelTokens()
 QStringList rigGetFuncTokens()
 {
     return {
-        QStringLiteral("NB"),   QStringLiteral("COMP"), QStringLiteral("VOX"),
-        QStringLiteral("FBKIN"),QStringLiteral("ANF"),  QStringLiteral("NR"),
-        QStringLiteral("APF"),  QStringLiteral("LOCK"), QStringLiteral("MUTE"),
+        QStringLiteral("NB"),   QStringLiteral("COMP"),  QStringLiteral("VOX"),
+        QStringLiteral("TONE"), QStringLiteral("TSQL"),
+        QStringLiteral("FBKIN"),QStringLiteral("ANF"),   QStringLiteral("NR"),
+        QStringLiteral("APF"),  QStringLiteral("LOCK"),  QStringLiteral("MUTE"),
+        QStringLiteral("SQL"),
+    };
+}
+
+// Excludes TSQL — Flex has no RX CTCSS squelch; set_func TSQL returns -8.
+QStringList rigSetFuncTokens()
+{
+    return {
+        QStringLiteral("NB"),   QStringLiteral("COMP"),  QStringLiteral("VOX"),
+        QStringLiteral("TONE"),
+        QStringLiteral("FBKIN"),QStringLiteral("ANF"),   QStringLiteral("NR"),
+        QStringLiteral("APF"),  QStringLiteral("LOCK"),  QStringLiteral("MUTE"),
         QStringLiteral("SQL"),
     };
 }
@@ -222,6 +254,21 @@ int RigctlProtocol::hamlibModeFlag(const QString& mode)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+SliceModel* RigctlProtocol::sliceForVfo(const QString& vfo) const
+{
+    const QString v = vfo.trimmed().toUpper();
+    if (v == "VFOB" || v == "SUB") {
+        // Return nullptr if no split/TX slice — callers map nullptr → RIG_ENAVAIL (-8).
+        // Do NOT fall back to VFOA: silently redirecting a VFOB operation to VFOA
+        // would give the client wrong data or tune the wrong slice.
+        auto* tx = const_cast<RigctlProtocol*>(this)->findTxSlice();
+        // findTxSlice returns currentSlice() when no split exists; distinguish that.
+        auto* rx = currentSlice();
+        return (tx && tx != rx) ? tx : nullptr;
+    }
+    return currentSlice(); // VFOA, MAIN, unrecognised → current RX slice
+}
 
 SliceModel* RigctlProtocol::currentSlice() const
 {
@@ -318,9 +365,9 @@ QString RigctlProtocol::processCommand(const QString& cmd)
         QString name = (spaceIdx >= 0) ? rest.left(spaceIdx) : rest;
         QString args = (spaceIdx >= 0) ? rest.mid(spaceIdx + 1).trimmed() : QString();
 
-        if (name == "get_freq")       return cmdGetFreq();
+        if (name == "get_freq")       return cmdGetFreq(args);
         if (name == "set_freq")       return cmdSetFreq(args);
-        if (name == "get_mode")       return cmdGetMode();
+        if (name == "get_mode")       return cmdGetMode(args);
         if (name == "set_mode")       return cmdSetMode(args);
         if (name == "get_vfo")        return cmdGetVfo();
         if (name == "set_vfo")        return cmdSetVfo(args);
@@ -354,11 +401,11 @@ QString RigctlProtocol::processCommand(const QString& cmd)
         if (name == "power2mW")       return cmdPower2mW(args);
         if (name == "mW2power")       return cmdMW2power(args);
         if (name == "dump_state")     return cmdDumpState();
-        if (name == "quit")           return {};  // caller handles disconnect
+        if (name == "quit")           return rprt(0);  // ack so Hamlib closes cleanly; socket closes on disconnected signal
         if (name == "chk_vfo") {
             if (m_extended)
-                return QStringLiteral("chk_vfo:\nVFO Mode: 0\n") + rprt(0);
-            return QStringLiteral("0\n") + rprt(0);
+                return QStringLiteral("chk_vfo:\nVFO Mode: 1\n") + rprt(0);
+            return QStringLiteral("1\n");
         }
         if (name == "send_morse")     return cmdSendMorse(args);
         if (name == "stop_morse")     return cmdStopMorse();
@@ -367,7 +414,7 @@ QString RigctlProtocol::processCommand(const QString& cmd)
             // Always report power on — AetherSDR is connected by definition.
             if (m_extended)
                 return QStringLiteral("get_powerstat:\nPower Status: 1\n") + rprt(0);
-            return QStringLiteral("1\n") + rprt(0);
+            return QStringLiteral("1\n");
         }
         if (name == "set_powerstat") {
             // "1" = power on: radio is already on, accept as no-op.
@@ -381,11 +428,7 @@ QString RigctlProtocol::processCommand(const QString& cmd)
             // suppress their own mode-set commands.
             if (m_extended)
                 return QStringLiteral("get_lock_mode:\nLock Mode: 0\n") + rprt(0);
-            // Hamlib's NET rigctl backend probes this long-form command during
-            // WSJT-X startup and waits for a status terminator after the value.
-            // Without it, the client blocks until its command timeout, delaying
-            // the queued QSY after a USB->DIGU mode change.
-            return QStringLiteral("0\n") + rprt(0);
+            return QStringLiteral("0\n");
         }
         if (name == "set_lock_mode") {
             // "0" = unlock: already unlocked, accept as no-op.
@@ -395,12 +438,12 @@ QString RigctlProtocol::processCommand(const QString& cmd)
         }
 
         // Hamlib NET rigctl handshake commands (sent by the Hamlib library itself)
-        if (name == "set_vfo_opt")     return rprt(0);   // VFO-prefix mode; we use chk_vfo=0 so this is a no-op
-        if (name == "halt")            return {};         // clean shutdown, same as quit
+        if (name == "set_vfo_opt")     return rprt(0);   // VFO-prefix mode always active; accept as no-op
+        if (name == "halt")            return rprt(0);    // clean shutdown, same as quit
         if (name == "hamlib_version")  {
             if (m_extended)
                 return QStringLiteral("hamlib_version:\nHamlib Version: AetherSDR\n") + rprt(0);
-            return QStringLiteral("AetherSDR\n") + rprt(0);
+            return QStringLiteral("AetherSDR\n");
         }
         if (name == "client_version")  return rprt(0);   // silently accept client's version announcement
 
@@ -414,7 +457,7 @@ QString RigctlProtocol::processCommand(const QString& cmd)
             if (m_extended)
                 return QStringLiteral("get_split_freq_mode:\nTX Frequency: %1\nTX Mode: %2\nTX Passband: %3\n")
                            .arg(hz).arg(mode).arg(passband) + rprt(0);
-            return QStringLiteral("%1\n%2\n%3\n").arg(hz).arg(mode).arg(passband) + rprt(0);
+            return QStringLiteral("%1\n%2\n%3\n").arg(hz).arg(mode).arg(passband);
         }
         if (name == "set_split_freq_mode") {
             // Args: "<freq> <mode> <passband>" — delegate to existing handlers
@@ -427,39 +470,48 @@ QString RigctlProtocol::processCommand(const QString& cmd)
 
         // VFO / mode discovery
         if (name == "get_vfo_list") {
+            // Report VFOB only when a distinct TX slice exists (split active).
+            auto* tx = findTxSlice();
+            const bool hasSplit = (tx && tx != currentSlice());
+            const QString vfoList = hasSplit ? QStringLiteral("VFOA VFOB")
+                                             : QStringLiteral("VFOA");
             if (m_extended)
-                return QStringLiteral("get_vfo_list:\nVFO List: VFOA VFOB\n") + rprt(0);
-            return QStringLiteral("VFOA VFOB\n") + rprt(0);
+                return QStringLiteral("get_vfo_list:\nVFO List: %1\n").arg(vfoList) + rprt(0);
+            return vfoList + '\n';
         }
         if (name == "get_modes") {
             static const QString kModes =
                 QStringLiteral("USB LSB CW CWR AM AMS FM PKTUSB PKTLSB RTTY");
             if (m_extended)
                 return QStringLiteral("get_modes:\nModes: %1\n").arg(kModes) + rprt(0);
-            return kModes + "\n" + rprt(0);
+            return kModes + "\n";
         }
 
-        // FM / repeater stubs (not applicable to HF SDR, but prevent -4 noise)
+        // FM / repeater commands
         if (name == "get_rptr_shift") {
             if (m_extended) return QStringLiteral("get_rptr_shift:\nRptr Shift: +\n") + rprt(0);
-            return QStringLiteral("+\n") + rprt(0);
+            return QStringLiteral("+\n");
         }
         if (name == "set_rptr_shift") return rprt(0);
         if (name == "get_rptr_offs") {
             if (m_extended) return QStringLiteral("get_rptr_offs:\nRptr Offset: 0\n") + rprt(0);
-            return QStringLiteral("0\n") + rprt(0);
+            return QStringLiteral("0\n");
         }
         if (name == "set_rptr_offs")  return rprt(0);
-        if (name == "get_ctcss_tone") {
-            if (m_extended) return QStringLiteral("get_ctcss_tone:\nCTCSS Tone: 0\n") + rprt(0);
-            return QStringLiteral("0\n") + rprt(0);
+        // CTCSS TX encode — Flex supports fm_tone_mode/fm_tone_value per slice.
+        if (name == "get_ctcss_tone") return cmdGetCtcssTone();
+        if (name == "set_ctcss_tone") return cmdSetCtcssTone(args);
+        // CTCSS RX squelch — Flex TX-only; get returns 0 (inactive), set rejected.
+        if (name == "get_ctcss_sql") {
+            if (m_extended) return QStringLiteral("get_ctcss_sql:\nCTCSS Sql: 0\n") + rprt(0);
+            return QStringLiteral("0\n");
         }
-        if (name == "set_ctcss_tone") return rprt(0);
-        if (name == "get_dcs_code") {
-            if (m_extended) return QStringLiteral("get_dcs_code:\nDCS Code: 0\n") + rprt(0);
-            return QStringLiteral("0\n") + rprt(0);
-        }
-        if (name == "set_dcs_code")   return rprt(0);
+        if (name == "set_ctcss_sql")  return rprt(-8);  // RIG_ENAVAIL: no RX CTCSS on Flex
+        // DCS: not supported on Flex at all — reject every DCS command
+        if (name == "get_dcs_code")   return rprt(-8);
+        if (name == "set_dcs_code")   return rprt(-8);
+        if (name == "get_dcs_sql")    return rprt(-8);
+        if (name == "set_dcs_sql")    return rprt(-8);
 
         // Misc stubs
         if (name == "scan")           return rprt(-11);  // RIG_ENAVAIL
@@ -498,9 +550,9 @@ QString RigctlProtocol::processCommand(const QString& cmd)
     // Short-form character assignments from Hamlib tests/rigctl_parse.c (master).
     switch (shortCmd.toLatin1()) {
     // Frequency / mode
-    case 'f': return cmdGetFreq();
+    case 'f': return cmdGetFreq(args);
     case 'F': return cmdSetFreq(args);
-    case 'm': return cmdGetMode();
+    case 'm': return cmdGetMode(args);
     case 'M': return cmdSetMode(args);
     // VFO
     case 'v': return cmdGetVfo();
@@ -546,15 +598,15 @@ QString RigctlProtocol::processCommand(const QString& cmd)
     // Transceive
     case 'a': return cmdGetTrn();          // get_trn
     case 'A': return cmdSetTrn(args);      // set_trn
-    // Repeater / CTCSS / DCS stubs (FM features, not used for HF SDR)
-    case 'r': return QStringLiteral("+\n");      // get_rptr_shift
-    case 'R': return rprt(0);             // set_rptr_shift
-    case 'o': return QStringLiteral("0\n");      // get_rptr_offs
-    case 'O': return rprt(0);             // set_rptr_offs
-    case 'c': return QStringLiteral("0\n");      // get_ctcss_tone
-    case 'C': return rprt(0);             // set_ctcss_tone
-    case 'd': return QStringLiteral("0\n");      // get_dcs_code
-    case 'D': return rprt(0);             // set_dcs_code
+    // Repeater / CTCSS / DCS (FM features)
+    case 'r': return QStringLiteral("+\n");        // get_rptr_shift
+    case 'R': return rprt(0);                      // set_rptr_shift
+    case 'o': return QStringLiteral("0\n");        // get_rptr_offs
+    case 'O': return rprt(0);                      // set_rptr_offs
+    case 'c': return cmdGetCtcssTone();            // get_ctcss_tone (CTCSS TX)
+    case 'C': return cmdSetCtcssTone(args);        // set_ctcss_tone (CTCSS TX)
+    case 'd': return rprt(-8);                      // get_dcs_code — DCS not on Flex
+    case 'D': return rprt(-8);                      // set_dcs_code — DCS not on Flex
     // RIT / XIT
     case 'j': return cmdGetRit();
     case 'J': return cmdSetRit(args);
@@ -584,16 +636,17 @@ QString RigctlProtocol::processCommand(const QString& cmd)
     case '4': return cmdMW2power(args);
     // Morse
     case 'b': return cmdSendMorse(args);
-    case 'q': return {};                   // quit
+    case 'q': return rprt(0);              // quit — ack so Hamlib closes cleanly
+    case 'Q': return rprt(0);             // quit (uppercase alias)
     default:  return rprt(-4);
     }
 }
 
 // ── Individual command implementations ──────────────────────────────────────
 
-QString RigctlProtocol::cmdGetFreq()
+QString RigctlProtocol::cmdGetFreq(const QString& vfo)
 {
-    auto* slice = currentSlice();
+    auto* slice = vfo.trimmed().isEmpty() ? currentSlice() : sliceForVfo(vfo);
     if (!slice) return rprt(-8);  // RIG_ENAVAIL
 
     auto hz = static_cast<long long>(slice->frequency() * 1e6);
@@ -604,12 +657,19 @@ QString RigctlProtocol::cmdGetFreq()
 
 QString RigctlProtocol::cmdSetFreq(const QString& arg)
 {
-    auto* slice = currentSlice();
+    QStringList parts = arg.split(' ', Qt::SkipEmptyParts);
+    SliceModel* slice = nullptr;
+    if (!parts.isEmpty() && isVfoName(parts[0])) {
+        slice = sliceForVfo(parts[0]);
+        parts.removeFirst();
+    } else {
+        slice = currentSlice();
+    }
     if (!slice) return rprt(-8);
 
     bool ok;
-    double hz = arg.toDouble(&ok);
-    if (!ok || hz < 0) return rprt(-1);  // RIG_EINVAL
+    double hz = parts.isEmpty() ? 0.0 : parts[0].toDouble(&ok);
+    if (parts.isEmpty() || !ok || hz < 0) return rprt(-1);  // RIG_EINVAL
 
     double mhz = hz / 1e6;
     RadioModel* model = m_model;
@@ -631,9 +691,9 @@ QString RigctlProtocol::cmdSetFreq(const QString& arg)
     return rprt(0);
 }
 
-QString RigctlProtocol::cmdGetMode()
+QString RigctlProtocol::cmdGetMode(const QString& vfo)
 {
-    auto* slice = currentSlice();
+    auto* slice = vfo.trimmed().isEmpty() ? currentSlice() : sliceForVfo(vfo);
     if (!slice) return rprt(-8);
 
     QString hamlibMode = smartsdrToHamlib(slice->mode());
@@ -649,10 +709,15 @@ QString RigctlProtocol::cmdGetMode()
 
 QString RigctlProtocol::cmdSetMode(const QString& args)
 {
-    auto* slice = currentSlice();
-    if (!slice) return rprt(-8);
-
     QStringList parts = args.split(' ', Qt::SkipEmptyParts);
+    SliceModel* slice = nullptr;
+    if (!parts.isEmpty() && isVfoName(parts[0])) {
+        slice = sliceForVfo(parts[0]);
+        parts.removeFirst();
+    } else {
+        slice = currentSlice();
+    }
+    if (!slice) return rprt(-8);
     if (parts.isEmpty()) return rprt(-1);
 
     QString hamlibMode = parts[0].toUpper();
@@ -746,7 +811,11 @@ QString RigctlProtocol::cmdSetPtt(const QString& arg)
 {
     if (!m_model) return rprt(-8);
     bool ok;
-    int ptt = arg.trimmed().toInt(&ok);
+    // Strip optional VFO prefix sent when chk_vfo=1 (e.g. "VFOA 0" → "0")
+    QString pttArg = arg.trimmed();
+    if (pttArg.startsWith(QLatin1String("VFO"), Qt::CaseInsensitive))
+        pttArg = pttArg.section(QLatin1Char(' '), 1).trimmed();
+    int ptt = pttArg.toInt(&ok);
     if (!ok) return rprt(-1);
 
     bool tx = (ptt != 0);
@@ -977,7 +1046,10 @@ QString RigctlProtocol::cmdGetLevel(const QString& arg)
 {
     if (!m_model) return rprt(-8);
 
-    const QString level = arg.trimmed().toUpper();
+    QStringList parts = arg.split(' ', Qt::SkipEmptyParts);
+    if (!parts.isEmpty() && isVfoName(parts[0]))
+        parts.removeFirst();
+    const QString level = parts.isEmpty() ? QString{} : parts.join(' ').trimmed().toUpper();
     if (level.isEmpty())
         return rprt(-1);
 
@@ -1000,6 +1072,19 @@ QString RigctlProtocol::cmdGetLevel(const QString& arg)
     const bool txMetersActive = txModel.isTransmitting() || txModel.isMox() || txModel.isTuning();
     const bool txMetersFresh = txMetersActive
         && m_model->meterModel().hasRecentTxMeters(kTxMeterFreshMs);
+
+    if (level == "AGC") {
+        // Map Flex agcMode string to Hamlib RIG_AGC_* enum:
+        // off=0, superfast=1, fast=2, slow=3, user=4, medium=5, auto=6
+        auto* s = currentSlice();
+        if (!s) return rprt(-8);
+        const QString mode = s->agcMode();
+        int agcVal = (mode == "fast") ? 2
+                   : (mode == "slow") ? 3
+                   : (mode == "med")  ? 5
+                   :                    0;  // "off" or unknown → 0
+        return makeResponse(QString::number(agcVal));
+    }
 
     if (level == "KEYSPD")
         return makeResponse(QString::number(txModel.cwSpeed()));
@@ -1102,6 +1187,8 @@ QString RigctlProtocol::cmdGetLevel(const QString& arg)
 QString RigctlProtocol::cmdSetLevel(const QString& args)
 {
     QStringList parts = args.split(' ', Qt::SkipEmptyParts);
+    if (!parts.isEmpty() && isVfoName(parts[0]))
+        parts.removeFirst();
     if (parts.isEmpty())
         return rprt(-1);
 
@@ -1112,6 +1199,25 @@ QString RigctlProtocol::cmdSetLevel(const QString& args)
             return QStringLiteral("set_level:\nLevels: %1\n").arg(supported) + rprt(0);
         return supported + "\n";
     }
+    if (level == "AGC") {
+        if (parts.size() < 2) return rprt(-1);
+        bool ok = false;
+        const int agcVal = parts[1].toInt(&ok);
+        if (!ok) return rprt(-1);
+        // Map Hamlib RIG_AGC_* to Flex agcMode:
+        // 0=off, 1-2=fast, 3=slow, 4-6=med
+        const QString mode = (agcVal == 0)          ? QStringLiteral("off")
+                           : (agcVal <= 2)           ? QStringLiteral("fast")
+                           : (agcVal == 3)           ? QStringLiteral("slow")
+                           :                           QStringLiteral("med");
+        auto* s = currentSlice();
+        if (!s) return rprt(-8);
+        QMetaObject::invokeMethod(s, [s, mode]() {
+            s->setAgcMode(mode);
+        }, Qt::QueuedConnection);
+        return rprt(0);
+    }
+
     if (level == "KEYSPD")
         return cmdSetKeySpeed(parts.mid(1).join(' '));
 
@@ -1293,8 +1399,8 @@ QString RigctlProtocol::cmdDumpState()
     dump += "0x0\n";
     // Protocol v1 additional fields (required by netrigctl_open)
     dump += QStringLiteral("0x%1\n").arg(kRigVfoOpMask, 0, 16);  // vfo_ops (UP, DOWN)
-    dump += "0\n";                       // ptt_type (RIG_PTT_NONE)
-    dump += "0\n";                       // targetable_vfo
+    dump += "1\n";                       // ptt_type (RIG_PTT_RIG — CAT PTT supported via T command)
+    dump += "0x3\n";                     // targetable_vfo: FREQ(0x1)|MODE(0x2) — VFO-prefixed commands supported
     dump += "1\n";                       // has_set_vfo
     dump += "1\n";                       // has_get_vfo
     dump += "1\n";                       // has_set_freq
@@ -1443,6 +1549,10 @@ QString RigctlProtocol::cmdGetFunc(const QString& arg)
     if (func == "VOX")   return makeFuncResp(txModel.voxEnable() ? 1 : 0);
     if (func == "COMP")  return makeFuncResp(txModel.speechProcessorEnable() ? 1 : 0);
     if (func == "FBKIN") return makeFuncResp(txModel.cwBreakIn() ? 1 : 0);
+    // CTCSS TX encode: Flex supports fm_tone_mode per slice.
+    if (func == "TONE")  return makeFuncResp(slice->fmToneMode() == "ctcss_tx" ? 1 : 0);
+    // CTCSS RX squelch: Flex TX-only — always report inactive.
+    if (func == "TSQL")  return makeFuncResp(0);
 
     return rprt(-11);  // RIG_ENAVAIL
 }
@@ -1455,7 +1565,7 @@ QString RigctlProtocol::cmdSetFunc(const QString& args)
     const QString func = parts[0].toUpper();
 
     if (func == "?") {
-        const QString list = rigGetFuncTokens().join(' ');
+        const QString list = rigSetFuncTokens().join(' ');
         if (m_extended)
             return QStringLiteral("set_func:\nFuncs: %1\n").arg(list) + rprt(0);
         return list + "\n";
@@ -1518,6 +1628,15 @@ QString RigctlProtocol::cmdSetFunc(const QString& args)
         }, Qt::QueuedConnection);
         return rprt(0);
     }
+    if (func == "TONE") {
+        const QString mode = on ? QStringLiteral("ctcss_tx") : QStringLiteral("off");
+        QMetaObject::invokeMethod(slice, [slice, mode]() {
+            slice->setFmToneMode(mode);
+        }, Qt::QueuedConnection);
+        return rprt(0);
+    }
+    // TSQL: Flex has no RX CTCSS squelch — reject rather than silently lie.
+    if (func == "TSQL")  return rprt(-8);  // RIG_ENAVAIL
 
     return rprt(-11);  // RIG_ENAVAIL
 }
@@ -1589,6 +1708,34 @@ QString RigctlProtocol::cmdSetTs(const QString& arg)
     const QString cmd = QStringLiteral("slice set %1 step=%2").arg(id).arg(hz);
     QMetaObject::invokeMethod(m_model, [model = m_model, cmd]() {
         model->sendCmdPublic(cmd, nullptr);
+    }, Qt::QueuedConnection);
+    return rprt(0);
+}
+
+// ── CTCSS TX tone ────────────────────────────────────────────────────────────
+
+QString RigctlProtocol::cmdGetCtcssTone()
+{
+    auto* slice = currentSlice();
+    if (!slice) return rprt(-8);
+    // Flex stores tone as float Hz ("100.0"); Hamlib uses tenths-of-Hz integers (1000).
+    const int tenths = qRound(slice->fmToneValue().toFloat() * 10.0f);
+    if (m_extended)
+        return QStringLiteral("get_ctcss_tone:\nCTCSS Tone: %1\n").arg(tenths) + rprt(0);
+    return QStringLiteral("%1\n").arg(tenths);
+}
+
+QString RigctlProtocol::cmdSetCtcssTone(const QString& arg)
+{
+    auto* slice = currentSlice();
+    if (!slice) return rprt(-8);
+    bool ok;
+    const int tenths = arg.trimmed().toInt(&ok);
+    if (!ok || tenths < 0) return rprt(-1);
+    // Convert tenths-of-Hz → float Hz string ("100.0")
+    const QString flexVal = QString::number(tenths / 10.0, 'f', 1);
+    QMetaObject::invokeMethod(slice, [slice, flexVal]() {
+        slice->setFmToneValue(flexVal);
     }, Qt::QueuedConnection);
     return rprt(0);
 }
@@ -1694,14 +1841,7 @@ QString RigctlProtocol::cmdGetVfoInfo(const QString& arg)
     // connect to build its initial rig state snapshot.
     const QString vfo = arg.trimmed().toUpper();
 
-    // Resolve which slice the requested VFO label refers to.
-    SliceModel* slice = nullptr;
-    if (vfo == "VFOB" || vfo == "SUB") {
-        slice = findTxSlice();
-        if (!slice) slice = currentSlice();  // no split: VFOB == VFOA
-    } else {
-        slice = currentSlice();  // VFOA, MAIN, or unrecognised → current
-    }
+    SliceModel* slice = sliceForVfo(vfo);
     if (!slice) return rprt(-8);
 
     const long long hz      = static_cast<long long>(std::round(slice->frequency() * 1e6));
