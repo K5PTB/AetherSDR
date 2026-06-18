@@ -4623,7 +4623,11 @@ void MainWindow::applyCatPortCount()
         const QString prefix = QString("CatPort_%1_").arg(i);
         const bool portEnabled = s.value(prefix + "Enabled", "False").toString() == "True";
         const int  portNum     = s.value(prefix + "Port", "").toInt();
-        const bool shouldRun   = masterOn && portEnabled && (portNum >= 1024) && (i < target);
+        // The number of CAT ports is independent of the radio's slice count:
+        // multiple CAT clients may share a slice, and a port mapped to an absent
+        // slice degrades safely ("Slice Not Present"). The slice count only bounds
+        // the VFO-letter choices (setMaxSlices below), not how many ports run.
+        const bool shouldRun   = masterOn && portEnabled && (portNum >= 1024);
 
         if (shouldRun && !catPort(i)->isRunning()) {
             // Re-apply config in case dialect/VFO was changed while stopped
