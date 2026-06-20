@@ -928,6 +928,44 @@ void section5(RigctlClient& c, Runner& r, qint64 origFreq)
     r.check(QStringLiteral("5.9b get_split_vfo confirms Split: 0 after disable"),
             c.ok(lines) && splitOff == QLatin1String("0"), splitOff);
 
+    // 5.9c  Teardown / orphan regression. After disabling split, the TX slice we
+    //       created for split must be removed and TX reclaimed onto the RX slice —
+    //       so get_split_freq_mode still SUCCEEDS (RPRT 0, not -1) and now reports
+    //       the RX frequency (TX == RX). Guards two bugs the split-VFO work fixed
+    //       on top of the rigctld rework, neither of which #3619 covered:
+    //         (a) get_split_freq_mode → -1 because the reclaim was skipped on a
+    //             stale isTxSlice() cache and the only TX slice was then removed;
+    //         (b) the created split slice left orphaned on the radio at disable.
+    //       (The physical orphan is not CAT-observable; this asserts the visible
+    //        contract that proves the reclaim+removal ran in the right order.)
+    {
+        const qint64 rxFreq =
+            c.field(c.send(QStringLiteral("\\get_freq")), QStringLiteral("Frequency")).toLongLong();
+        // Poll until the reclaim settles: setTxSlice(true) onto the RX slice and the
+        // created slice's removal are queued (async), so an immediate read can race
+        // them and briefly see the old TX slice (or -1). Mirrors 5.3 / 5.9b polling.
+        QString tfFreq, tfMode;
+        bool okResp = false;
+        {
+            QElapsedTimer t; t.start();
+            do {
+                lines  = c.send(QStringLiteral("\\get_split_freq_mode"));
+                okResp = c.ok(lines);
+                tfFreq = c.field(lines, QStringLiteral("TX Frequency"));
+                tfMode = c.field(lines, QStringLiteral("TX Mode"));
+                if ((okResp && isInt(tfFreq) && rxFreq > 0
+                     && qAbs(tfFreq.toLongLong() - rxFreq) < 10) || t.elapsed() >= 2000)
+                    break;
+                QThread::msleep(100);
+            } while (true);
+        }
+        r.check(QStringLiteral("5.9c get_split_freq_mode succeeds after disable "
+                               "(TX reclaimed to RX, never RPRT -1)"),
+                okResp && isInt(tfFreq) && kKnownModes.contains(tfMode)
+                    && rxFreq > 0 && qAbs(tfFreq.toLongLong() - rxFreq) < 10,
+                QStringLiteral("RX=%1 TX=%2 mode=%3").arg(rxFreq).arg(tfFreq, tfMode));
+    }
+
     // 5.10 / 5.10b  deferred stash path: enable split then immediately set freq + mode.
     //               Single-slice: stashed in m_pendingSplitFreqMHz / m_pendingSplitMode,
     //               applied by tryPromoteTxSlice() when the new slice appears.
