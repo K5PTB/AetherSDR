@@ -214,29 +214,25 @@ QString antMaskToName(int mask, const QStringList& available)
 
 RigctlProtocol::RigctlProtocol(RadioModel* model)
     : m_model(model)
+    , m_split(model)
 {}
 
 RigctlProtocol::~RigctlProtocol()
 {
     // On client disconnect (CatPort deletes the protocol), close a split TX slice
-    // we created so it isn't left hanging on the radio. Hand TX back to this
-    // channel's RX slice first. Only slices WE created are removed — pre-existing
-    // / operator / GUI slices are left untouched.
+    // we created so it isn't left hanging on the radio. Only slices WE created are
+    // removed (m_split) — pre-existing / operator / GUI slices are left untouched.
     //
-    // Backstop for the enable→disable race: a slice we created may have been
-    // disabled before it materialized. If it has since appeared, close it now so
-    // the disconnect doesn't leave it orphaned.
-    if (m_removeCreatedSliceWhenItAppears && m_model)
-        tryPromoteTxSlice();
-    if (m_createdTxSliceId < 0 || !m_model) return;
-    auto* model    = m_model;
-    const int txId = m_createdTxSliceId;
-    const int rxId = m_sliceIndex;
-    QMetaObject::invokeMethod(model, [model, txId, rxId] {
-        for (auto* s : model->slices())
-            if (s->sliceId() == rxId) { s->setTxSlice(true); break; }
-        model->sendCommand(QString("slice remove %1").arg(txId));
-    }, Qt::QueuedConnection);
+    // Reclaim TX onto this channel's RX slice FIRST: m_split is a member, so its
+    // destructor (which removes the created slice) runs after this body — giving
+    // reclaim-then-remove order. Direct, not queued: this runs on the model's
+    // thread, and a queued post would be dropped if the event loop is already
+    // stopping at app shutdown (orphan-on-quit). m_split also handles the
+    // disable-before-materialize race even if a create is still in flight here.
+    if (m_model && m_split.owns()) {
+        if (auto* rx = m_model->slice(m_sliceIndex))
+            rx->setTxSlice(true);
+    }
 }
 
 // ── Mode conversion tables ──────────────────────────────────────────────────
@@ -949,60 +945,46 @@ SliceModel* RigctlProtocol::findTxSlice(bool promote)
     return nullptr;
 }
 
-// If set_split_vfo 1 arrived when only one slice existed, addSlice() was called
-// and this flag was set.  On the next split-related call we scan for the newly
-// created slice and promote it to TX so subsequent set_split_freq succeeds.
+// True while a slice we created via m_split is not yet usable: id not known
+// (create ack pending), or known but the SliceModel has not materialized.
+bool RigctlProtocol::createdSliceNotReady() const
+{
+    if (m_split.pending()) return true;
+    if (m_split.owns() && m_model && !m_model->slice(m_split.sliceId())) return true;
+    return false;
+}
+
+// m_split learns the created slice's id from the radio create ack. Once that
+// slice's SliceModel materializes, promote it to TX (by id — no snapshot/diff)
+// and apply any split freq/mode stashed while we waited. Idempotent: a no-op
+// once promoted, or while the slice is still pending/unmaterialized.
 void RigctlProtocol::tryPromoteTxSlice()
 {
-    if (!m_pendingSplitEnable || !m_model) return;
+    if (!m_split.owns() || !m_model) return;          // nothing created to promote
+    auto* s = m_model->slice(m_split.sliceId());
+    if (!s) return;                                   // id known, slice not visible yet
+    if (m_pendingTxSlice == s) return;                // already promoted this slice
     auto* rxSlice = currentSlice();
-    for (auto* s : m_model->slices()) {
-        if (s == rxSlice) continue;
-        // Skip slices present when addSlice() was issued — by pointer, since the
-        // radio reuses freed ids: on a rapid disable→enable the new slice can take
-        // a just-removed id and an id snapshot would skip it as "pre-existing".
-        if (m_preSplitSlices.contains(s)) continue;
-        m_pendingSplitEnable = false;
-        m_preSplitSlices.clear();
-        // Split was disabled before this slice materialized (enable→disable race):
-        // don't adopt it as TX — close it so it isn't left orphaned.
-        if (m_removeCreatedSliceWhenItAppears) {
-            m_removeCreatedSliceWhenItAppears = false;
-            auto* model = m_model;
-            const int id = s->sliceId();
-            m_pendingRemovalId = id;   // skip it on re-enable until it's gone
-            QMetaObject::invokeMethod(model, [model, id] {
-                model->sendCommand(QString("slice remove %1").arg(id));
-            }, Qt::QueuedConnection);
-            return;
-        }
-        m_pendingTxSlice = s;
-        // This branch only runs after the addSlice() path, so this slice is one we
-        // created — track it for split-disable / disconnect cleanup.
-        m_createdTxSliceId = s->sliceId();
-        if (!s->isTxSlice())
-            QMetaObject::invokeMethod(s, [s]{ s->setTxSlice(true); },
-                                      Qt::QueuedConnection);
-        // Apply freq/mode stashed while we waited for this slice to appear.
-        // Queued, not direct: this runs on the CAT socket thread while the
-        // SliceModel lives on the GUI thread, so a direct setFrequency/setMode
-        // would be an unsynchronised cross-thread write. Mirrors the queued
-        // setTxSlice above and every other model mutation in this class.
-        if (m_pendingSplitFreqMHz > 0.0) {
-            const double mhz = m_pendingSplitFreqMHz;
-            QMetaObject::invokeMethod(s, [s, mhz]{ s->setFrequency(mhz); },
-                                      Qt::QueuedConnection);
-            m_pendingSplitFreqMHz = 0.0;
-        }
-        if (!m_pendingSplitMode.isEmpty()) {
-            const QString mode = m_pendingSplitMode;
-            QMetaObject::invokeMethod(s, [s, mode]{ s->setMode(mode); },
-                                      Qt::QueuedConnection);
-            m_pendingSplitMode.clear();
-        }
-        return;
+    if (s == rxSlice) return;                         // defensive: never our RX slice
+
+    m_pendingTxSlice = s;
+    if (!s->isTxSlice())
+        QMetaObject::invokeMethod(s, [s]{ s->setTxSlice(true); },
+                                  Qt::QueuedConnection);
+    // Apply freq/mode stashed while we waited for this slice to appear.
+    // Queued, not direct: mirrors every other model mutation in this class.
+    if (m_pendingSplitFreqMHz > 0.0) {
+        const double mhz = m_pendingSplitFreqMHz;
+        QMetaObject::invokeMethod(s, [s, mhz]{ s->setFrequency(mhz); },
+                                  Qt::QueuedConnection);
+        m_pendingSplitFreqMHz = 0.0;
     }
-    // New slice not yet visible — will retry on the next call.
+    if (!m_pendingSplitMode.isEmpty()) {
+        const QString mode = m_pendingSplitMode;
+        QMetaObject::invokeMethod(s, [s, mode]{ s->setMode(mode); },
+                                  Qt::QueuedConnection);
+        m_pendingSplitMode.clear();
+    }
 }
 
 QString RigctlProtocol::cmdGetSplitVfo()
@@ -1029,14 +1011,9 @@ QString RigctlProtocol::cmdSetSplitVfo(const QString& args)
     auto* rxSlice = currentSlice();
     if (!rxSlice) return rprt(-8);
 
-    // Drop the pending-removal marker once that slice has actually disappeared
-    // (slice remove is async). Until then we must not re-adopt it on re-enable.
-    if (m_pendingRemovalId >= 0 && m_model) {
-        bool stillThere = false;
-        for (auto* s : m_model->slices())
-            if (s->sliceId() == m_pendingRemovalId) { stillThere = true; break; }
-        if (!stillThere) m_pendingRemovalId = -1;
-    }
+    // (m_split tracks a slice it asked to remove until RadioModel::sliceRemoved
+    // confirms it is gone — see SplitSliceManager::isRemoving, used in the reuse
+    // scan — so there is no pending-removal marker to reconcile here.)
 
     // Edge-only reclaim: only move TX back to our RX slice on a genuine
     // split→non-split *transition*, never on a steady-state poll.  Hamlib
@@ -1050,7 +1027,6 @@ QString RigctlProtocol::cmdSetSplitVfo(const QString& args)
     // logger that never toggles split leave the user's TX choice alone.
     const bool wasEnabled = (m_lastSplitEnable == 1);
     const bool firstReport = (m_lastSplitEnable < 0);
-    m_lastSplitEnable = enable ? 1 : 0;
 
     // Idempotent steady-state polls: if this command re-asserts the split state we
     // are already in, do nothing. Loggers (VARA/VARAC/N1MM) send set_split_vfo
@@ -1060,11 +1036,13 @@ QString RigctlProtocol::cmdSetSplitVfo(const QString& args)
     if (!firstReport && enable == wasEnabled)
         return rprt(0);
 
+    // Note: m_lastSplitEnable is set to 1 inside ensureSplitTxSlice() (only when
+    // split actually engages) and to 0 in the disable branch — NOT blanket-set
+    // here. A set_split_vfo 1 that can't engage (radio at its slice limit) must
+    // not record "enabled", or the next set_split_vfo 0 would run a spurious 1→0
+    // reclaim and could steal TX from a slice the user moved it to.
     if (!enable) {
-        // addSlice() issued but the slice has not appeared yet (set_split_vfo 1
-        // then 0 before the radio's status response). Capture before clearing.
-        const bool createInFlight = m_pendingSplitEnable;
-        m_pendingSplitEnable = false;
+        m_lastSplitEnable = 0;
         m_pendingTxSlice = nullptr;
         m_pendingSplitFreqMHz = 0.0;
         m_pendingSplitMode.clear();
@@ -1081,36 +1059,23 @@ QString RigctlProtocol::cmdSetSplitVfo(const QString& args)
         // Steady-state polls (already-disabled split, first-report-after-
         // connect) leave the user's TX badge alone.
         if ((wasEnabled && !firstReport) || wasPending) {
-            const bool removingCreatedSlice = (m_createdTxSliceId >= 0 && m_model);
-            // Reclaim TX onto the RX slice (queued cross-thread; record intent
-            // synchronously so findTxSlice() resolves correctly). Forced when we
-            // are about to remove the TX slice we created: the cached isTxSlice()
-            // can be stale-true on the RX slice, and removing the only TX slice
-            // would leave the radio with none (get_split_freq_mode → -1).
+            // Whether we have (or are creating) a TX slice to tear down.
+            const bool removingCreatedSlice = m_split.owns() || m_split.pending();
+            // Reclaim TX onto the RX slice (queued; record intent synchronously so
+            // findTxSlice() resolves correctly). Forced when we are about to remove
+            // the TX slice we created: the cached isTxSlice() can be stale-true on
+            // the RX slice, and removing the only TX slice would otherwise leave
+            // the radio with none (get_split_freq_mode → -1).
             if (!rxSlice->isTxSlice() || wasPending || removingCreatedSlice) {
                 m_pendingTxSlice = rxSlice;
                 QMetaObject::invokeMethod(rxSlice, [rxSlice]{ rxSlice->setTxSlice(true); },
                                           Qt::QueuedConnection);
             }
-            // Parity with SmartCAT (closes on ZZSW0/FT0): close a slice we created
-            // for split. #3619 created it but never removed it — this is the fix.
-            if (removingCreatedSlice) {
-                auto* model = m_model;
-                const int txId = m_createdTxSliceId;
-                m_pendingRemovalId = txId;   // skip on re-enable until actually gone
-                m_createdTxSliceId = -1;
-                QMetaObject::invokeMethod(model, [model, txId] {
-                    model->sendCommand(QString("slice remove %1").arg(txId));
-                }, Qt::QueuedConnection);
-            } else if (createInFlight && m_model) {
-                // Disabled before our async addSlice() materialized: don't abandon
-                // the create. Keep the promotion machinery alive and flag the slice
-                // for removal as soon as it appears — via tryPromoteTxSlice() on the
-                // next split command, or the destructor. Else it surfaces as an
-                // orphan ~hundreds of ms later.
-                m_removeCreatedSliceWhenItAppears = true;
-                m_pendingSplitEnable = true;
-            }
+            // Close a slice we created for split (#3619 created it but never removed
+            // it). m_split.remove() handles all cases: live slice → slice remove;
+            // create still in flight (disable raced ahead of materialization) →
+            // armed to remove on arrival; promoted-existing slice → no-op.
+            m_split.remove();
         }
         return rprt(0);
     }
@@ -1129,34 +1094,45 @@ void RigctlProtocol::ensureSplitTxSlice()
     if (!m_model) return;
     auto* rxSlice = currentSlice();
     if (!rxSlice) return;
-    if (auto* tx = findTxSlice(/*promote=*/false); tx && tx != rxSlice)
-        return;   // a distinct TX slice already exists
-    // If a prior enable→disable left a slice owed for removal, resolve it before
-    // starting a fresh split so we don't lose track of the in-flight create.
-    if (m_removeCreatedSliceWhenItAppears)
-        tryPromoteTxSlice();
+
+    // Promote a created slice that has since materialized, if any.
+    tryPromoteTxSlice();
+
+    if (auto* tx = findTxSlice(/*promote=*/false); tx && tx != rxSlice) {
+        // Split is already on (an existing distinct TX slice, ours or reused).
+        // Record it so a later set_split_vfo 0 sees the 1→0 edge even when split
+        // was enabled implicitly here (WSJT-X "Rig" split via set_freq/set_mode
+        // VFOB never calls set_split_vfo) and so tears down instead of no-op'ing.
+        m_lastSplitEnable = 1;
+        return;
+    }
+    if (m_split.owns() || m_split.pending()) {
+        m_lastSplitEnable = 1;   // create in progress — split is (becoming) on
+        return;
+    }
+
+    // Reuse an existing non-RX slice if present.
     for (auto* s : m_model->slices()) {
         if (s == rxSlice) continue;
-        if (s->sliceId() == m_pendingRemovalId) continue;  // ignore a slice still being removed
-        m_pendingSplitEnable = false;
+        if (m_split.isRemoving(s->sliceId())) continue;  // slice still being removed
         m_pendingTxSlice = s;
         if (!s->isTxSlice()) {
             m_pendingTxSliceChange = true;
             QMetaObject::invokeMethod(s, [s]{ s->setTxSlice(true); },
                                       Qt::QueuedConnection);
         }
+        m_lastSplitEnable = 1;
         return;
     }
-    // No second slice — create one and flag for deferred promotion. Snapshot the
-    // current slice OBJECTS (by pointer, not id — the radio reuses freed ids) so
-    // promotion adopts the genuinely new slice, not a lingering removed one.
-    m_preSplitSlices.clear();
-    for (auto* s : m_model->slices())
-        m_preSplitSlices.append(s);
-    m_pendingSplitEnable = true;
-    auto* model = m_model;
-    QMetaObject::invokeMethod(m_model, [model]{ model->addSlice(); },
-                              Qt::QueuedConnection);
+
+    // No second slice — create one. Bail if the radio is at its slice limit
+    // (otherwise the create silently never lands and split would hang pending).
+    if (m_model->slices().size() >= m_model->maxSlices())
+        return;   // could not engage split; leave m_lastSplitEnable unchanged
+    // m_split learns the new slice's id from the create ack; tryPromoteTxSlice()
+    // adopts it by id once the SliceModel materializes.
+    m_split.create();
+    m_lastSplitEnable = 1;
 }
 
 QString RigctlProtocol::cmdGetSplitFreq()
@@ -1179,7 +1155,7 @@ QString RigctlProtocol::cmdSetSplitFreq(const QString& args)
     if (parts.isEmpty() || !ok) return rprt(-1);
     // If the new slice hasn't appeared yet, stash the freq; tryPromoteTxSlice()
     // will apply it as soon as the slice becomes visible.
-    if (m_pendingSplitEnable) {
+    if (createdSliceNotReady()) {
         m_pendingSplitFreqMHz = hz / 1e6;
         return rprt(0);
     }
@@ -1213,7 +1189,7 @@ QString RigctlProtocol::cmdSetSplitMode(const QString& args)
     // CWR/RTTYR/WFM through unmapped, sending the radio an invalid mode (#7).
     const QString mode = hamlibToSmartSDR(parts[0]);
     // If the new slice hasn't appeared yet, stash the mode for tryPromoteTxSlice().
-    if (m_pendingSplitEnable) {
+    if (createdSliceNotReady()) {
         m_pendingSplitMode = mode;
         return rprt(0);
     }

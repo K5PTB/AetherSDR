@@ -4636,8 +4636,21 @@ void MainWindow::applyCatPortCount()
                             : (d == "TS2000")  ? CatDialect::TS2000
                             : CatDialect::Rigctld;
             catPort(i)->setDialect(dial);
-            catPort(i)->setVfoA(s.value(prefix + "VfoA", "0").toInt());
-            catPort(i)->setVfoB(s.value(prefix + "VfoB", "-1").toInt());
+            int vfoA = s.value(prefix + "VfoA", "0").toInt();
+            int vfoB = s.value(prefix + "VfoB", "-1").toInt();
+            // Clamp a stale persisted index (e.g. carried over from a larger radio
+            // model) to what THIS radio can ever have, so a port can't bind to a
+            // slice letter beyond the hardware's capability. A valid index for a
+            // slice not yet open is left alone — it degrades safely until the slice
+            // appears (see above). target is the hardware max slice count when
+            // connected, 1 when not (then we don't clamp — max is unknown).
+            if (target > 1) {
+                if (vfoA > target - 1) vfoA = target - 1;
+                if (vfoA < 0)          vfoA = 0;
+                if (vfoB > target - 1) vfoB = target - 1;   // -1 (none) stays -1
+            }
+            catPort(i)->setVfoA(vfoA);
+            catPort(i)->setVfoB(vfoB);
             catPort(i)->start(static_cast<quint16>(portNum));
         } else if (!shouldRun && catPort(i)->isRunning()) {
             catPort(i)->stop();
@@ -4666,7 +4679,7 @@ void MainWindow::migrateCatSettings()
     s.setValue("CatPort_0_Port",    rigPort);
     s.setValue("CatPort_0_Dialect", "Rigctld");
     s.setValue("CatPort_0_VfoA",    "0");
-    s.setValue("CatPort_0_VfoB",    "1");
+    s.setValue("CatPort_0_VfoB",    "-1");   // rigctld is single-VFO — no VFO B
     s.setValue("CatPort_0_Enabled", rigEnabled ? "True" : "False");
 
     // Port 1: old SmartCAT settings

@@ -3,6 +3,8 @@
 #include <QString>
 #include <QList>
 
+#include "SplitSliceManager.h"
+
 namespace AetherSDR {
 
 class RadioModel;
@@ -178,7 +180,6 @@ private:
     // The effective VFO-B / split TX slice: the promoted split slice if any,
     // else the operator-configured VFO B. Promotes a pending slice first.
     SliceModel* vfoBSlice();
-    SliceModel* sliceById(int id) const;
 
     static QString kenwoodToSSDR(QChar c);
     static QString zzToSSDR(const QString& two);
@@ -193,23 +194,18 @@ private:
     bool        m_pttAssertedByMe{false};
 
     // ── Split TX state ───────────────────────────────────────────────────────
-    bool        m_pendingSplitSlice{false};   // addSlice() issued, slice not yet visible
-    int         m_splitTxSliceId{-1};         // id of the dedicated split TX slice (-1 = none)
-    bool        m_weCreatedSplitSlice{false}; // we created it → close it at split-disable
-    bool        m_removeCreatedSliceWhenItAppears{false}; // split was disabled while our
-                                              // addSlice() was still in flight. Don't abandon the
-                                              // create: remove the slice as soon as it materializes
-                                              // (next split command, or the destructor), else it
-                                              // surfaces unowned ~hundreds of ms later as an orphan.
+    // Owns a split TX slice we create on demand (mechanism 2): learns its id from
+    // the radio create ack (no snapshot/diff), removes it on disable / disconnect,
+    // and handles the disable-before-materialize race. Shared with RigctlProtocol.
+    // Operator-configured VFO B (mechanism 1) is NOT owned here — it is resolved
+    // via sliceB() and never removed. XIT fallback (mechanism 3) uses m_xitSplit.
+    SplitSliceManager m_split;
     bool        m_xitSplit{false};            // XIT-offset fallback active (no room for a slice)
     double      m_pendingSplitFreqMhz{0.0};   // TX freq stashed until the split slice appears
     QString     m_pendingSplitMode;           // TX mode stashed until the split slice appears
-    QList<const SliceModel*> m_preSplitSlices; // slice OBJECTS present when addSlice() was issued.
-                                              // Promotion adopts the slice whose POINTER is not here.
-                                              // Pointers (not ids) because the radio reuses a freed
-                                              // slice id: on a rapid disable→enable the new slice can
-                                              // take the just-removed id, and an id snapshot would skip
-                                              // it as "pre-existing" → never promoted/removed → orphan.
+    // True while a slice we created is not yet usable (id unknown, or known but the
+    // SliceModel not materialized) — the window in which split freq/mode is stashed.
+    bool createdSliceNotReady() const;
 };
 
 } // namespace AetherSDR

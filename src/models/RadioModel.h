@@ -337,6 +337,11 @@ public:
     void cwAutoTune(int sliceId, bool intermittent); // int=1 start loop, int=0 stop
     void cwAutoTuneOnce(int sliceId);                // one-shot (no int= param)
     void addSlice();           // Create a new slice on the active panadapter
+    // Same, but invokes onCreated(newSliceId) when the radio acknowledges the
+    // create (the ack carries the new slice index). Lets a caller learn exactly
+    // which slice it created instead of snapshotting/diffing the slice list.
+    // onCreated runs on the model's thread; guard its captures for lifetime.
+    void addSlice(std::function<void(int sliceId)> onCreated);
     void addSliceOnPan(const QString& panId); // Create a new slice on a specific pan
     void addSliceOnPan(const QString& panId, double freqMhz); // Create slice on specific pan/frequency
     void createPanadapter();   // Create a new independent panadapter

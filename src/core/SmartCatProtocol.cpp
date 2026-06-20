@@ -103,19 +103,18 @@ SmartCatProtocol::SmartCatProtocol(RadioModel* model, int vfoA, int vfoB,
     , m_vfoA(vfoA)
     , m_vfoB(vfoB)
     , m_flexExtensions(flexExtensions)
+    , m_split(model)
 {}
 
 SmartCatProtocol::~SmartCatProtocol()
 {
     // A client disconnect destroys the session (and this protocol). If split was
-    // left active with a slice we created, close it so it isn't left hanging.
+    // left active, hand TX back to slice A and close a slice we created.
     if (m_splitEnabled)
         teardownSplit();
-    // Backstop for the enable→disable race: a slice we created may have been
-    // disabled before it materialized. If it has since appeared, close it now so
-    // the disconnect doesn't leave it orphaned.
-    else if (m_removeCreatedSliceWhenItAppears)
-        tryPromoteSplitSlice();
+    // Any slice m_split still owns (or has in flight) is closed by its own
+    // destructor (member, destructs after this body) — including the
+    // disable-before-materialize case, whose control block outlives us.
 }
 
 // ── Slice accessors ─────────────────────────────────────────────────────────
@@ -323,13 +322,20 @@ QString SmartCatProtocol::cmdFB(const QString& arg)
         double hz = arg.toDouble(&ok);
         if (!ok) return "?;";
         int offset = qRound(hz - a->frequency() * 1e6);
-        a->setXit(true, std::clamp(offset, -kRitMaxHz, kRitMaxHz));
+        // The XIT fallback can only offset TX by ±kRitMaxHz. Reject a larger split
+        // rather than silently clamping it — clamping would put TX on a frequency
+        // the controller never asked for (and the read-back would confirm the wrong
+        // value). A normal DX/cross-band split exceeds this; "?;" tells the
+        // controller this radio can't do that split right now (slices full).
+        if (offset < -kRitMaxHz || offset > kRitMaxHz)
+            return "?;";
+        a->setXit(true, offset);
         return {};
     }
 
     // Dedicated split slice requested but the radio hasn't created it yet
     // (addSlice is async): stash the TX freq; tryPromoteSplitSlice() applies it.
-    if (m_pendingSplitSlice && !arg.isEmpty()) {
+    if (createdSliceNotReady() && !arg.isEmpty()) {
         bool ok;
         double hz = arg.toDouble(&ok);
         if (!ok) return "?;";
@@ -459,75 +465,58 @@ QString SmartCatProtocol::cmdZZSW(const QString& arg)
 // AetherSDR additionally honours an operator-configured VFO B slice (Mac case)
 // by using it directly. The RX VFO frequency is never moved in either path.
 
-SliceModel* SmartCatProtocol::sliceById(int id) const
+// True while a slice we created via m_split is not yet usable: id not known
+// (create ack pending), or known but the SliceModel has not materialized.
+bool SmartCatProtocol::createdSliceNotReady() const
 {
-    if (id < 0 || !m_model) return nullptr;
-    for (auto* s : m_model->slices())
-        if (s->sliceId() == id) return s;
-    return nullptr;
+    if (m_split.pending()) return true;
+    if (m_split.owns() && m_model && !m_model->slice(m_split.sliceId())) return true;
+    return false;
 }
 
-// addSlice() is asynchronous — the new slice appears only after the radio's
-// status response populates the model. On the first split-related command after
-// the slice becomes visible, adopt it as the TX slice and apply any TX freq/mode
-// stashed while we waited. Mirrors RigctlProtocol::tryPromoteTxSlice().
+// m_split learns the created slice's id from the radio create ack (addSlice is
+// async). Once that slice's SliceModel materializes, adopt it as TX (by id — no
+// snapshot/diff) and apply any TX freq/mode stashed while we waited. Idempotent;
+// a pure promotion — it never removes a slice, so a VFO-B read that calls it has
+// no teardown side effect. Mirrors RigctlProtocol::tryPromoteTxSlice().
 void SmartCatProtocol::tryPromoteSplitSlice()
 {
-    if (!m_pendingSplitSlice || !m_model) return;
-    SliceModel* rx = sliceA();
-    for (auto* s : m_model->slices()) {
-        if (s == rx) continue;
-        // Skip slice objects that existed before addSlice() — including a prior
-        // split slice still being torn down (even if the new slice reused its id)
-        // — so we adopt only the genuinely new object.
-        if (m_preSplitSlices.contains(s)) continue;
-        m_pendingSplitSlice    = false;
-        m_preSplitSlices.clear();
-        // Split was disabled before this slice materialized (enable→disable race):
-        // don't adopt it as TX — just close it, so it isn't left orphaned.
-        if (m_removeCreatedSliceWhenItAppears) {
-            m_removeCreatedSliceWhenItAppears = false;
-            if (m_model)
-                m_model->sendCommand(QString("slice remove %1").arg(s->sliceId()));
-            return;
-        }
-        m_splitTxSliceId       = s->sliceId();
-        m_weCreatedSplitSlice  = true;
-        s->setTxSlice(true);
-        if (m_pendingSplitFreqMhz > 0.0) {
-            s->setFrequency(m_pendingSplitFreqMhz);
-            m_pendingSplitFreqMhz = 0.0;
-        }
-        if (!m_pendingSplitMode.isEmpty()) {
-            s->setMode(m_pendingSplitMode);
-            m_pendingSplitMode.clear();
-        }
-        return;
+    if (!m_split.owns() || !m_model) return;
+    SliceModel* s = m_model->slice(m_split.sliceId());
+    if (!s) return;                 // id known, slice not visible yet — retry later
+    if (s->isTxSlice()) return;     // already promoted (idempotent)
+    s->setTxSlice(true);
+    if (m_pendingSplitFreqMhz > 0.0) {
+        s->setFrequency(m_pendingSplitFreqMhz);
+        m_pendingSplitFreqMhz = 0.0;
     }
-    // New slice not visible yet — retry on the next call.
+    if (!m_pendingSplitMode.isEmpty()) {
+        s->setMode(m_pendingSplitMode);
+        m_pendingSplitMode.clear();
+    }
 }
 
 SliceModel* SmartCatProtocol::vfoBSlice()
 {
     tryPromoteSplitSlice();
-    if (SliceModel* s = sliceById(m_splitTxSliceId)) return s;
+    // A slice we created (mechanism 2), once materialized, is the TX slice.
+    if (m_split.owns()) {
+        if (SliceModel* s = m_model ? m_model->slice(m_split.sliceId()) : nullptr)
+            return s;
+    }
+    // Otherwise the operator-configured VFO B (mechanism 1), or none.
     return sliceB();
 }
 
 QString SmartCatProtocol::enableSplit()
 {
     if (m_splitEnabled) return {};   // idempotent — already split
-    // If a prior enable→disable left a slice owed for removal, resolve it before
-    // starting a fresh split so we don't lose track of the in-flight create.
-    if (m_removeCreatedSliceWhenItAppears)
-        tryPromoteSplitSlice();
     SliceModel* a = sliceA();
     if (!a) return "?;";
 
     // (1) Operator-configured VFO B slice present → use it as the TX slice.
+    //     Not tracked by m_split — it is the operator's slice, never removed.
     if (SliceModel* b = sliceB()) {
-        m_splitTxSliceId      = b->sliceId();
-        m_weCreatedSplitSlice = false;
         b->setTxSlice(true);
         m_splitEnabled = true;
         return {};
@@ -542,18 +531,10 @@ QString SmartCatProtocol::enableSplit()
         return "?;";
 
     // (2) Single-VFO port (no VFO B configured) with room → create a dedicated TX
-    //     slice (SmartSDR-for-Windows path a).
+    //     slice (SmartSDR-for-Windows path a). m_split learns the new id from the
+    //     create ack; tryPromoteSplitSlice() adopts it once the SliceModel exists.
     if (m_model->slices().size() < m_model->maxSlices()) {
-        // Snapshot existing slice OBJECTS so promotion adopts the slice we are
-        // about to create — not a prior split slice still lingering mid-removal
-        // during a rapid disable→enable. By pointer, not id: the radio reuses a
-        // freed slice id, so the new slice can take the just-removed id and an id
-        // snapshot would skip it as "pre-existing" → never removed → orphan.
-        m_preSplitSlices.clear();
-        for (auto* s : m_model->slices())
-            m_preSplitSlices.append(s);
-        m_pendingSplitSlice = true;
-        m_model->addSlice();
+        m_split.create();
         m_splitEnabled = true;
         return {};
     }
@@ -567,7 +548,7 @@ QString SmartCatProtocol::enableSplit()
 
 void SmartCatProtocol::teardownSplit()
 {
-    tryPromoteSplitSlice();   // adopt a just-appeared slice so we can close it
+    tryPromoteSplitSlice();   // adopt a just-appeared created slice so we can close it
     SliceModel* a = sliceA();
 
     if (m_xitSplit) {
@@ -575,47 +556,22 @@ void SmartCatProtocol::teardownSplit()
         m_xitSplit = false;
     }
 
-    if (sliceById(m_splitTxSliceId)) {
-        // Hand TX back to the RX slice (slice A).
-        if (a) a->setTxSlice(true);
-        // Close the slice only if we created it; an operator-configured VFO B stays.
-        if (m_weCreatedSplitSlice && m_model)
-            m_model->sendCommand(QString("slice remove %1").arg(m_splitTxSliceId));
-    } else if (m_pendingSplitSlice) {
-        // Split disabled before our async addSlice() materialized. The slice will
-        // still appear shortly; don't abandon the create — remember to close it on
-        // arrival (via tryPromoteSplitSlice on the next split command, or the
-        // destructor). Keep m_pendingSplitSlice + m_preSplitSlices so promotion can
-        // still identify the genuinely new slice. Returns early so they survive.
-        if (a) a->setTxSlice(true);
-        m_removeCreatedSliceWhenItAppears = true;
-        m_splitTxSliceId      = -1;
-        m_weCreatedSplitSlice = false;
-        m_pendingSplitFreqMhz = 0.0;
-        m_pendingSplitMode.clear();
-        m_splitEnabled        = false;
-        return;
-    }
+    // Hand TX back to the RX slice (slice A); it was on a created slice or the
+    // operator's VFO B (XIT leaves TX on A already, so this is a no-op there).
+    if (a) a->setTxSlice(true);
+    // Close only a slice WE created (mechanism 2). m_split.remove() is a no-op if
+    // split used the operator's VFO B or the XIT fallback, and it also handles the
+    // disable-before-materialize race (arms removal of an in-flight create).
+    m_split.remove();
 
-    m_pendingSplitSlice   = false;
-    m_splitTxSliceId      = -1;
-    m_weCreatedSplitSlice = false;
     m_pendingSplitFreqMhz = 0.0;
     m_pendingSplitMode.clear();
-    m_preSplitSlices.clear();
     m_splitEnabled        = false;
 }
 
 QString SmartCatProtocol::disableSplit()
 {
-    if (!m_splitEnabled) {
-        // Defensive: never leave a pending flag set — UNLESS a slice is still owed
-        // removal from an earlier enable→disable race (keep it so the in-flight
-        // create still gets closed when it appears).
-        if (!m_removeCreatedSliceWhenItAppears)
-            m_pendingSplitSlice = false;
-        return {};
-    }
+    if (!m_splitEnabled) return {};   // already off (m_split keeps its own state)
     teardownSplit();
     return {};
 }

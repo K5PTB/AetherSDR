@@ -4,6 +4,8 @@
 #include <QMap>
 #include <QList>
 
+#include "SplitSliceManager.h"
+
 namespace AetherSDR {
 
 class RadioModel;
@@ -122,28 +124,18 @@ private:
     // The next line is consumed verbatim as the morse text. Hamlib spec
     // allows this two-line form and Not1MM contest CW relies on it.
     bool m_pendingMorseLine{false};
-    bool m_pendingSplitEnable{false};    // set when split enabled but no second slice existed yet
     bool m_pendingTxSliceChange{false};  // set when setTxSlice(true) was queued for a non-rx slice
     // Slice we intend to be TX — set synchronously when we queue setTxSlice(true)
     // so findTxSlice() returns the right slice before the event loop fires.
     SliceModel* m_pendingTxSlice{nullptr};
-    // Id of a split TX slice we created via addSlice() (-1 = none / pre-existing
-    // slice we only promoted). Closed on split-disable and in the destructor so a
-    // client disconnect does not leave an orphan slice on the radio.
-    int m_createdTxSliceId{-1};
-    // Slice OBJECTS present when addSlice() was issued; promotion adopts the slice
-    // whose POINTER is not here. By pointer, not id: the radio reuses a freed slice
-    // id, so on a rapid disable→enable the new slice can take the just-removed id
-    // and an id snapshot would skip it as "pre-existing" → never promoted → orphan.
-    QList<const SliceModel*> m_preSplitSlices;
-    // A split slice we asked the radio to remove; skipped during promotion/reuse
-    // until it actually disappears, then cleared.
-    int m_pendingRemovalId{-1};
-    // set_split_vfo 0 arrived while our addSlice() was still in flight (slice not
-    // yet visible). Don't abandon the create: remove the slice as soon as it
-    // materializes (next split command, or the destructor), else it surfaces
-    // unowned as an orphan. Mirrors SmartCatProtocol's flag of the same name.
-    bool m_removeCreatedSliceWhenItAppears{false};
+    // Owns the split TX slice we create on demand: learns its id from the radio
+    // create ack (no snapshot/diff), removes it on split-disable / disconnect, and
+    // handles the disable-before-materialize race. Shared with SmartCatProtocol.
+    SplitSliceManager m_split;
+    // True while a slice we created is not yet usable (id unknown, or known but the
+    // SliceModel has not materialized) — the window in which split freq/mode must
+    // be stashed and applied later by tryPromoteTxSlice().
+    bool createdSliceNotReady() const;
     // Stashed split freq/mode from commands that arrived before the new slice
     // existed (single-slice path).  Applied in tryPromoteTxSlice().
     double  m_pendingSplitFreqMHz{0.0};

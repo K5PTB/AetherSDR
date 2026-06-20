@@ -561,6 +561,7 @@ set(CORE_SOURCES
     src/core/PerfTelemetry.cpp
     src/core/RigctlProtocol.cpp
     src/core/SmartCatProtocol.cpp
+    src/core/SplitSliceManager.cpp
     src/core/SmartCatSession.cpp
     src/core/CatPort.cpp
     src/core/SmartLinkClient.cpp

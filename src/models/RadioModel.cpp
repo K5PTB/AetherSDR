@@ -1565,9 +1565,15 @@ void RadioModel::cwAutoTuneOnce(int sliceId)
 
 void RadioModel::addSlice()
 {
+    addSlice(nullptr);
+}
+
+void RadioModel::addSlice(std::function<void(int sliceId)> onCreated)
+{
     if (m_activePanId.isEmpty()) {
         qCWarning(lcProtocol) << "RadioModel::addSlice: no panadapter, cannot create slice";
-        return;
+        if (onCreated) onCreated(-1);   // total contract: signal failure so a caller
+        return;                          // tracking the create does not hang "pending"
     }
 
     // Create a new slice offset from existing slices so VFO flags deconflict.
@@ -1586,13 +1592,19 @@ void RadioModel::addSlice()
     const QString cmd = QString("slice create pan=%1 freq=%2").arg(m_activePanId, freq);
 
     qCDebug(lcProtocol) << "RadioModel::addSlice:" << cmd;
-    sendCmd(cmd, [this](int code, const QString& body) {
+    sendCmd(cmd, [this, onCreated = std::move(onCreated)](int code, const QString& body) {
         if (code != 0) {
             qCWarning(lcProtocol) << "RadioModel: slice create failed, code"
                        << Qt::hex << code << "body:" << body;
             emit sliceCreateFailed(maxSlices(), m_model);
+            if (onCreated) onCreated(-1);   // failure
         } else {
             qCDebug(lcProtocol) << "RadioModel: new slice created, index =" << body;
+            if (onCreated) {
+                bool ok = false;
+                const int id = body.trimmed().toInt(&ok);
+                onCreated(ok ? id : -1);    // -1 if the ack body was unparseable
+            }
         }
     });
 }
