@@ -4614,8 +4614,9 @@ int MainWindow::catPortTargetCount() const
 void MainWindow::applyCatPortCount()
 {
     auto& s = AppSettings::instance();
-    const bool masterOn = s.value("CatEnabled", "False").toString() == "True";
-    const int  target   = catPortTargetCount();
+    const bool masterOn  = s.value("CatEnabled", "False").toString() == "True";
+    const int  target    = catPortTargetCount();
+    const bool connected  = m_radioModel.isConnected();
 
     for (int i = 0; i < kCatPorts; ++i) {
         if (!catPort(i)) continue;
@@ -4623,11 +4624,21 @@ void MainWindow::applyCatPortCount()
         const QString prefix = QString("CatPort_%1_").arg(i);
         const bool portEnabled = s.value(prefix + "Enabled", "False").toString() == "True";
         const int  portNum     = s.value(prefix + "Port", "").toInt();
-        // The number of CAT ports is independent of the radio's slice count:
-        // multiple CAT clients may share a slice, and a port mapped to an absent
-        // slice degrades safely ("Slice Not Present"). The slice count only bounds
-        // the VFO-letter choices (setMaxSlices below), not how many ports run.
-        const bool shouldRun   = masterOn && portEnabled && (portNum >= 1024);
+        // The number of CAT ports is independent of the radio's slice-receiver
+        // capacity (the model's hardware max — maxSlicesForModel(), e.g. 4 on a
+        // FLEX-6500 — NOT how many slices are currently open). Multiple CAT clients
+        // may share a slice, and a port mapped to an absent slice degrades safely.
+        // That capacity only bounds the VFO-letter choices (setMaxSlices below),
+        // not how many ports run — so we no longer gate on `(i < target)`.
+        //
+        // BUT that old gate was also doing the disconnect trim: catPortTargetCount()
+        // returns 1 when disconnected, so only channel A (port 0) stayed up while
+        // higher channels stopped cleanly (intentional reconnect grace, see the
+        // applyCatPortCount() call site). Preserve that explicitly: when connected,
+        // any enabled port up to kCatPorts may run; when disconnected, keep only
+        // port 0.
+        const bool runnable    = connected ? true : (i == 0);
+        const bool shouldRun   = masterOn && portEnabled && (portNum >= 1024) && runnable;
 
         if (shouldRun && !catPort(i)->isRunning()) {
             // Re-apply config in case dialect/VFO was changed while stopped
@@ -4660,8 +4671,11 @@ void MainWindow::applyCatPortCount()
     auto* applet = m_appletPanel ? m_appletPanel->catControlApplet() : nullptr;
     if (applet) {
         applet->setCatEnabled(masterOn);
-        // Show hardware max when connected; fall back to kMaxPorts (all letters) when not.
-        const int hwSlices = (target > 1) ? target : kCatPorts;
+        // VFO-letter bound: the radio's real receiver count when connected, else
+        // all letters (kCatPorts) so the combos aren't needlessly restricted while
+        // disconnected. This bounds which slice letters a port may map to — it does
+        // NOT bound how many ports run (that's the run-gate above).
+        const int hwSlices = connected ? target : kCatPorts;
         applet->setMaxSlices(hwSlices);
     }
 }
