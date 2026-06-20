@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QList>
 
 namespace AetherSDR {
 
@@ -19,6 +20,10 @@ public:
     explicit SmartCatProtocol(RadioModel* model,
                               int vfoA = 0, int vfoB = -1,
                               bool flexExtensions = true);
+
+    // Closes a split TX slice we created so a client disconnect (session/PTY
+    // teardown) never leaves an orphan slice on the radio.
+    ~SmartCatProtocol();
 
     QString processCommand(const QString& cmd);
 
@@ -156,6 +161,25 @@ private:
     SliceModel* sliceA() const;
     SliceModel* sliceB() const;
 
+    // ── Split (two-mechanism, mirrors SmartSDR-for-Windows) ──────────────────
+    // Enable: use the operator-configured VFO B slice if present, else create a
+    // dedicated TX slice when there is room, else fall back to an XIT offset on
+    // slice A. Disable: tear the mechanism down (close a slice we created,
+    // restore TX to slice A, or clear the XIT offset).
+    QString enableSplit();
+    QString disableSplit();
+    // Tear the split mechanism down: close a slice we created (restoring TX to
+    // slice A) or clear the XIT offset, then reset all split state. Shared by
+    // disableSplit() (ZZSW0/FT0) and the destructor (client disconnect).
+    void    teardownSplit();
+    // Promote a freshly-created split slice (addSlice is async) to TX once it
+    // appears, applying any TX freq/mode stashed while we waited.
+    void    tryPromoteSplitSlice();
+    // The effective VFO-B / split TX slice: the promoted split slice if any,
+    // else the operator-configured VFO B. Promotes a pending slice first.
+    SliceModel* vfoBSlice();
+    SliceModel* sliceById(int id) const;
+
     static QString kenwoodToSSDR(QChar c);
     static QString zzToSSDR(const QString& two);
 
@@ -165,8 +189,27 @@ private:
     bool        m_flexExtensions{true};
     bool        m_aiEnabled{false};
     bool        m_splitEnabled{false};
-    bool        m_rxVfoB{false};   // false = VFO A is the RX VFO (FR/ZZFR selector)
+    bool        m_rxVfoB{false};   // false = VFO A is the RX VFO (TS-2000 FR selector; no A/B swap)
     bool        m_pttAssertedByMe{false};
+
+    // ── Split TX state ───────────────────────────────────────────────────────
+    bool        m_pendingSplitSlice{false};   // addSlice() issued, slice not yet visible
+    int         m_splitTxSliceId{-1};         // id of the dedicated split TX slice (-1 = none)
+    bool        m_weCreatedSplitSlice{false}; // we created it → close it at split-disable
+    bool        m_removeCreatedSliceWhenItAppears{false}; // split was disabled while our
+                                              // addSlice() was still in flight. Don't abandon the
+                                              // create: remove the slice as soon as it materializes
+                                              // (next split command, or the destructor), else it
+                                              // surfaces unowned ~hundreds of ms later as an orphan.
+    bool        m_xitSplit{false};            // XIT-offset fallback active (no room for a slice)
+    double      m_pendingSplitFreqMhz{0.0};   // TX freq stashed until the split slice appears
+    QString     m_pendingSplitMode;           // TX mode stashed until the split slice appears
+    QList<const SliceModel*> m_preSplitSlices; // slice OBJECTS present when addSlice() was issued.
+                                              // Promotion adopts the slice whose POINTER is not here.
+                                              // Pointers (not ids) because the radio reuses a freed
+                                              // slice id: on a rapid disable→enable the new slice can
+                                              // take the just-removed id, and an id snapshot would skip
+                                              // it as "pre-existing" → never promoted/removed → orphan.
 };
 
 } // namespace AetherSDR

@@ -30,22 +30,6 @@
 
 namespace {
 
-// ── Per-user PTY symlink path (matches CatPort::defaultSymlinkPath) ───────────
-
-static QString defaultPtyPath(int portIndex)
-{
-    const char letter = static_cast<char>('A' + portIndex);
-    const QString leaf = QStringLiteral("cat-") + QChar(letter);
-    QString base = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    if (base.isEmpty())
-        base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (base.isEmpty())
-        base = QDir::homePath() + QStringLiteral("/.cache/aethersdr");
-    if (!base.contains(QStringLiteral("aethersdr"), Qt::CaseInsensitive))
-        base += QStringLiteral("/aethersdr");
-    return base + QLatin1Char('/') + leaf;
-}
-
 // ── ANSI colour ───────────────────────────────────────────────────────────────
 
 static bool g_tty = false;
@@ -367,37 +351,43 @@ void section3(CatClient& c, Runner& r)
 {
     r.section(QStringLiteral("Section 3 — ZZFB — VFO-B Frequency"));
 
-    QString resp = c.query(QStringLiteral("ZZFB"));
-    r.check(QStringLiteral("3.1  ZZFB; returns \"ZZFB\" + 11-digit Hz"),
-            resp.startsWith(QLatin1String("ZZFB")) && isDigits(resp.mid(4), 11), repr(resp));
-
+    QString resp   = c.query(QStringLiteral("ZZFB"));
     QString fbResp = c.query(QStringLiteral("FB"));
+    const bool hasVfoB = resp.startsWith(QLatin1String("ZZFB")) && isDigits(resp.mid(4), 11);
+
+    if (!hasVfoB) {
+        // No second/split slice → VFO-B commands MUST return "?;" (matches ZZME and
+        // real SmartSDR; SmartSDR CAT guide §1.2). Regression for #3633: FB/ZZFB used
+        // to fake VFO A's frequency here, which (vs ZZME's "?;") broke controller sync.
+        r.check(QStringLiteral("3.1  no VFO B → ZZFB; returns \"?;\" (not a faked VFO-A freq)"),
+                resp == QLatin1String("?"), repr(resp));
+        r.check(QStringLiteral("3.2  no VFO B → FB; also returns \"?;\" (consistent with ZZFB/ZZME)"),
+                fbResp == QLatin1String("?"), repr(fbResp));
+        r.skip(QStringLiteral("3.3  set ZZFB 14.225 MHz → ZZFB; confirms"),
+               QStringLiteral("no VFO B — configure the port's VFO B and create the slice first"));
+        return;
+    }
+
+    // VFO B present (port VFO B mapped to a live second slice).
+    r.check(QStringLiteral("3.1  ZZFB; returns \"ZZFB\" + 11-digit Hz"),
+            true, repr(resp));
     r.check(QStringLiteral("3.2  ZZFB; and FB; agree"),
             resp.mid(4) == fbResp.mid(2),
             QStringLiteral("ZZFB=%1 FB=%2").arg(repr(resp.mid(4)), repr(fbResp.mid(2))));
 
-    QString faResp = c.query(QStringLiteral("FA"));
-    const bool vfoBMapped = (resp.mid(4) != faResp.mid(2) &&
-                              !resp.mid(4).isEmpty() && !faResp.mid(2).isEmpty());
-
-    if (!vfoBMapped) {
-        r.skip(QStringLiteral("3.3  set ZZFB 14.225 MHz → ZZFB; confirms"),
-               QStringLiteral("VFO B not mapped to a second slice — configure port VFO B first"));
-    } else {
-        const qint64 testHz = 14'225'000;
-        c.send(QStringLiteral("ZZFB") + hz11(testHz));
-        QElapsedTimer timer;
-        timer.start();
-        QString pollResp;
-        do {
-            pollResp = c.query(QStringLiteral("ZZFB"));
-            if (pollResp == QStringLiteral("ZZFB") + hz11(testHz)) break;
-            if (timer.elapsed() < 2000) QThread::msleep(100);
-        } while (timer.elapsed() < 2000);
-        r.check(QStringLiteral("3.3  set ZZFB 14.225 MHz → ZZFB; confirms"),
-                pollResp == QStringLiteral("ZZFB") + hz11(testHz),
-                QStringLiteral("got %1").arg(repr(pollResp)));
-    }
+    const qint64 testHz = 14'225'000;
+    c.send(QStringLiteral("ZZFB") + hz11(testHz));
+    QElapsedTimer timer;
+    timer.start();
+    QString pollResp;
+    do {
+        pollResp = c.query(QStringLiteral("ZZFB"));
+        if (pollResp == QStringLiteral("ZZFB") + hz11(testHz)) break;
+        if (timer.elapsed() < 2000) QThread::msleep(100);
+    } while (timer.elapsed() < 2000);
+    r.check(QStringLiteral("3.3  set ZZFB 14.225 MHz → ZZFB; confirms"),
+            pollResp == QStringLiteral("ZZFB") + hz11(testHz),
+            QStringLiteral("got %1").arg(repr(pollResp)));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -586,55 +576,181 @@ void section7(CatClient& c, Runner& r)
 // Section 8 — ZZSW — Split
 // ═════════════════════════════════════════════════════════════════════════════
 
+// Poll ZZFB until VFO B is readable (returns an 11-digit freq). Enabling split
+// makes the radio create a dedicated TX slice asynchronously (or fall back to an
+// XIT offset on slice A); either way VFO B becomes readable once it settles.
+static bool waitVfoBLive(CatClient& c, QString& out, int timeoutMs = 3000)
+{
+    QElapsedTimer t; t.start();
+    do {
+        out = c.query(QStringLiteral("ZZFB"));
+        if (out.startsWith(QLatin1String("ZZFB")) && isDigits(out.mid(4), 11)) return true;
+        if (t.elapsed() < timeoutMs) QThread::msleep(100);
+    } while (t.elapsed() < timeoutMs);
+    return false;
+}
+
+// Poll ZZFB until VFO B is gone (split disabled → TX slice closed / XIT cleared).
+static bool waitVfoBGone(CatClient& c, QString& out, int timeoutMs = 3000)
+{
+    QElapsedTimer t; t.start();
+    do {
+        out = c.query(QStringLiteral("ZZFB"));
+        if (out == QLatin1String("?")) return true;
+        if (t.elapsed() < timeoutMs) QThread::msleep(100);
+    } while (t.elapsed() < timeoutMs);
+    return false;
+}
+
 void section8(CatClient& c, Runner& r)
 {
-    r.section(QStringLiteral("Section 8 — ZZSW — Split"));
+    r.section(QStringLiteral("Section 8 — ZZSW — Split (lifecycle + VFO-B materialization)"));
 
     QString resp = c.query(QStringLiteral("ZZSW"));
     r.check(QStringLiteral("8.1  ZZSW; → ZZSW0 (split off initially)"),
             resp == QLatin1String("ZZSW0"), repr(resp));
 
+    // Record RX (VFO A) freq so we can prove split never moves it.
+    const QString rxBefore = c.query(QStringLiteral("ZZFA"));
+    const qint64  rxHz = rxBefore.startsWith(QLatin1String("ZZFA"))
+                         ? rxBefore.mid(4).toLongLong() : 0;
+
+    // Detect the port's VFO config (split is still off here). A dual-VFO port has
+    // a configured VFO B slice — ZZFB returns a freq now; a single-VFO port returns
+    // "?;" until split creates one. The lifecycles differ: single-VFO split CREATES
+    // a slice and REMOVES it on disable; dual-VFO split REDIRECTS TX to the existing
+    // VFO B, which PERSISTS after disable (operator-owned).
+    const QString fbProbe = c.query(QStringLiteral("ZZFB"));
+    if (fbProbe.startsWith(QLatin1String("ZZFB")) && isDigits(fbProbe.mid(4), 11)) {
+        // ── Dual-VFO lifecycle ──────────────────────────────────────────────
+        c.send(QStringLiteral("ZZSW1"));
+        QString swOn = c.query(QStringLiteral("ZZSW"));
+        QString ftOn = c.query(QStringLiteral("FT"));
+        r.check(QStringLiteral("8.2  ZZSW1; enables split; ZZSW; → ZZSW1  [dual-VFO port]"),
+                swOn == QLatin1String("ZZSW1"), repr(swOn));
+        r.check(QStringLiteral("8.3  FT; also reflects split on (FT1)"),
+                ftOn == QLatin1String("FT1"), repr(ftOn));
+
+        QString fbNow = c.query(QStringLiteral("ZZFB"));
+        r.check(QStringLiteral("8.4  VFO B stays readable during split (configured slice reused)"),
+                fbNow.startsWith(QLatin1String("ZZFB")) && isDigits(fbNow.mid(4), 11), repr(fbNow));
+
+        if (rxHz > 0) {
+            const qint64 txHz = rxHz + 2000;
+            c.send(QStringLiteral("ZZFB") + hz11(txHz));
+            QElapsedTimer t; t.start();
+            QString pollResp;
+            do {
+                pollResp = c.query(QStringLiteral("ZZFB"));
+                if (pollResp == QStringLiteral("ZZFB") + hz11(txHz)) break;
+                if (t.elapsed() < 2000) QThread::msleep(100);
+            } while (t.elapsed() < 2000);
+            r.check(QStringLiteral("8.5  set ZZFB (RX+2 kHz) on VFO B → ZZFB; confirms"),
+                    pollResp == QStringLiteral("ZZFB") + hz11(txHz),
+                    QStringLiteral("got %1").arg(repr(pollResp)));
+            const QString rxAfter = c.query(QStringLiteral("ZZFA"));
+            r.check(QStringLiteral("8.6  split does NOT move VFO A (RX undisturbed)"),
+                    rxAfter == rxBefore,
+                    QStringLiteral("before=%1 after=%2").arg(repr(rxBefore), repr(rxAfter)));
+        } else {
+            r.skip(QStringLiteral("8.5  set ZZFB on VFO B → confirms"), QStringLiteral("no RX freq"));
+            r.skip(QStringLiteral("8.6  split does NOT move VFO A"), QStringLiteral("no RX freq"));
+        }
+
+        c.send(QStringLiteral("ZZSW0"));
+        QString swOff = c.query(QStringLiteral("ZZSW"));
+        r.check(QStringLiteral("8.7  ZZSW0; clears split; ZZSW; → ZZSW0"),
+                swOff == QLatin1String("ZZSW0"), repr(swOff));
+        QString fbAfter = c.query(QStringLiteral("ZZFB"));
+        r.check(QStringLiteral("8.8  configured VFO B PERSISTS after disable (operator slice, not removed)"),
+                fbAfter.startsWith(QLatin1String("ZZFB")) && isDigits(fbAfter.mid(4), 11), repr(fbAfter));
+
+        // Restore VFO B's original frequency.
+        if (fbProbe.startsWith(QLatin1String("ZZFB")))
+            c.send(QStringLiteral("ZZFB") + fbProbe.mid(4));
+        return;
+    }
+
+    // ── Single-VFO lifecycle (split creates and removes its own slice) ──────
+    // ── Enable split. AetherSDR now creates a dedicated TX slice (or, when the
+    //    radio is out of slices, an XIT-offset fallback on slice A) so VFO B
+    //    becomes real. addSlice is async — poll until VFO B materializes.
     c.send(QStringLiteral("ZZSW1"));
-    QString respZz = c.query(QStringLiteral("ZZSW"));
-    QString respFt = c.query(QStringLiteral("FT"));
+    QString swOn = c.query(QStringLiteral("ZZSW"));
+    QString ftOn = c.query(QStringLiteral("FT"));
     r.check(QStringLiteral("8.2  ZZSW1; enables split; ZZSW; → ZZSW1"),
-            respZz == QLatin1String("ZZSW1"), repr(respZz));
+            swOn == QLatin1String("ZZSW1"), repr(swOn));
     r.check(QStringLiteral("8.3  FT; also reflects split on (FT1)"),
-            respFt == QLatin1String("FT1"), repr(respFt));
+            ftOn == QLatin1String("FT1"), repr(ftOn));
 
+    QString fbResp;
+    const bool vfoBLive = waitVfoBLive(c, fbResp);
+    r.check(QStringLiteral("8.4  enabling split makes VFO B readable (ZZFB; → freq, not \"?;\")"),
+            vfoBLive, repr(fbResp));
+
+    if (vfoBLive && rxHz > 0) {
+        // Set TX freq RX+2 kHz (within XIT range so it holds in either mechanism).
+        const qint64 txHz = rxHz + 2000;
+        c.send(QStringLiteral("ZZFB") + hz11(txHz));
+        QElapsedTimer t; t.start();
+        QString pollResp;
+        do {
+            pollResp = c.query(QStringLiteral("ZZFB"));
+            if (pollResp == QStringLiteral("ZZFB") + hz11(txHz)) break;
+            if (t.elapsed() < 2000) QThread::msleep(100);
+        } while (t.elapsed() < 2000);
+        r.check(QStringLiteral("8.5  set ZZFB (RX+2 kHz) while split → ZZFB; confirms"),
+                pollResp == QStringLiteral("ZZFB") + hz11(txHz),
+                QStringLiteral("got %1").arg(repr(pollResp)));
+
+        const QString rxAfter = c.query(QStringLiteral("ZZFA"));
+        r.check(QStringLiteral("8.6  split does NOT move VFO A (RX undisturbed)"),
+                rxAfter == rxBefore,
+                QStringLiteral("before=%1 after=%2").arg(repr(rxBefore), repr(rxAfter)));
+    } else {
+        r.skip(QStringLiteral("8.5  set ZZFB while split → confirms"),
+               QStringLiteral("VFO B did not materialize"));
+        r.skip(QStringLiteral("8.6  split does NOT move VFO A"),
+               QStringLiteral("VFO B did not materialize"));
+    }
+
+    // ── Disable split: the TX slice (if we created one) is closed and VFO B
+    //    goes away. Poll until ZZFB → "?;" to confirm cleanup (no orphan slice).
     c.send(QStringLiteral("ZZSW0"));
-    c.send(QStringLiteral("FT1"));
-    respZz = c.query(QStringLiteral("ZZSW"));
-    r.check(QStringLiteral("8.4  set split via base FT1; → ZZSW; → ZZSW1"),
-            respZz == QLatin1String("ZZSW1"), repr(respZz));
+    QString swOff = c.query(QStringLiteral("ZZSW"));
+    QString ftOff = c.query(QStringLiteral("FT"));
+    r.check(QStringLiteral("8.7  ZZSW0; clears split; ZZSW; → ZZSW0"),
+            swOff == QLatin1String("ZZSW0"), repr(swOff));
+    r.check(QStringLiteral("8.8  FT; also reflects split off (FT0)"),
+            ftOff == QLatin1String("FT0"), repr(ftOff));
 
-    c.send(QStringLiteral("ZZSW0"));
-    respZz = c.query(QStringLiteral("ZZSW"));
-    respFt = c.query(QStringLiteral("FT"));
-    r.check(QStringLiteral("8.5  ZZSW0; clears split; ZZSW; → ZZSW0"),
-            respZz == QLatin1String("ZZSW0"), repr(respZz));
-    r.check(QStringLiteral("8.6  FT; also reflects split off (FT0)"),
-            respFt == QLatin1String("FT0"), repr(respFt));
+    QString fbGone;
+    r.check(QStringLiteral("8.9  disabling split removes VFO B (ZZFB; → \"?;\", slice closed)"),
+            waitVfoBGone(c, fbGone), repr(fbGone));
 
-    // 8.7 REGRESSION: bare "ZZFT;" reads split state and must NOT toggle it.
+    // 8.10 REGRESSION: bare "ZZFT;" reads split state and must NOT toggle it.
     // (Previously ZZFT unconditionally flipped split on every call.)
     QString ft1 = c.query(QStringLiteral("ZZFT"));
     QString ft2 = c.query(QStringLiteral("ZZFT"));
-    r.check(QStringLiteral("8.7  bare ZZFT; reads split (ZZFT0) and does not toggle on repeat"),
+    r.check(QStringLiteral("8.10 bare ZZFT; reads split (ZZFT0) and does not toggle on repeat"),
             ft1 == QLatin1String("ZZFT0") && ft2 == QLatin1String("ZZFT0"),
             QStringLiteral("first=%1 second=%2").arg(repr(ft1), repr(ft2)));
 
-    // 8.8 ZZFT1/ZZFT0 set split, consistent with ZZSW.
+    // 8.11 ZZFT1/ZZFT0 set split, consistent with ZZSW; wait for the slice to
+    // materialize before disabling so the test never leaves an orphan slice.
     c.send(QStringLiteral("ZZFT1"));
-    QString ftOn = c.query(QStringLiteral("ZZFT"));
-    QString swOn = c.query(QStringLiteral("ZZSW"));
-    r.check(QStringLiteral("8.8  ZZFT1; enables split; ZZFT; → ZZFT1, ZZSW; → ZZSW1"),
-            ftOn == QLatin1String("ZZFT1") && swOn == QLatin1String("ZZSW1"),
-            QStringLiteral("ZZFT=%1 ZZSW=%2").arg(repr(ftOn), repr(swOn)));
+    QString ftSwOn = c.query(QStringLiteral("ZZSW"));
+    QString liveResp;
+    waitVfoBLive(c, liveResp);
+    r.check(QStringLiteral("8.11 ZZFT1; enables split; ZZSW; → ZZSW1"),
+            ftSwOn == QLatin1String("ZZSW1"), repr(ftSwOn));
     c.send(QStringLiteral("ZZFT0"));  // restore split off
-    QString ftOff = c.query(QStringLiteral("ZZFT"));
-    r.check(QStringLiteral("8.9  ZZFT0; clears split; ZZFT; → ZZFT0"),
-            ftOff == QLatin1String("ZZFT0"), repr(ftOff));
+    QString goneResp;
+    const bool cleared = waitVfoBGone(c, goneResp);
+    QString ftOffFinal = c.query(QStringLiteral("ZZFT"));
+    r.check(QStringLiteral("8.12 ZZFT0; clears split; ZZFT; → ZZFT0 and VFO B closed"),
+            ftOffFinal == QLatin1String("ZZFT0") && cleared,
+            QStringLiteral("ZZFT=%1 ZZFB=%2").arg(repr(ftOffFinal), repr(goneResp)));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1072,33 +1188,22 @@ void section13(CatClient& c, Runner& r)
     c.send(origBi);
     QThread::msleep(200);
 
-    // ── ZZFR: RX VFO select (0=A, 1=B) — bare form is a READ, not a swap ──────
-    QString faBefore = c.query(QStringLiteral("ZZFA"));
-    QString fbBefore = c.query(QStringLiteral("ZZFB"));
-    // 13.34r REGRESSION: bare "ZZFR;" reads the selector and must NOT swap VFOs.
-    QString zzfrRead = c.query(QStringLiteral("ZZFR"));
-    QThread::msleep(50);
-    QString faUnchanged = c.query(QStringLiteral("ZZFA"));
-    r.check(QStringLiteral("13.34r bare ZZFR; reads selector ('ZZFR0') without swapping"),
-            zzfrRead == QLatin1String("ZZFR0") && faUnchanged.mid(4) == faBefore.mid(4),
-            QStringLiteral("read=%1 ZZFA before=%2 after=%3")
-                .arg(repr(zzfrRead), repr(faBefore.mid(4)), repr(faUnchanged.mid(4))));
-    // 13.34 explicit select: ZZFR1 selects VFO B as RX → new ZZFA matches old ZZFB.
-    c.send(QStringLiteral("ZZFR1"));
-    QThread::msleep(50);
-    QString faAfter = c.query(QStringLiteral("ZZFA"));
-    QString zzfrAfter = c.query(QStringLiteral("ZZFR"));
-    // If VFO A and B differ, after ZZFR1 the new ZZFA should match old ZZFB.
-    // If they're equal (single-slice session), the swap is a no-op — treat as pass.
-    const bool zzfrOk = (faBefore.mid(4) == fbBefore.mid(4))
-                        ? true
-                        : (faAfter.mid(4) == fbBefore.mid(4));
-    r.check(QStringLiteral("13.34 ZZFR1; selects VFO B — new ZZFA matches old ZZFB; ZZFR; → 'ZZFR1'"),
-            zzfrOk && zzfrAfter == QLatin1String("ZZFR1"),
-            QStringLiteral("before: ZZFA=%1 ZZFB=%2 after ZZFA=%3 sel=%4")
-                .arg(repr(faBefore.mid(4)), repr(fbBefore.mid(4)), repr(faAfter.mid(4)), repr(zzfrAfter)));
-    c.send(QStringLiteral("ZZFR0"));  // select VFO A again (swap back)
-    QThread::msleep(50);
+    // ── ZZFR: NOT a SmartSDR command — every form returns "?;", never swaps ───
+    // RX-VFO selection is only via the TS-2000 FR command. SmartSDR-for-Mac
+    // rejects ZZFR on every config (verified). The old AetherSDR implementation
+    // invented a VFO A/B slice swap here — removed.
+    const QString faBeforeZzfr = c.query(QStringLiteral("ZZFA"));
+    const QString zzfrRead = c.query(QStringLiteral("ZZFR"));
+    const QString zzfr1    = c.query(QStringLiteral("ZZFR1"));
+    const QString zzfr0    = c.query(QStringLiteral("ZZFR0"));
+    const QString faAfterZzfr = c.query(QStringLiteral("ZZFA"));
+    r.check(QStringLiteral("13.34 ZZFR (read/set, any form) → \"?;\" and never swaps VFO A"),
+            zzfrRead == QLatin1String("?") && zzfr1 == QLatin1String("?")
+                && zzfr0 == QLatin1String("?")
+                && faAfterZzfr.mid(4) == faBeforeZzfr.mid(4),
+            QStringLiteral("read=%1 set1=%2 set0=%3 ZZFA %4->%5")
+                .arg(repr(zzfrRead), repr(zzfr1), repr(zzfr0),
+                     repr(faBeforeZzfr.mid(4)), repr(faAfterZzfr.mid(4))));
 
     // ── ZZAR: VFO A AGC threshold (0-100, 3-digit) ───────────────────────────
     QString origAr = c.query(QStringLiteral("ZZAR"));
@@ -1396,6 +1501,13 @@ private:
 
 void section15pty(Runner& r, const QString& ptyPath)
 {
+    if (ptyPath.isEmpty()) {
+        r.section(QStringLiteral("Section 15 — PTY round-trip (skipped — pass --pty PATH)"));
+        for (const char* name : { "15.1 PTY ID;", "15.2 PTY ZZFA;", "15.3 PTY PS;" })
+            r.skip(QString::fromLatin1(name),
+                   QStringLiteral("no --pty given (use the tested port's cat-* symlink)"));
+        return;
+    }
     r.section(QStringLiteral("Section 15 — PTY round-trip (%1)").arg(ptyPath));
 
     PtyClient p;
@@ -1452,10 +1564,21 @@ int main(int argc, char* argv[])
     parser.addOption({ QStringLiteral("timeout"), QStringLiteral("Read timeout (ms)"), QStringLiteral("MS"), QStringLiteral("3000") });
     parser.addOption({ QStringLiteral("ptt"),     QStringLiteral("Enable PTT tests (needs dummy load)") });
     parser.addOption({ QStringLiteral("cw"),      QStringLiteral("Enable CW keyer tests (needs antenna/dummy load)") });
-    const QString defaultPty1 = defaultPtyPath(1);
-    parser.addOption({ QStringLiteral("pty"),     QStringLiteral("PTY device path for PTY round-trip test (default: %1)").arg(defaultPty1),
-                       QStringLiteral("PATH"),    defaultPty1 });
+    parser.addOption({ QStringLiteral("pty"),     QStringLiteral("PTY device path for the PTY round-trip test (e.g. the tested port's cat-* symlink); §15 is skipped if unset"),
+                       QStringLiteral("PATH"),    QString() });
+    parser.addOption({ QStringLiteral("sections"), QStringLiteral("Comma-separated section numbers to run (default: all). For per-section slice-leak isolation, e.g. --sections 8"),
+                       QStringLiteral("LIST"),    QString() });
     parser.process(app);
+
+    // Optional section filter for slice-leak isolation: run one section at a
+    // time and diff the radio's slice create/remove balance. Empty = run all.
+    QSet<int> secSel;
+    for (const QString& tok : parser.value(QStringLiteral("sections")).split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        bool ok = false;
+        const int n = tok.trimmed().toInt(&ok);
+        if (ok) secSel.insert(n);
+    }
+    auto runSec = [&secSel](int n) { return secSel.isEmpty() || secSel.contains(n); };
 
     const QString host    = parser.value(QStringLiteral("host"));
     const quint16 port    = static_cast<quint16>(parser.value(QStringLiteral("port")).toUInt());
@@ -1491,22 +1614,22 @@ int main(int argc, char* argv[])
             origMode = mdResp.mid(2);
     }
 
-    section1(c, r);
-    section2(c, r, origHz);
-    section3(c, r);
-    section4(c, r, origMode);
-    section5(c, r);
-    section6(c, r);
-    section7(c, r);
-    section8(c, r);
-    section9(c, r);
-    if (doPtt) { section10ptt(c, r); } else { section10skip(r); }
-    section11(c, r);
-    section12(c, r);
-    section13(c, r);
-    if (doCw) { section14cw(c, r); } else { section14skip(r); }
-    section16(c, r);
-    section15pty(r, parser.value(QStringLiteral("pty")));
+    if (runSec(1))  section1(c, r);
+    if (runSec(2))  section2(c, r, origHz);
+    if (runSec(3))  section3(c, r);
+    if (runSec(4))  section4(c, r, origMode);
+    if (runSec(5))  section5(c, r);
+    if (runSec(6))  section6(c, r);
+    if (runSec(7))  section7(c, r);
+    if (runSec(8))  section8(c, r);
+    if (runSec(9))  section9(c, r);
+    if (runSec(10)) { if (doPtt) section10ptt(c, r); else section10skip(r); }
+    if (runSec(11)) section11(c, r);
+    if (runSec(12)) section12(c, r);
+    if (runSec(13)) section13(c, r);
+    if (runSec(14)) { if (doCw) section14cw(c, r); else section14skip(r); }
+    if (runSec(16)) section16(c, r);
+    if (runSec(15)) section15pty(r, parser.value(QStringLiteral("pty")));
 
     // Restore radio state
     c.send(QStringLiteral("ZZAI00"));

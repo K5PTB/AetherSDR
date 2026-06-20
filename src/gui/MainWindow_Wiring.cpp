@@ -258,9 +258,14 @@ void MainWindow::onSliceAdded(SliceModel* s)
             const QString key = QString("DaxChannel_Slice%1").arg(QChar('A' + sliceIdx));
             int savedDax = AppSettings::instance().value(key, "0").toInt();
             if (savedDax > 0) {
-                QTimer::singleShot(300, this, [this, s, savedDax]() {
-                    if (s && !profileLoadRadioStateWritesHeld()) {
-                        s->setDaxChannel(savedDax);
+                // QPointer auto-nulls if the slice is removed inside the 300 ms
+                // window (e.g. a CAT split slice created then closed) — a raw
+                // capture would leave `s` dangling and setDaxChannel() would
+                // dereference freed memory (crash in commandReady/doActivate).
+                QPointer<SliceModel> sp(s);
+                QTimer::singleShot(300, this, [this, sp, savedDax]() {
+                    if (sp && !profileLoadRadioStateWritesHeld()) {
+                        sp->setDaxChannel(savedDax);
                     }
                 });
             }

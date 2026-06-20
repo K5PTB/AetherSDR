@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QMap>
+#include <QList>
 
 namespace AetherSDR {
 
@@ -14,6 +15,10 @@ class SliceModel;
 class RigctlProtocol {
 public:
     explicit RigctlProtocol(RadioModel* model);
+
+    // Closes a split TX slice this protocol created so a client disconnect does
+    // not leave an orphan slice on the radio.
+    ~RigctlProtocol();
 
     // Process one command line (may contain ';' or '|'-separated batch commands).
     // '|' separator enables extended responses joined by '|' (rigctld pipe mode).
@@ -122,6 +127,23 @@ private:
     // Slice we intend to be TX — set synchronously when we queue setTxSlice(true)
     // so findTxSlice() returns the right slice before the event loop fires.
     SliceModel* m_pendingTxSlice{nullptr};
+    // Id of a split TX slice we created via addSlice() (-1 = none / pre-existing
+    // slice we only promoted). Closed on split-disable and in the destructor so a
+    // client disconnect does not leave an orphan slice on the radio.
+    int m_createdTxSliceId{-1};
+    // Slice OBJECTS present when addSlice() was issued; promotion adopts the slice
+    // whose POINTER is not here. By pointer, not id: the radio reuses a freed slice
+    // id, so on a rapid disable→enable the new slice can take the just-removed id
+    // and an id snapshot would skip it as "pre-existing" → never promoted → orphan.
+    QList<const SliceModel*> m_preSplitSlices;
+    // A split slice we asked the radio to remove; skipped during promotion/reuse
+    // until it actually disappears, then cleared.
+    int m_pendingRemovalId{-1};
+    // set_split_vfo 0 arrived while our addSlice() was still in flight (slice not
+    // yet visible). Don't abandon the create: remove the slice as soon as it
+    // materializes (next split command, or the destructor), else it surfaces
+    // unowned as an orphan. Mirrors SmartCatProtocol's flag of the same name.
+    bool m_removeCreatedSliceWhenItAppears{false};
     // Stashed split freq/mode from commands that arrived before the new slice
     // existed (single-slice path).  Applied in tryPromoteTxSlice().
     double  m_pendingSplitFreqMHz{0.0};

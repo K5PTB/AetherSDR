@@ -465,6 +465,7 @@ void CatControlApplet::buildTableRows()
 
         connect(row.dialectCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this, capturedI](int) {
+                    updateRowLocked(capturedI);   // rigctld → force VFO B to "-" + disable
                     applyRowToSettings(capturedI);
                     emit configChanged();
                 });
@@ -504,11 +505,24 @@ void CatControlApplet::updateRowLocked(int row)
     // Lock on UI state only — isRunning() lags behind the checkbox by one applyCatPortCount cycle.
     bool locked   = masterOn && r.enableCheck->isChecked() && hasPort;
 
+    // rigctld is single-VFO per port (RigctlProtocol has no VFO B) — split is
+    // create-on-demand, so a configured VFO B is meaningless there. Force VFO B
+    // to "-" (none) and disable the selector for the Rigctld dialect.
+    const bool isRigctld =
+        r.dialectCombo->currentData().toInt() == static_cast<int>(CatDialect::Rigctld);
+    if (isRigctld) {
+        const int noneIdx = r.vfoBCombo->findData(-1);
+        if (noneIdx >= 0 && r.vfoBCombo->currentIndex() != noneIdx) {
+            QSignalBlocker b(r.vfoBCombo);
+            r.vfoBCombo->setCurrentIndex(noneIdx);
+        }
+    }
+
     r.enableCheck->setEnabled(hasPort || !r.enableCheck->isChecked());
     r.portEdit->setReadOnly(locked);
     r.dialectCombo->setEnabled(!locked);
     r.vfoACombo->setEnabled(!locked);
-    r.vfoBCombo->setEnabled(!locked);
+    r.vfoBCombo->setEnabled(!locked && !isRigctld);
 }
 
 // ── Persist row settings ─────────────────────────────────────────────────────
