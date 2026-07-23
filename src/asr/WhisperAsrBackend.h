@@ -25,14 +25,21 @@ public:
 
     bool load(const QString& modelPath, QString* error) override;
     bool isLoaded() const override { return m_ctx != nullptr; }
-    AsrTranscript transcribe(const std::vector<float>& pcm16k, QString* error) override;
+    AsrTranscript transcribe(const std::vector<float>& pcm16k, int overlapMs, QString* error) override;
     void unload() override;
+    // Experimental (RFC #4333 follow-up): see IAsrBackend::setContextCarryEnabled.
+    // Gated internally by the previous call's confidence (see .cpp) so a
+    // garbled decode doesn't poison the next one's prompt.
+    void setContextCarryEnabled(bool on) override;
 
 private:
     whisper_context* m_ctx = nullptr;
     QString m_language;
     int m_threads = 0;
     int m_gpuDevice = 0;
+    bool m_contextCarryEnabled = false;
+    bool m_hadPreviousSegment = false; // false right after load()/a reset — nothing to carry yet
+    float m_lastConfidence = 0.0f;
 };
 
 // A selectable GPU: `index` is the value to pass as gpuDevice (its position among

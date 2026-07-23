@@ -50,7 +50,7 @@ public:
         return true;
     }
     bool isLoaded() const override { return m_loaded; }
-    AsrTranscript transcribe(const std::vector<float>& pcm, QString*) override
+    AsrTranscript transcribe(const std::vector<float>& pcm, int, QString*) override
     {
         if (pcm.empty()) {
             return {};
@@ -83,7 +83,7 @@ public:
         return true;
     }
     bool isLoaded() const override { return m_loaded; }
-    AsrTranscript transcribe(const std::vector<float>& pcm, QString*) override
+    AsrTranscript transcribe(const std::vector<float>& pcm, int, QString*) override
     {
         QThread::msleep(m_delayMs);
         if (pcm.empty()) {
