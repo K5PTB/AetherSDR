@@ -30,6 +30,7 @@
 #include "ClientChainApplet.h"
 #include "CatControlApplet.h"
 #include "DaxApplet.h"
+#include "CwNeuralApplet.h"
 #include "TciApplet.h"
 #include "DaxIqApplet.h"
 #include "AntennaGeniusApplet.h"
@@ -884,6 +885,11 @@ AppletPanel::AppletPanel(QWidget* parent) : QWidget(parent)
 
     m_daxApplet = new DaxApplet;
     m_appletOrder.append(makeEntry("DAX", "DAX Audio", m_daxApplet, false, m_drawer, m_drawerLayout));
+
+    // Temporary neural-CW comparison applet (RFC #4333 follow-up): shows DeepCW
+    // output so it can run beside the DSP CW panel. Off by default.
+    m_cwNeuralApplet = new CwNeuralApplet;
+    m_appletOrder.append(makeEntry("CWNN", "CW Neural", m_cwNeuralApplet, false, m_drawer, m_drawerLayout));
 
     m_tciApplet = new TciApplet;
     m_appletOrder.append(makeEntry("TCI", "TCI Server", m_tciApplet, false, m_drawer, m_drawerLayout));

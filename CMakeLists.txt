@@ -741,6 +741,7 @@ set(CORE_SOURCES
     src/core/OpusTxPacer.cpp
     src/core/SpecbleachFilter.cpp
     src/core/CwDecoder.cpp
+    src/core/DeepCwEngine.cpp    # neural CW decoder backend (ONNX; inert without HAVE_ONNX)
     src/core/CwCallsignSpotter.cpp
     src/core/CallsignInfo.cpp
     src/core/QrzClient.cpp
@@ -1026,6 +1027,7 @@ set(GUI_SOURCES
     src/gui/StripCompPanel.cpp
     src/gui/CatControlApplet.cpp
     src/gui/DaxApplet.cpp
+    src/gui/CwNeuralApplet.cpp
     src/gui/TciApplet.cpp
     src/gui/DaxIqApplet.cpp
     src/gui/MqttApplet.cpp

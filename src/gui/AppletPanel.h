@@ -50,6 +50,7 @@ class ClientRxDspApplet;
 class ClientChainApplet;
 class CatControlApplet;
 class DaxApplet;
+class CwNeuralApplet;
 class TciApplet;
 class DaxIqApplet;
 class AntennaGeniusApplet;
@@ -138,6 +139,7 @@ public:
     ClientChainApplet* clientChainApplet() { return m_clientChainApplet; }
     CatControlApplet* catControlApplet() { return m_catControlApplet; }
     DaxApplet*      daxApplet()      { return m_daxApplet; }
+    CwNeuralApplet* cwNeuralApplet()  { return m_cwNeuralApplet; }
     TciApplet*      tciApplet()      { return m_tciApplet; }
     DaxIqApplet*    daxIqApplet()    { return m_daxIqApplet; }
     AntennaGeniusApplet* agApplet()  { return m_agApplet; }
@@ -359,6 +361,7 @@ private:
     ClientChainApplet* m_clientChainApplet{nullptr};
     CatControlApplet* m_catControlApplet{nullptr};
     DaxApplet*     m_daxApplet{nullptr};
+    CwNeuralApplet* m_cwNeuralApplet{nullptr};
     TciApplet*     m_tciApplet{nullptr};
     DaxIqApplet*   m_daxIqApplet{nullptr};
     AntennaGeniusApplet* m_agApplet{nullptr};

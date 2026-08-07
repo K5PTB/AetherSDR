@@ -23,6 +23,7 @@
 
 #include "AetherialAudioStrip.h"
 #include "AppletPanel.h"
+#include "CwNeuralApplet.h"
 #include "ConnectedStationsDialog.h"
 #include "ConnectionPanel.h"
 #include "PhoneCwApplet.h"
@@ -1962,6 +1963,24 @@ void MainWindow::wireRxDemodAudioSinks()
             &m_cwDecoder, [this](const QByteArray& pcm) {
                 if (CwDecodeSettings::rxEnabled())
                     m_cwDecoder.feedAudio(pcm);
+            });
+
+    // Dedicated DeepCW comparison decoder (CW Neural applet) — same audio, fed
+    // only while that decoder is running (updateNeuralCompareDecoder gates it).
+    connect(&m_radioModel, &RadioModel::rxDemodAudioReady,
+            &m_cwDecoderNeural, [this](const QByteArray& pcm) {
+                if (m_cwDecoderNeural.isRunning())
+                    m_cwDecoderNeural.feedAudio(pcm);
+            });
+    connect(&m_cwDecoderNeural, &CwDecoder::textDecoded, this,
+            [this](const QString& text, float cost) {
+                if (auto* a = m_appletPanel ? m_appletPanel->cwNeuralApplet() : nullptr)
+                    a->appendText(text, cost);
+            });
+    connect(&m_cwDecoderNeural, &CwDecoder::statsUpdated, this,
+            [this](float pitchHz, float speedWpm) {
+                if (auto* a = m_appletPanel ? m_appletPanel->cwNeuralApplet() : nullptr)
+                    a->setStats(pitchHz, speedWpm);
             });
 
     // RTTY decoder RX feed — gated on the decoder being running.

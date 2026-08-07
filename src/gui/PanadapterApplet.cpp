@@ -24,6 +24,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QGraphicsOpacityEffect>
 #include <QTextEdit>
 #include <QWindow>
 #include <QGuiApplication>
@@ -158,6 +159,47 @@ PanadapterApplet::PanadapterApplet(QWidget* parent)
     auto* cwHint = new QLabel("(requires PC Audio)");
     AetherSDR::ThemeManager::instance().applyStyleSheet(cwHint, "QLabel { color: {{color.meter.bar.fill}}; font-size: 9px; background: transparent; }");
     cwBar->addWidget(cwHint);
+
+    // Decoder engine toggle: DSP (ggmorse) <-> Neural (DeepCW). The label shows
+    // the *active* engine; clicking flips it and MainWindow downloads the neural
+    // model on first use, then swaps the live RX decoder (see reconcileCwBackend).
+    auto* decoderLabel = new QLabel("Decoder:");
+    AetherSDR::ThemeManager::instance().applyStyleSheet(decoderLabel, "QLabel { color: {{color.text.label}}; font-size: 9px; background: transparent; }");
+    cwBar->addWidget(decoderLabel);
+    m_cwBackendBtn = new QPushButton;
+    m_cwBackendBtn->setCheckable(true);
+    m_cwBackendBtn->setFixedHeight(16);
+    m_cwBackendBtn->setMinimumWidth(50);
+    m_cwBackendBtn->setToolTip("CW decode engine — DSP (ggmorse) or Neural (DeepCW, downloaded on first use)");
+    // Bright/readable in BOTH states: DSP shows primary text, Neural adds the
+    // accent color + border. (Not the dim text.label, which read as disabled.)
+    AetherSDR::ThemeManager::instance().applyStyleSheet(m_cwBackendBtn,
+        "QPushButton { background: {{color.background.1}}; color: {{color.text.primary}}; border: 1px solid {{color.background.2}};"
+        " border-radius: 2px; font-size: 9px; font-weight: bold; padding: 0 6px; }"
+        "QPushButton:checked { color: {{color.accent}}; border-color: {{color.accent}}; }"
+        "QPushButton:hover { color: {{color.text.primary}}; }");
+    {
+        const bool neural = CwDecodeSettings::deepCwSelected();
+        m_cwBackendBtn->setChecked(neural);
+        m_cwBackendBtn->setText(neural ? "Neural" : "DSP");
+    }
+    connect(m_cwBackendBtn, &QPushButton::clicked, this, [this](bool checked) {
+        m_cwBackendBtn->setText(checked ? "Neural" : "DSP");
+        setCwNeuralUi(checked);
+        emit cwBackendChanged(checked);
+    });
+    cwBar->addWidget(m_cwBackendBtn);
+
+    // Zero Beat — tune so the received CW note matches the configured pitch
+    // (same action as the VFO flag's Zero Beat, #2516). Works in both engines.
+    m_cwZeroBeatBtn = new QPushButton("Zero Beat");
+    m_cwZeroBeatBtn->setFixedHeight(16);
+    m_cwZeroBeatBtn->setToolTip("Tune so the received CW note matches your configured pitch");
+    m_cwZeroBeatBtn->setStyleSheet(m_cwBackendBtn->styleSheet());
+    connect(m_cwZeroBeatBtn, &QPushButton::clicked, this, [this]() {
+        emit cwZeroBeatRequested();
+    });
+    cwBar->addWidget(m_cwZeroBeatBtn);
 
     m_cwStatsLabel = new QLabel;
     AetherSDR::ThemeManager::instance().applyStyleSheet(m_cwStatsLabel, "QLabel { color: {{color.text.label}}; font-size: 10px; background: transparent; }");
@@ -775,6 +817,42 @@ void PanadapterApplet::setCwStats(float pitchHz, float speedWpm)
 {
     if (pitchHz > 0 && speedWpm > 0)
         m_cwStatsLabel->setText(QString("%1 Hz  %2 WPM").arg(pitchHz, 0, 'f', 0).arg(speedWpm, 0, 'f', 0));
+    else if (pitchHz > 0)
+        // Neural (CTC) decode reports pitch but no speed — show pitch alone.
+        m_cwStatsLabel->setText(QString("%1 Hz").arg(pitchHz, 0, 'f', 0));
+}
+
+void PanadapterApplet::setCwNeuralUi(bool neural)
+{
+    if (m_cwBackendBtn) {
+        m_cwBackendBtn->setChecked(neural);
+        m_cwBackendBtn->setText(neural ? "Neural" : "DSP");
+    }
+    // ggmorse-only search controls — a neural (CTC) model ignores them, so grey
+    // them out to make clear they have no effect. Sens stays live (it filters on
+    // the model's per-decode confidence); Zero Beat stays live (works in both).
+    // RangeSlider is custom-painted and ignores setEnabled() visually, so dim
+    // with an opacity effect for a clear "inactive" cue in addition to disabling.
+    auto dim = [neural](QWidget* w) {
+        if (!w) return;
+        if (neural) {
+            // No QObject parent: setGraphicsEffect() takes sole ownership. Passing
+            // the widget as parent too would double-own the effect (double-free).
+            auto* fx = new QGraphicsOpacityEffect;
+            fx->setOpacity(0.35);
+            w->setGraphicsEffect(fx);   // widget takes ownership; replaces any prior
+        } else {
+            w->setGraphicsEffect(nullptr);  // remove -> full opacity
+        }
+        w->setEnabled(!neural);
+    };
+    dim(m_pitchRangeSlider);
+    dim(m_speedRangeSlider);
+    dim(m_lockPitchBtn);
+    dim(m_lockSpeedBtn);
+    // Drop the stale DSP pitch/WPM readout; setCwStats() repopulates it (pitch
+    // only in neural mode) on the next decode.
+    if (m_cwStatsLabel) m_cwStatsLabel->clear();
 }
 
 void PanadapterApplet::clearCwText()

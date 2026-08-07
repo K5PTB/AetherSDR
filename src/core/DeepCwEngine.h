@@ -1,0 +1,86 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <memory>
+
+#ifdef HAVE_ONNX
+#include <onnxruntime_cxx_api.h>
+#endif
+
+namespace AetherSDR {
+
+// Neural CW (Morse) decoder backend — the e04/deepcw-engine ONNX model
+// (AGPL-3.0; download-on-demand, not shipped). A small CTC CNN over a
+// log-magnitude spectrogram. Given a mono audio window, the engine resamples
+// to 3200 Hz, builds the exact spectrogram the model was trained on, runs one
+// ONNX Runtime inference, and greedy-CTC-decodes the log-probs to text.
+//
+// Deliberately Qt-free (pure std + FFTW + ORT) so it can be unit-tested and
+// prototyped standalone; the CwDecoder wrapper adapts std::string -> QString.
+// ORT calls compile out without HAVE_ONNX (decode() then returns empty).
+//
+// Model contract — pinned to model.onnx.json (verbatim), do not drift:
+//   input  "spectrogram" float32 [1, 1, T, 65]   (NCHW; T = time frames)
+//   output "log_probs"   float32 [1, T, 42]       (42 = 41 chars + CTC blank)
+//   sample_rate 3200, fft_length 256, hop_length 48, Hann window,
+//   band 400-1200 Hz -> 65 bins, normalization log1p, blank_index 41.
+//   Trained on 5-20 s windows (the time dim is dynamic, so other lengths run,
+//   but stay in range for in-distribution accuracy).
+class DeepCwEngine {
+public:
+    DeepCwEngine();
+    ~DeepCwEngine();
+
+    // Load model.onnx from disk. Returns false (and logs to stderr) on error.
+    bool loadModel(const std::string& path);
+    bool isLoaded() const { return m_loaded; }
+
+    // Decode a mono audio window. `audio` is float PCM in [-1, 1] at
+    // `sampleRateHz` (any rate; resampled internally to 3200 Hz). Returns the
+    // decoded CW text (may be empty). Feed ~5-20 s of audio for best accuracy.
+    // When avgConfidence is non-null, it receives the mean per-emitted-character
+    // softmax confidence in [0,1] (1.0 when nothing decoded) — the caller can map
+    // this to a cost for the sensitivity filter (cost = 1 - confidence).
+    // When pitchHz is non-null, it receives the dominant CW tone frequency in the
+    // model's 400-1200 Hz band (peak-energy spectrogram bin), 0 if indeterminate
+    // — lets the client zero-beat and show a pitch readout even in neural mode.
+    std::string decode(const std::vector<float>& audio, int sampleRateHz,
+                       float* avgConfidence = nullptr, float* pitchHz = nullptr) const;
+
+    // Model contract constants (from model.onnx.json).
+    static constexpr int    kModelSampleRate = 3200;
+    static constexpr int    kFftLength       = 256;
+    static constexpr int    kHopLength       = 48;
+    static constexpr double kMinFreqHz       = 400.0;
+    static constexpr double kMaxFreqHz       = 1200.0;
+    static constexpr int    kFreqBins        = 65;   // stop_bin(97) - start_bin(32)
+    static constexpr int    kNumClasses      = 42;
+    static constexpr int    kBlankIndex      = 41;
+    static constexpr double kMinWindowSec    = 5.0;
+    static constexpr double kMaxWindowSec    = 20.0;
+
+private:
+    // Linear-interpolation resample to 3200 Hz — byte-for-byte the reference
+    // decode_morse.py resample_linear (keeps us bit-comparable to upstream).
+    std::vector<float> resampleTo3200(const std::vector<float>& in, int srcRate) const;
+
+    // Build the model spectrogram, flat row-major [frames * kFreqBins]
+    // (time-major, freq inner), from 3200 Hz mono audio. *frames set on return.
+    std::vector<float> spectrogram(const std::vector<float>& audio3200, int* frames) const;
+
+    // Greedy CTC decode of log_probs [frames, kNumClasses] -> text. When
+    // avgConfidence is non-null, sets it to the mean softmax probability of the
+    // argmax class across the timesteps that emitted a character.
+    std::string ctcDecode(const float* logProbs, int frames, float* avgConfidence) const;
+
+    bool m_loaded{false};
+#ifdef HAVE_ONNX
+    Ort::Env            m_env;
+    Ort::SessionOptions m_sessionOpts;
+    std::unique_ptr<Ort::Session> m_session;
+    Ort::MemoryInfo     m_memInfo;
+#endif
+};
+
+} // namespace AetherSDR

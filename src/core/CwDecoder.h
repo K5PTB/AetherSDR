@@ -12,9 +12,15 @@ class GGMorse;
 
 namespace AetherSDR {
 
-// Client-side CW (Morse code) decoder using ggmorse.
-// Runs decoding on a worker thread. Feed it 24kHz stereo int16 PCM
-// and it emits decoded text character by character.
+class DeepCwEngine;
+
+// Client-side CW (Morse code) decoder. Two interchangeable backends:
+//   - Ggmorse (default): the DSP decoder (ggmorse), auto pitch/speed detection.
+//   - DeepCw: a neural (ONNX CTC) decoder — see DeepCwEngine. Requires a model
+//     downloaded on demand and handed in via loadDeepCwModel(); inert otherwise.
+// Runs decoding on a worker thread. Feed it 24kHz stereo float32 PCM (feedAudio)
+// and it emits decoded text via textDecoded(). The backend is chosen before
+// start(); switching a running decoder requires stop() then start().
 //
 // Usage:
 //   decoder.start();
@@ -27,6 +33,19 @@ class CwDecoder : public QObject {
 public:
     explicit CwDecoder(QObject* parent = nullptr);
     ~CwDecoder() override;
+
+    // Selectable decode backend. Read once at start(); to change a running
+    // decoder, stop() then start() (the GUI does this on selection).
+    enum class Backend { Ggmorse, DeepCw };
+    void setBackend(Backend b) { m_backend = static_cast<int>(b); }
+    Backend backend() const { return static_cast<Backend>(m_backend.load()); }
+
+    // Load the DeepCW ONNX model from disk (built by the download manager at the
+    // GUI layer). Safe to call before start(). Returns false if the build has no
+    // ONNX support or the model fails to load. When the DeepCw backend is
+    // selected but no model is loaded, the decoder simply produces no text.
+    bool loadDeepCwModel(const QString& modelPath);
+    bool deepCwModelLoaded() const { return m_deepLoaded; }
 
     void start();
     void stop();
@@ -59,11 +78,15 @@ signals:
     void statsUpdated(float pitchHz, float speedWpm);
 
 private:
-    void decodeLoop();
+    void decodeLoop();       // ggmorse (DSP) worker loop
+    void decodeLoopDeep();   // DeepCW (neural) worker loop
     void applyDecodeParameters();
 
     QThread*      m_workerThread{nullptr};
     std::unique_ptr<GGMorse> m_ggmorse;
+    std::unique_ptr<DeepCwEngine> m_deepcw;   // created on loadDeepCwModel()
+    std::atomic<int>  m_backend{static_cast<int>(Backend::Ggmorse)};
+    std::atomic<bool> m_deepLoaded{false};
 
     // Ring buffer for audio samples (mono int16 at 24kHz)
     QMutex        m_bufMutex;

@@ -41,6 +41,20 @@ public:
     // should be visible at all (regardless of which direction is fed).
     static bool anyEnabled() { return rxEnabled() || txEnabled(); }
 
+    // Decode backend: "ggmorse" (DSP, default) or "deepcw" (neural ONNX).
+    // Stored in the same nested blob; the model is downloaded on demand when
+    // "deepcw" is first selected (RFC #4333 CW follow-up).
+    static QString backend() { return readObj().value("backend").toString(QStringLiteral("ggmorse")); }
+    static bool deepCwSelected() { return backend() == QStringLiteral("deepcw"); }
+    static void setBackend(const QString& b)
+    {
+        QJsonObject o = readObj();
+        o["backend"] = (b == QStringLiteral("deepcw")) ? QStringLiteral("deepcw")
+                                                       : QStringLiteral("ggmorse");
+        ensureToggles(o);
+        write(o);
+    }
+
     // Decoded-text display font size (px) and panel height (px), persisted
     // so operators can tune readability and history depth (#3628).  Stored
     // in the same nested blob alongside the rx/tx toggles.

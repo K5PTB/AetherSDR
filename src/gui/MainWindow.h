@@ -153,6 +153,7 @@ class GpsLocationDialog;
 #ifdef AETHER_ASR_ENABLED
 class CopyAssistController;
 #endif
+class AsrModelManager;   // reused to download the DeepCW model on demand
 class FlexControlDialog;
 class MidiMappingDialog;
 #ifdef HAVE_HIDAPI
@@ -666,6 +667,14 @@ private:
                                              const QString& panId = QString());
     void setActivePanApplet(PanadapterApplet* applet);
     void routeCwDecoderOutput();
+    // Reconcile the RX CW decoder's backend (ggmorse vs DeepCW neural) with the
+    // persisted CwDecodeSettings selection; downloads the DeepCW model on demand
+    // the first time it's chosen. Called from refreshCwDecodeState().
+    void reconcileCwBackend();
+    // Start/stop the dedicated DeepCW decoder that feeds the CW Neural compare
+    // applet, and download/load its model on demand. Called from
+    // refreshCwDecodeState(); runs only while the applet is enabled.
+    void updateNeuralCompareDecoder(bool shouldRun);
     // Show a decoder panel on exactly one applet — the current decoder target —
     // and hide it on every other pan, so a moved target can't leave a stale
     // dock (#4409). `setter` is setCwPanelVisible or setRttyPanelVisible.
@@ -983,6 +992,8 @@ private:
     float             m_cwLastPitchHz{0.0f};
     float             m_cwLastSpeedWpm{0.0f};
     CwDecoder         m_cwDecoderTx;
+    CwDecoder         m_cwDecoderNeural;         // dedicated DeepCW decoder for the CW Neural compare applet
+    AsrModelManager*  m_deepCwModels{nullptr};  // lazily created; downloads the DeepCW model
     CwCallsignSpotter m_cwCallsignSpotter;
     RttyDecoder       m_rttyDecoder;
     DxClusterClient*   m_dxCluster{nullptr};

@@ -1,7 +1,10 @@
 #include "CwDecoder.h"
 #include "LogManager.h"
+#include "DeepCwEngine.h"
 #include "ggmorse/ggmorse.h"
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace AetherSDR {
 
@@ -14,25 +17,40 @@ CwDecoder::~CwDecoder()
     stop();
 }
 
+bool CwDecoder::loadDeepCwModel(const QString& modelPath)
+{
+    if (!m_deepcw)
+        m_deepcw = std::make_unique<DeepCwEngine>();
+    const bool ok = m_deepcw->loadModel(modelPath.toStdString());
+    m_deepLoaded = ok;
+    qCInfo(lcDsp) << "CwDecoder: DeepCW model load" << (ok ? "ok" : "FAILED")
+                  << modelPath;
+    return ok;
+}
+
 void CwDecoder::start()
 {
     if (m_running) return;
 
-    // Create ggmorse instance for 24kHz mono int16 input
-    GGMorse::Parameters params;
-    params.sampleRateInp = 24000.0f;
-    params.sampleRateOut = 24000.0f;
-    params.samplesPerFrame = GGMorse::kDefaultSamplesPerFrame;
-    params.sampleFormatInp = GGMORSE_SAMPLE_FORMAT_I16;
-    params.sampleFormatOut = GGMORSE_SAMPLE_FORMAT_I16;
+    const bool deep = (backend() == Backend::DeepCw);
 
-    m_ggmorse = std::make_unique<GGMorse>(params);
+    if (!deep) {
+        // Create ggmorse instance for 24kHz mono int16 input
+        GGMorse::Parameters params;
+        params.sampleRateInp = 24000.0f;
+        params.sampleRateOut = 24000.0f;
+        params.samplesPerFrame = GGMorse::kDefaultSamplesPerFrame;
+        params.sampleFormatInp = GGMORSE_SAMPLE_FORMAT_I16;
+        params.sampleFormatOut = GGMORSE_SAMPLE_FORMAT_I16;
 
-    // Auto-detect pitch and speed
-    GGMorse::ParametersDecode dp = GGMorse::getDefaultParametersDecode();
-    dp.frequency_hz = -1;  // auto
-    dp.speed_wpm = -1;     // auto
-    m_ggmorse->setParametersDecode(dp);
+        m_ggmorse = std::make_unique<GGMorse>(params);
+
+        // Auto-detect pitch and speed
+        GGMorse::ParametersDecode dp = GGMorse::getDefaultParametersDecode();
+        dp.frequency_hz = -1;  // auto
+        dp.speed_wpm = -1;     // auto
+        m_ggmorse->setParametersDecode(dp);
+    }
 
     m_running = true;
 
@@ -42,13 +60,16 @@ void CwDecoder::start()
     }
 
     // Run decode loop on worker thread (CwDecoder stays on main thread)
-    auto* worker = QThread::create([this]() { decodeLoop(); });
+    auto* worker = QThread::create([this, deep]() {
+        if (deep) decodeLoopDeep();
+        else      decodeLoop();
+    });
     worker->setObjectName("CwDecoder");
     connect(worker, &QThread::finished, worker, &QThread::deleteLater);
     m_workerThread = worker;
     worker->start();
 
-    qCDebug(lcDsp) << "CwDecoder: started";
+    qCDebug(lcDsp) << "CwDecoder: started, backend:" << (deep ? "DeepCW" : "ggmorse");
 }
 
 void CwDecoder::stop()
@@ -233,6 +254,91 @@ void CwDecoder::decodeLoop()
     }
 
     qCDebug(lcDsp) << "CwDecoder: decode loop exiting, total frames:" << feedCount;
+}
+
+// DeepCW (neural) worker loop. The model is a whole-window CTC decoder trained
+// on 5-20 s clips, so we accumulate a rolling audio segment and re-decode it as
+// it grows, emitting only the newly-decoded suffix (the decode of a longer clip
+// is normally a prefix-extension of the shorter one). Near the model's 20 s cap
+// we finalize the segment and start fresh so inference stays in-distribution.
+//
+// feedAudio() has already downmixed the RX audio to mono int16 @24 kHz into
+// m_ringBuf; here we drain it into a float segment (DeepCwEngine resamples
+// 24k->3200 internally). Prototype heuristics — a later revision can add a
+// proper streaming/overlap-merge and silence-based segmentation.
+void CwDecoder::decodeLoopDeep()
+{
+    constexpr int   kRate        = 24000;
+    const size_t    kMinDecode   = kRate * 5;    // model floor: 5 s
+    const size_t    kHopSamples  = kRate * 2;    // re-decode every ~2 s of new audio
+    const size_t    kMaxSamples  = kRate * 15;   // finalize before the 20 s cap (headroom)
+
+    std::vector<float> seg;
+    seg.reserve(kMaxSamples + kRate);
+    std::string emitted;              // text already emitted for the current segment
+    size_t lastDecodeSamples = 0;
+
+    qCDebug(lcDsp) << "CwDecoder: DeepCW loop running, modelLoaded:" << m_deepLoaded.load();
+
+    while (m_running) {
+        // Drain the handoff ring (mono int16 @24k) into the float segment.
+        {
+            QMutexLocker lock(&m_bufMutex);
+            const int n = m_ringBuf.size() / static_cast<int>(sizeof(int16_t));
+            if (n > 0) {
+                const auto* s = reinterpret_cast<const int16_t*>(m_ringBuf.constData());
+                for (int i = 0; i < n; ++i)
+                    seg.push_back(s[i] / 32768.0f);
+                m_ringBuf.clear();
+            }
+        }
+
+        const bool haveMin    = seg.size() >= kMinDecode;
+        const bool grewEnough = seg.size() >= lastDecodeSamples + kHopSamples;
+
+        if (m_deepLoaded && m_deepcw && haveMin && grewEnough) {
+            float conf = 1.0f;
+            float pitchHz = 0.0f;
+            const std::string text = m_deepcw->decode(seg, kRate, &conf, &pitchHz);
+            lastDecodeSamples = seg.size();
+            // Map mean CTC confidence to the panel's cost convention (lower =
+            // better) so the Sensitivity slider filters shaky neural decodes.
+            const float cost = 1.0f - conf;
+
+            // Publish the dominant-tone pitch (no speed estimate for a CTC model)
+            // so zero-beat and the pitch readout work in neural mode too.
+            if (pitchHz > 0.0f) {
+                m_pitch = pitchHz;
+                emit statsUpdated(pitchHz, 0.0f);
+            }
+
+            // Emit the suffix beyond what we've shown when the new decode extends
+            // the old as a prefix; on a divergent revision, silently adopt the new
+            // baseline (a rare correction may drop/duplicate a few chars — accepted
+            // for the prototype).
+            if (text.size() >= emitted.size()
+                && text.compare(0, emitted.size(), emitted) == 0) {
+                const std::string delta = text.substr(emitted.size());
+                if (!delta.empty()) {
+                    emit textDecoded(QString::fromStdString(delta), cost);
+                    emitted = text;
+                }
+            } else {
+                emitted = text;
+            }
+        }
+
+        // Finalize near the model's max window and start a fresh segment.
+        if (seg.size() >= kMaxSamples) {
+            seg.clear();
+            emitted.clear();
+            lastDecodeSamples = 0;
+        }
+
+        QThread::msleep(200);
+    }
+
+    qCDebug(lcDsp) << "CwDecoder: DeepCW loop exiting";
 }
 
 } // namespace AetherSDR
