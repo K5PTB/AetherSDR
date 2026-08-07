@@ -369,24 +369,22 @@ CopyAssistController::CopyAssistController(AudioEngine* audio, CopyAssistPanel* 
 
     // Experimental (RFC #4333 follow-up), both live — no engine rebuild needed.
     m_settings->setContextCarryEnabled(
-        AppSettings::instance().value(QStringLiteral("AsrContextCarryEnabled"), QStringLiteral("False"))
+        CopyAssistSettings::value(QStringLiteral("AsrContextCarryEnabled"), QStringLiteral("False"))
             .toString() == QStringLiteral("True"));
     m_settings->setOverlapEnabled(
-        AppSettings::instance().value(QStringLiteral("AsrOverlapEnabled"), QStringLiteral("False"))
+        CopyAssistSettings::value(QStringLiteral("AsrOverlapEnabled"), QStringLiteral("False"))
             .toString() == QStringLiteral("True"));
     m_settings->setOverlapMs(
-        AppSettings::instance().value(QStringLiteral("AsrOverlapMs"), QStringLiteral("500"))
+        CopyAssistSettings::value(QStringLiteral("AsrOverlapMs"), QStringLiteral("500"))
             .toString().toInt());
     connect(m_settings, &CopyAssistSettingsDialog::contextCarryToggled, this, [this](bool on) {
-        auto& st = AppSettings::instance();
-        st.setValue(QStringLiteral("AsrContextCarryEnabled"), on ? QStringLiteral("True") : QStringLiteral("False"));
-        st.save();
+        CopyAssistSettings::setValue(QStringLiteral("AsrContextCarryEnabled"),
+                                     on ? QStringLiteral("True") : QStringLiteral("False"));
         m_asr->setContextCarryEnabled(on);
     });
     connect(m_settings, &CopyAssistSettingsDialog::overlapToggled, this, [this](bool on) {
-        auto& st = AppSettings::instance();
-        st.setValue(QStringLiteral("AsrOverlapEnabled"), on ? QStringLiteral("True") : QStringLiteral("False"));
-        st.save();
+        CopyAssistSettings::setValue(QStringLiteral("AsrOverlapEnabled"),
+                                     on ? QStringLiteral("True") : QStringLiteral("False"));
         // "Off" means 0ms to the segmenter (disabled); "on" resumes the configured length.
         m_asr->setOverlapMs(on ? m_settings->overlapMs() : 0);
     });
