@@ -2445,8 +2445,8 @@ QWidget* RadioSetupDialog::buildPhoneCwTab()
         });
         grid->addWidget(rxDecodeBtn, 2, 5);
         grid->addWidget(txDecodeBtn, 2, 6);
-
-
+        // (Decoder engine DSP/Neural lives on the CW decode panel header, next
+        // to Sens/Lock — see PanadapterApplet.)
 
         vbox->addWidget(group);
     }

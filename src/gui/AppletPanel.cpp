@@ -33,6 +33,7 @@
 #include "ClientChainApplet.h"
 #include "CatControlApplet.h"
 #include "DaxApplet.h"
+#include "CwNeuralApplet.h"
 #include "TciApplet.h"
 #include "DaxIqApplet.h"
 #include "AntennaGeniusApplet.h"
@@ -945,6 +946,17 @@ AppletPanel::AppletPanel(QWidget* parent) : QWidget(parent)
 
     m_daxApplet = new DaxApplet;
     m_appletOrder.append(makeEntry("DAX", "DAX Audio", m_daxApplet, false, m_drawer, m_drawerLayout));
+
+    // TEMPORARY evaluation harness (RFC #4817): a side-by-side neural-CW compare
+    // applet that shows DeepCW output beside the DSP CW panel for A/B listening.
+    // Off by default and NOT intended to merge — it doubles the DSP + MQTT publish
+    // cost and exists only to gather the off-air comparison the RFC is gated on.
+    // Drop this block before any merge PR. Gated on the same availability as the
+    // neural backend so it isn't offered when DeepCW can't exist.
+#if defined(HAVE_ONNX) && defined(AETHER_ASR_ENABLED)
+    m_cwNeuralApplet = new CwNeuralApplet;
+    m_appletOrder.append(makeEntry("CWNN", "CW Neural", m_cwNeuralApplet, false, m_drawer, m_drawerLayout));
+#endif
 
     m_tciApplet = new TciApplet;
     m_appletOrder.append(makeEntry("TCI", "TCI Server", m_tciApplet, false, m_drawer, m_drawerLayout));

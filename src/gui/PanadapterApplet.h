@@ -73,6 +73,10 @@ public:
     QPushButton* lockPitchButton()  const { return m_lockPitchBtn; }
     QPushButton* lockSpeedButton()  const { return m_lockSpeedBtn; }
     float        cwCostThreshold()  const { return m_cwCostThreshold; }
+    // Reflect the active decode backend in the header: relabel the Decoder
+    // toggle (DSP/Neural) and grey out the ggmorse-only search controls
+    // (pitch/WPM ranges, lock pitch/speed) that a neural model ignores.
+    void setCwNeuralUi(bool neural);
     // Contact card beside the decoded text — MainWindow's QRZ wiring
     // fills it when the CW stream identifies a station (hidden until then).
     CallsignCard* cwCallsignCard() const { return m_cwCallsignCard; }
@@ -108,6 +112,10 @@ signals:
     void pitchRangeChanged(int minHz, int maxHz);
     void speedRangeChanged(int minWpm, int maxWpm);
     void cwPanelCloseRequested();
+    // Decoder engine toggle in the header: true = DeepCW neural, false = ggmorse.
+    void cwBackendChanged(bool neural);
+    // Header Zero Beat: tune so the received CW tone matches the configured pitch.
+    void cwZeroBeatRequested();
     // RX text that passed the confidence filter and was rendered — the
     // stream the CW callsign spotter watches for "DE <call> <call>".
     void cwRxTextDisplayed(const QString& text);
@@ -168,6 +176,8 @@ private:
     CallsignCard* m_cwCallsignCard{nullptr};
     QLabel*       m_cwStatsLabel{nullptr};
     QSlider*      m_cwSensSlider{nullptr};
+    QPushButton*  m_cwBackendBtn{nullptr};   // Decoder: DSP / Neural toggle
+    QPushButton*  m_cwZeroBeatBtn{nullptr};  // Zero Beat (mirrors the VFO-flag button)
     QPushButton*  m_lockPitchBtn{nullptr};
     QPushButton*  m_lockSpeedBtn{nullptr};
     RangeSlider*  m_pitchRangeSlider{nullptr};

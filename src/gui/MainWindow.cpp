@@ -30,7 +30,10 @@
 #include "PanadapterApplet.h"
 #ifdef AETHER_ASR_ENABLED
 #include "CopyAssistController.h"
+#include "asr/AsrModelManager.h"      // reused to fetch the DeepCW model on demand
+#include "asr/AsrModelCatalog.h"      // AsrModelTier
 #endif
+#include "CwNeuralApplet.h"           // CW Neural compare applet (setStatus/appendText)
 #include "PanadapterStack.h"
 #include "gui/MiniPanApplet.h"
 #include "gui/MiniPanScope.h"
@@ -8280,6 +8283,8 @@ void MainWindow::routeCwDecoderOutput()
                    &m_cwDecoderTx, &CwDecoder::stop);
         disconnect(m_cwDecoderApplet, &PanadapterApplet::cwRxTextDisplayed,
                    &m_cwCallsignSpotter, &CwCallsignSpotter::feedText);
+        disconnect(m_cwDecoderApplet, &PanadapterApplet::cwBackendChanged, this, nullptr);
+        disconnect(m_cwDecoderApplet, &PanadapterApplet::cwZeroBeatRequested, this, nullptr);
     }
 
     // Text from the old applet's stream must never concatenate with the
@@ -8323,6 +8328,33 @@ void MainWindow::routeCwDecoderOutput()
                 &m_cwDecoderTx, &CwDecoder::stop);
         connect(m_cwDecoderApplet, &PanadapterApplet::cwRxTextDisplayed,
                 &m_cwCallsignSpotter, &CwCallsignSpotter::feedText);
+
+        // Decoder engine toggle (DSP/Neural) in the panel header. Persist the
+        // choice and let refreshCwDecodeState -> reconcileCwBackend download the
+        // neural model on first use and swap the live RX decoder.
+        connect(m_cwDecoderApplet, &PanadapterApplet::cwBackendChanged, this,
+                [this](bool neural) {
+            CwDecodeSettings::setBackend(neural ? QStringLiteral("deepcw")
+                                                : QStringLiteral("ggmorse"));
+            refreshCwDecodeState();
+        });
+        // Header Zero Beat — same action as the VFO flag's (#2516): shift the
+        // active slice so the received tone matches the configured CW pitch.
+        // estimatedPitch() is populated by both engines (ggmorse detection and
+        // the neural model's dominant-bin estimate).
+        connect(m_cwDecoderApplet, &PanadapterApplet::cwZeroBeatRequested, this,
+                [this]() {
+            SliceModel* slice = activeSlice();
+            if (!slice) return;
+            const float detected = m_cwDecoder.estimatedPitch();
+            if (detected <= 0.0f) return;
+            const int configured = m_radioModel.transmitModel().cwPitch();
+            const double offsetMhz = (detected - configured) / 1.0e6;
+            applyTuneRequest(slice, slice->frequency() + offsetMhz,
+                             TuneIntent::IncrementalTune, "zero-beat");
+        });
+        // Reflect the active engine in the freshly-targeted panel header.
+        m_cwDecoderApplet->setCwNeuralUi(CwDecodeSettings::deepCwSelected());
     }
 }
 
@@ -8348,8 +8380,166 @@ void MainWindow::setDecoderPanelVisibleOnly(
     }
 }
 
+#ifdef AETHER_ASR_ENABLED
+// DeepCW's own model catalog entry (RFC #4817 triage: "give DeepCW its own small
+// catalog entry rather than a fake ASR tier"). The e04/deepcw-engine weights are
+// AGPL-3.0 and NOT shipped — downloaded on demand and SHA-256-pinned, like the
+// ASR models. Kept as a CW-owned struct rather than an AsrModelTier so the CW
+// code doesn't traffic in ASR types; a thin adapter maps it onto the shared
+// download manager below. (Guarded with the adapter: it's only reachable when the
+// AsrModelManager download path is compiled in.)
+namespace {
+struct CwModelSpec {
+    QString     id;
+    QString     displayName;
+    QString     fileName;
+    qint64      sizeBytes;
+    QString     sha256;      // lowercase hex, pinned
+    QStringList sources;     // ordered download URLs (primary first)
+};
+CwModelSpec deepCwModelSpec()
+{
+    return CwModelSpec{
+        QStringLiteral("deepcw"),
+        QStringLiteral("DeepCW neural CW — 15 MB"),
+        QStringLiteral("deepcw.onnx"),
+        15139839,
+        QStringLiteral("ef120799457bca042d4690944f0faf93268eb4654e7f50f28784ad63bdc1fe02"),
+        { QStringLiteral("https://raw.githubusercontent.com/e04/deepcw-engine/main/model.onnx") },
+    };
+}
+} // namespace
+
+// Thin adapter onto the shared download/verify machinery, which today lives in
+// AsrModelManager (aetherasr). Map DeepCW's own spec onto that manager's input
+// type at this single boundary rather than threading ASR types through the CW
+// code; the ASR-only `family` field stays at its default (the manager downloads
+// by fileName/size/sha256/sources and never consults it). Relocating the manager
+// to a neutral module is deferred to the merge PR.
+static AetherSDR::AsrModelTier deepCwModelTier()
+{
+    const CwModelSpec s = deepCwModelSpec();
+    AetherSDR::AsrModelTier t;
+    t.id          = s.id;
+    t.displayName = s.displayName;
+    t.fileName    = s.fileName;
+    t.sizeBytes   = s.sizeBytes;
+    t.sha256      = s.sha256;
+    t.sources     = s.sources;
+    return t;
+}
+#endif
+
+void MainWindow::reconcileCwBackend()
+{
+    using Backend = CwDecoder::Backend;
+    const bool wantDeep = CwDecodeSettings::deepCwSelected();
+
+    if (!wantDeep) {
+        if (m_cwDecoder.backend() != Backend::Ggmorse) {
+            if (m_cwDecoder.isRunning()) m_cwDecoder.stop();
+            m_cwDecoder.setBackend(Backend::Ggmorse);   // caller restarts if needed
+        }
+        return;
+    }
+
+    // Want DeepCW. If the decoder is already on it, nothing to do.
+    if (m_cwDecoder.backend() == Backend::DeepCw && m_cwDecoder.deepCwModelLoaded())
+        return;
+
+#ifdef AETHER_ASR_ENABLED
+    const AetherSDR::AsrModelTier tier = deepCwModelTier();
+    if (!m_deepCwModels) m_deepCwModels = new AsrModelManager(this);
+    const QString path = m_deepCwModels->modelPath(tier);
+
+    // Model already cached (or already loaded): switch synchronously.
+    if (m_cwDecoder.deepCwModelLoaded() || m_deepCwModels->isPresent(tier)) {
+        if (!m_cwDecoder.deepCwModelLoaded())
+            m_cwDecoder.loadDeepCwModel(path);
+        if (m_cwDecoder.deepCwModelLoaded()) {
+            if (m_cwDecoder.isRunning()) m_cwDecoder.stop();
+            m_cwDecoder.setBackend(Backend::DeepCw);     // caller restarts if needed
+        }
+        return;
+    }
+
+    // Not cached — download once, apply on completion. Stay on ggmorse until then.
+    if (!m_deepCwModels->isBusy()) {
+        statusBar()->showMessage("Downloading DeepCW model (~15 MB)…", 4000);
+        connect(m_deepCwModels, &AsrModelManager::finished, this,
+                [this](const QString& p) {
+            if (!CwDecodeSettings::deepCwSelected()) return;   // user changed their mind
+            if (m_cwDecoder.loadDeepCwModel(p)) {
+                if (m_cwDecoder.isRunning()) m_cwDecoder.stop();
+                m_cwDecoder.setBackend(Backend::DeepCw);
+                statusBar()->showMessage("DeepCW decoder ready", 3000);
+                refreshCwDecodeState();                        // (re)start on the new backend
+            }
+        }, Qt::SingleShotConnection);
+        connect(m_deepCwModels, &AsrModelManager::failed, this,
+                [this](const QString& err) {
+            CwDecodeSettings::setBackend(QStringLiteral("ggmorse"));
+            m_cwDecoder.setBackend(Backend::Ggmorse);
+            if (m_cwDecoderApplet) m_cwDecoderApplet->setCwNeuralUi(false);  // undo optimistic label
+            statusBar()->showMessage("DeepCW model download failed: " + err, 6000);
+        }, Qt::SingleShotConnection);
+        m_deepCwModels->ensure(tier);
+    }
+#else
+    // No ASR/model-download support in this build — keep ggmorse.
+    CwDecodeSettings::setBackend(QStringLiteral("ggmorse"));
+    m_cwDecoder.setBackend(Backend::Ggmorse);
+#endif
+}
+
+void MainWindow::updateNeuralCompareDecoder(bool shouldRun)
+{
+#ifdef AETHER_ASR_ENABLED
+    auto* applet = m_appletPanel ? m_appletPanel->cwNeuralApplet() : nullptr;
+
+    if (!shouldRun) {
+        if (m_cwDecoderNeural.isRunning()) {
+            m_cwDecoderNeural.stop();
+            if (applet) applet->setStatus("stopped");
+        }
+        return;
+    }
+
+    // Ensure the DeepCW model is present + loaded before starting (shares the
+    // same download/cache as the bottom panel's neural backend).
+    const AetherSDR::AsrModelTier tier = deepCwModelTier();
+    if (!m_deepCwModels) m_deepCwModels = new AsrModelManager(this);
+
+    if (!m_cwDecoderNeural.deepCwModelLoaded()) {
+        if (m_deepCwModels->isPresent(tier)) {
+            m_cwDecoderNeural.loadDeepCwModel(m_deepCwModels->modelPath(tier));
+        } else {
+            if (!m_deepCwModels->isBusy()) {
+                if (applet) applet->setStatus("downloading model…");
+                connect(m_deepCwModels, &AsrModelManager::finished, this,
+                        [this](const QString&) { refreshCwDecodeState(); },
+                        Qt::SingleShotConnection);
+                m_deepCwModels->ensure(tier);
+            }
+            return;   // not ready yet — a later refresh will start it
+        }
+    }
+
+    m_cwDecoderNeural.setBackend(CwDecoder::Backend::DeepCw);
+    if (!m_cwDecoderNeural.isRunning()) {
+        m_cwDecoderNeural.start();
+        if (applet) applet->setStatus("running");
+    }
+#else
+    Q_UNUSED(shouldRun);
+#endif
+}
+
 void MainWindow::refreshCwDecodeState()
 {
+    // Apply any pending RX-decoder backend switch before we (re)start it below.
+    reconcileCwBackend();
+
     const bool rxOn = CwDecodeSettings::rxEnabled();
     const bool txOn = CwDecodeSettings::txEnabled();
     const bool anyOn = rxOn || txOn;
@@ -8406,6 +8596,13 @@ void MainWindow::refreshCwDecodeState()
     // silence fine.
     if (m_audio)
         m_audio->setCwDecodeTxTapEnabled(txOn);
+
+    // Dedicated neural comparison decoder feeds the CW Neural applet — runs
+    // independently of the bottom panel's engine, gated on that applet being
+    // enabled (spares CPU, esp. on the Pi, when it isn't in use) and a CW slice.
+    const bool neuralAppletOn =
+        AppSettings::instance().value("Applet_CWNN", "False").toString() == "True";
+    updateNeuralCompareDecoder(isCw && neuralAppletOn);
 }
 
 // wirePanadapter() / revealFrequencyIfNeeded() / panFollowVfo() / wireVfoWidget() lives in MainWindow_Wiring.cpp (#3351 Phase 1d).
