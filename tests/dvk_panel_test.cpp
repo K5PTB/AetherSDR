@@ -1,0 +1,176 @@
+// DVK panel driving a VoiceKeyer — the panel's contract, with no radio behind it.
+// Run: ./build/dvk_panel_test
+
+#include "TestSettingsProfile.h"
+#include "gui/DvkPanel.h"
+#include "models/VoiceKeyer.h"
+
+#include <QApplication>
+#include <QKeySequence>
+#include <QLabel>
+#include <QPushButton>
+#include <QShortcut>
+#include <QStringList>
+
+#include <cstdio>
+#include <string>
+
+using namespace AetherSDR;
+
+namespace {
+
+int g_failed = 0;
+
+void report(const char* name, bool ok, const std::string& detail = {})
+{
+    std::printf("%s %-52s %s\n", ok ? "[ OK ]" : "[FAIL]", name, detail.c_str());
+    if (!ok) ++g_failed;
+}
+
+// Records what the panel asked for; state changes are pushed by the test.
+class FakeKeyer : public VoiceKeyer {
+public:
+    QStringList calls;
+    Status st{Idle};
+    int active{-1};
+    QVector<VoiceKeyerRecording> recs;
+
+    Status status() const override { return st; }
+    int activeId() const override { return active; }
+    const QVector<VoiceKeyerRecording>& recordings() const override { return recs; }
+
+    void recStart(int id) override { calls << QString("recStart %1").arg(id); }
+    void recStop(int id) override { calls << QString("recStop %1").arg(id); }
+    void previewStart(int id) override { calls << QString("previewStart %1").arg(id); }
+    void previewStop(int id) override { calls << QString("previewStop %1").arg(id); }
+    void playbackStart(int id) override { calls << QString("playbackStart %1").arg(id); }
+    void playbackStop(int id) override { calls << QString("playbackStop %1").arg(id); }
+    void clear(int id) override { calls << QString("clear %1").arg(id); }
+    void remove(int id) override { calls << QString("remove %1").arg(id); }
+    void setName(int id, const QString& n) override { calls << QString("setName %1 %2").arg(id).arg(n); }
+    void importWav(int id, const QString& p) override { calls << QString("importWav %1 %2").arg(id).arg(p); }
+    void exportWav(int id, const QString& p) override { calls << QString("exportWav %1 %2").arg(id).arg(p); }
+    bool canTransferWav() const override { return true; }
+    bool isTransferring() const override { return false; }
+
+    void addRecording(int id, const QString& name, int ms)
+    {
+        recs.append({id, name, ms});
+        emit recordingChanged(id);
+    }
+    void pushStatus(Status s, int id)
+    {
+        st = s;
+        active = id;
+        emit statusChanged(s, id);
+    }
+};
+
+QPushButton* buttonByText(DvkPanel& panel, const QString& text)
+{
+    for (auto* b : panel.findChildren<QPushButton*>())
+        if (b->text() == text) return b;
+    return nullptr;
+}
+
+QLabel* statusLabel(DvkPanel& panel)
+{
+    for (auto* l : panel.findChildren<QLabel*>())
+        if (l->text().startsWith(QLatin1String("Status:"))) return l;
+    return nullptr;
+}
+
+QShortcut* shortcutFor(DvkPanel& panel, Qt::Key key)
+{
+    for (auto* sc : panel.findChildren<QShortcut*>())
+        if (sc->key() == QKeySequence(key)) return sc;
+    return nullptr;
+}
+
+std::string joined(const QStringList& calls)
+{
+    return calls.join(QStringLiteral(" | ")).toStdString();
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    TestSettingsProfile settingsProfile(QStringLiteral("dvk_panel_test"));
+    QApplication app(argc, argv);
+
+    FakeKeyer keyer;
+    DvkPanel panel(&keyer);
+    QLabel* status = statusLabel(panel);
+    QPushButton* f1 = buttonByText(panel, QStringLiteral("F1"));
+    QPushButton* f2 = buttonByText(panel, QStringLiteral("F2"));
+    QPushButton* f5 = buttonByText(panel, QStringLiteral("F5"));
+    QPushButton* rec = buttonByText(panel, QString::fromUtf8("● REC"));
+    report("panel_widgets_found", status && f1 && f2 && f5 && rec);
+    if (!(status && f1 && f2 && f5 && rec)) {
+        std::printf("\nFAILED (cannot continue)\n");
+        return 1;
+    }
+
+    // An empty slot never goes on the air.
+    f1->click();
+    report("fkey_on_empty_slot_does_not_transmit", keyer.calls.isEmpty(), joined(keyer.calls));
+
+    // A recorded slot does.
+    keyer.addRecording(2, QStringLiteral("CQ"), 3000);
+    keyer.calls.clear();
+    f2->click();
+    report("fkey_plays_recorded_slot",
+           keyer.calls == QStringList{"playbackStart 2"}, joined(keyer.calls));
+
+    // Pressing it again while it plays stops it.
+    keyer.pushStatus(VoiceKeyer::Playback, 2);
+    keyer.calls.clear();
+    f2->click();
+    report("fkey_again_while_playing_stops",
+           keyer.calls == QStringList{"playbackStop 2"}, joined(keyer.calls));
+    keyer.pushStatus(VoiceKeyer::Idle, -1);
+
+    // REC records into the selected slot, and a second press stops it.
+    keyer.calls.clear();
+    f5->click();  // empty: selects slot 5 without transmitting
+    rec->click();
+    keyer.pushStatus(VoiceKeyer::Recording, 5);
+    rec->click();
+    report("rec_button_records_selected_slot",
+           keyer.calls == QStringList({"recStart 5", "recStop 5"}), joined(keyer.calls));
+    keyer.pushStatus(VoiceKeyer::Idle, -1);
+
+    keyer.pushStatus(VoiceKeyer::Disabled, -1);
+    report("disabled_status_text",
+           status->text() == QLatin1String("Status: Disabled (SmartSDR+ required)"),
+           status->text().toStdString());
+
+    emit keyer.commandFailed(QStringLiteral("rec_start"), 3, 1u,
+                             QStringLiteral("port already in use on radio"));
+    report("refusal_is_shown",
+           status->text() == QString::fromUtf8(
+               "Status: rec_start (slot 3) failed — port already in use on radio"),
+           status->text().toStdString());
+
+    emit keyer.transferStatusChanged(QStringLiteral("Uploading slot 2"));
+    const bool progressShown = status->text() == QLatin1String("Uploading slot 2");
+    emit keyer.transferFinished(false, QStringLiteral("timeout"));
+    report("transfer_progress_and_failure_are_shown",
+           progressShown && status->text() == QLatin1String("Transfer failed: timeout"),
+           status->text().toStdString());
+
+    // F-key shortcuts start disabled (MainWindow enables them by mode) and,
+    // once enabled, play the slot.
+    QShortcut* f2Key = shortcutFor(panel, Qt::Key_F2);
+    const bool startsDisabled = f2Key && !f2Key->isEnabled();
+    panel.setShortcutsEnabled(true);
+    keyer.pushStatus(VoiceKeyer::Idle, -1);
+    keyer.calls.clear();
+    if (f2Key) emit f2Key->activated();
+    report("fkey_shortcut_disabled_until_enabled_then_plays",
+           startsDisabled && keyer.calls == QStringList{"playbackStart 2"}, joined(keyer.calls));
+
+    std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);
+    return g_failed ? 1 : 0;
+}

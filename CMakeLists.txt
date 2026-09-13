@@ -1009,6 +1009,7 @@ set(MODEL_SOURCES
     src/models/SpotModel.cpp
     src/models/CwxModel.cpp
     src/models/DvkModel.cpp
+    src/models/VoiceKeyer.cpp
     src/models/NavtexModel.cpp
     src/models/FlexWaveformModel.cpp
     src/models/DStarModel.cpp

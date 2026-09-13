@@ -4,7 +4,7 @@
 
 namespace AetherSDR {
 
-DvkModel::DvkModel(QObject* parent) : QObject(parent) {}
+DvkModel::DvkModel(QObject* parent) : VoiceKeyer(parent) {}
 
 // ── Commands ────────────────────────────────────────────────────────────────
 //
@@ -52,6 +52,15 @@ void DvkModel::setName(int id, const QString& name)
     emit replyCommandReady(
         QString("dvk set_name name=\"%1\" id=%2").arg(name).arg(id),
         "set_name", id);
+}
+
+void DvkModel::importWav(int id, const QString& path)
+{
+    emit wavUploadRequested(id, path);
+}
+void DvkModel::exportWav(int id, const QString& path)
+{
+    emit wavDownloadRequested(id, path);
 }
 
 // ── Reply handling ──────────────────────────────────────────────────────────

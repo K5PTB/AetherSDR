@@ -12,15 +12,15 @@ class QFrame;
 class QShortcut;
 
 namespace AetherSDR {
-class DvkModel;
-class DvkWavTransfer;
+class VoiceKeyer;
 
 class DvkPanel : public QWidget {
     Q_OBJECT
 public:
-    explicit DvkPanel(DvkModel* model, QWidget* parent = nullptr);
+    // The panel drives whichever keyer it is given — the radio DVK or the
+    // client-side keyer — through the VoiceKeyer interface only.
+    explicit DvkPanel(VoiceKeyer* keyer, QWidget* parent = nullptr);
     int selectedSlot() const;
-    void setWavTransfer(DvkWavTransfer* transfer);
 
     // Enable/disable the F1-F12 and Esc ApplicationShortcuts. Driven by
     // the active slice's mode in MainWindow so the keys fire regardless
@@ -37,7 +37,7 @@ private slots:
     void onElapsedTick();
 
 private:
-    DvkModel* m_model;
+    VoiceKeyer* m_model;
     QVector<QFrame*> m_rowFrames;
     QVector<QPushButton*> m_fkeyBtns;
     QVector<QLabel*> m_nameLabels;
@@ -51,13 +51,12 @@ private:
     int m_selectedSlot{1};
     QLineEdit* m_renameEdit{nullptr};
     int m_renameSlot{-1};
-    DvkWavTransfer* m_wavTransfer{nullptr};
 
     // Elapsed timer state
     QTimer* m_elapsedTimer{nullptr};
     int m_elapsedMs{0};
     int m_timerSlotId{-1};
-    int m_timerStatus{0};  // DvkModel::Status cast to int
+    int m_timerStatus{0};  // VoiceKeyer::Status cast to int
 
     // F1-F12 + ESC shortcuts — ApplicationShortcut on window(), enabled
     // by MainWindow based on the active slice's mode (mutually exclusive

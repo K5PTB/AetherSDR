@@ -3512,6 +3512,45 @@ add_test(NAME cwx_panel_test COMMAND cwx_panel_test)
 set_tests_properties(cwx_panel_test PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# DvkModel behind the VoiceKeyer interface (RFC #4214 prototype): SmartSDR wire
+# text unchanged, radio status reaches listeners through the interface's
+# signals, WAV import/export goes out as requests gated by the busy probe.
+add_executable(voice_keyer_dvk_model_test
+    tests/voice_keyer_dvk_model_test.cpp
+    src/models/DvkModel.cpp
+    src/models/DvkModel.h
+    src/models/VoiceKeyer.cpp
+    src/models/VoiceKeyer.h
+)
+target_include_directories(voice_keyer_dvk_model_test PRIVATE src)
+target_link_libraries(voice_keyer_dvk_model_test PRIVATE Qt6::Core)
+add_test(NAME voice_keyer_dvk_model_test COMMAND voice_keyer_dvk_model_test)
+
+# DVK panel against a fake VoiceKeyer (RFC #4214 prototype): F-key playback only
+# on a recorded slot, a second press stops, REC acts on the selected slot, the
+# status / refusal / transfer text, and the F-key shortcuts.
+add_executable(dvk_panel_test
+    tests/dvk_panel_test.cpp
+    src/gui/DvkPanel.cpp
+    src/gui/DvkPanel.h
+    src/models/VoiceKeyer.cpp
+    src/models/VoiceKeyer.h
+    # DvkPanel.cpp applies theme stylesheets through ThemeManager; pull in the
+    # manager + its logging deps so the test links (as cwx_panel_test does).
+    src/core/ThemeManager.cpp
+    src/core/ThemeSeedGenerated.cpp
+    ${AETHER_SETTINGS_SOURCES}
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+)
+target_include_directories(dvk_panel_test PRIVATE src)
+target_link_libraries(dvk_panel_test PRIVATE
+    Qt6::Core Qt6::Widgets
+)
+add_test(NAME dvk_panel_test COMMAND dvk_panel_test)
+set_tests_properties(dvk_panel_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(meter_model_test
     tests/meter_model_test.cpp
     src/models/MeterModel.cpp
@@ -5296,6 +5335,7 @@ set(AETHER_SETTINGS_CONSUMERS
     cwx_speed_modifier_test
     cwx_drain_watch_test
     cwx_panel_test
+    dvk_panel_test
     meter_model_test
     health_applet_test
     meter_applet_capability_test
