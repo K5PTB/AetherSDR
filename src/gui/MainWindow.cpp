@@ -5037,10 +5037,20 @@ void MainWindow::buildUI()
     splitter->addWidget(m_cwxPanel);
     m_cwxPanel->hide();
 
-    // DVK panel — left of spectrum, hidden by default (mutually exclusive with CWX)
-    m_dvkPanel = new DvkPanel(&m_radioModel.dvkModel(), splitter);
+    // DVK panel — left of spectrum, hidden by default (mutually exclusive with CWX).
+    // The panel drives a VoiceKeyer. The radio DVK asks for WAV import/export by
+    // signal; the Flex transfer that carries it is wired here, where that wire
+    // code is already in reach.
+    auto& dvkModel = m_radioModel.dvkModel();
     auto* dvkTransfer = new DvkWavTransfer(&m_radioModel, this);
-    m_dvkPanel->setWavTransfer(dvkTransfer);
+    connect(&dvkModel, &DvkModel::wavUploadRequested, dvkTransfer, &DvkWavTransfer::upload);
+    connect(&dvkModel, &DvkModel::wavDownloadRequested, dvkTransfer, &DvkWavTransfer::download);
+    connect(dvkTransfer, &DvkWavTransfer::statusChanged, &dvkModel, &VoiceKeyer::transferStatusChanged);
+    connect(dvkTransfer, &DvkWavTransfer::finished, &dvkModel, &VoiceKeyer::transferFinished);
+    dvkModel.setWavTransferBusyProbe([transfer = QPointer<DvkWavTransfer>(dvkTransfer)] {
+        return transfer && transfer->isTransferring();
+    });
+    m_dvkPanel = new DvkPanel(&dvkModel, splitter);
     splitter->addWidget(m_dvkPanel);
     m_dvkPanel->hide();
 
