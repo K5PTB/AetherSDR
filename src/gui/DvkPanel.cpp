@@ -508,6 +508,11 @@ void DvkPanel::onRecordingChanged(int id)
     m_nameLabels[idx]->setStyleSheet(durationMs > 0
         ? kNameStyle
         : "QLabel { color: #505060; font-size: 10px; }");
+    // The duration follows its name: as bright once there is a recording,
+    // dim while the slot is empty.
+    AetherSDR::ThemeManager::instance().applyStyleSheet(m_durLabels[idx], durationMs > 0
+        ? "QLabel { color: {{color.text.primary}}; font-size: 9px; }"
+        : "QLabel { color: {{color.text.label}}; font-size: 9px; }");
 }
 
 void DvkPanel::onElapsedTick()
