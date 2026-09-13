@@ -2777,6 +2777,61 @@ if(ORT_FOUND)
     endif()
 endif()
 
+# ----------------------------------------------------------------------------
+# On-device text-to-speech for the voice keyer (RFC #4334): Kokoro-82M through
+# ONNX Runtime, with phonemes from espeak-ng. Its own static library, like
+# aetherasr, so aethercore stays model-free; it reuses aetherasr's verified
+# model downloader, which is why ASR must be enabled. Weights download on first
+# use. Built only when ONNX Runtime and espeak-ng are both found.
+option(ENABLE_TTS "Enable on-device text-to-speech for the voice keyer (ONNX Runtime + espeak-ng)" ON)
+if(ENABLE_TTS)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(ESPEAK QUIET espeak-ng)
+    endif()
+    if(NOT ESPEAK_FOUND)
+        find_library(ESPEAK_LIB espeak-ng)
+        find_path(ESPEAK_INC espeak-ng/speak_lib.h)
+        if(ESPEAK_LIB AND ESPEAK_INC)
+            set(ESPEAK_FOUND TRUE)
+            set(ESPEAK_LINK_LIBRARIES ${ESPEAK_LIB})
+            set(ESPEAK_INCLUDE_DIRS ${ESPEAK_INC})
+        endif()
+    endif()
+    if(TARGET aetherasr AND ORT_FOUND AND ESPEAK_FOUND)
+        add_library(aethertts STATIC
+            src/tts/EspeakPhonemizer.cpp
+            src/tts/KokoroVocab.cpp
+            src/tts/KokoroVoices.cpp
+            src/tts/KokoroSynth.cpp
+            src/tts/TtsModelCatalog.cpp
+            src/tts/TtsWav.cpp
+            src/tts/TextToSpeechEngine.cpp
+            src/core/ZipArchive.cpp   # voices file is a zip of .npy arrays
+        )
+        target_include_directories(aethertts PUBLIC src
+            PRIVATE ${ESPEAK_INCLUDE_DIRS} ${ORT_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/third_party/r8brain)
+        target_link_libraries(aethertts PUBLIC Qt6::Core Qt6::Network aetherasr
+            PRIVATE Qt6::Concurrent ${ESPEAK_LINK_LIBRARIES} ${ORT_LIBRARIES})
+        if (USE_SYSTEM_ZLIB)
+            target_link_libraries(aethertts PRIVATE PkgConfig::zlib)
+        else()
+            target_link_libraries(aethertts PRIVATE zlibstatic)
+        endif()
+        target_compile_definitions(aethertts PUBLIC AETHER_TTS_ENABLED=1)
+        set_target_properties(aethertts PROPERTIES AUTOMOC ON)
+
+        target_link_libraries(AetherSDR PRIVATE aethertts)
+        target_sources(AetherSDR PRIVATE src/gui/TextToSpeechDialog.cpp)
+        message(STATUS "TTS: enabled (Kokoro via ONNX Runtime, espeak-ng); weights download on first use")
+    else()
+        message(STATUS "TTS: disabled — needs ASR, ONNX Runtime and espeak-ng "
+            "(asr=${ENABLE_ASR} onnx=${ORT_FOUND} espeak=${ESPEAK_FOUND})")
+    endif()
+else()
+    message(STATUS "TTS: disabled (-DENABLE_TTS=OFF)")
+endif()
+
 # sherpa-onnx — optional non-whisper ASR backend (offline models via its C API:
 # transducer / Moonshine / Paraformer / CTC …). Staged under third_party/sherpa-onnx
 # by scripts/setup/setup-sherpa-onnx.sh (Linux/macOS). Ships its own ONNX Runtime.

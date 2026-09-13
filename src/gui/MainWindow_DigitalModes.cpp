@@ -21,6 +21,10 @@
 #include "core/GeneratedAudioTransmitter.h"
 #include "core/LocalWavPlayer.h"
 #include "core/ThemeManager.h"
+#ifdef AETHER_TTS_ENABLED
+#include "TextToSpeechDialog.h"
+#include "tts/TextToSpeechEngine.h"
+#endif
 #include "core/VoiceKeyerSettings.h"
 #include "models/LocalVoiceKeyer.h"
 
@@ -1810,6 +1814,45 @@ void MainWindow::showVoiceKeyerSourceMenu(const QPoint& globalPos)
     VoiceKeyerSettings::setSource(static_cast<VoiceKeyerSourceSetting>(chosen->data().toInt()));
     m_localVoiceKeyer->reload();
     updateKeyerAvailability();
+}
+
+// ── Text to speech for DVK slots (RFC #4334) ────────────────────────────────
+
+void MainWindow::openTextToSpeechDialog(int slot)
+{
+#ifdef AETHER_TTS_ENABLED
+    if (!m_ttsEngine)
+        m_ttsEngine = new TextToSpeechEngine(this);
+    if (!m_ttsDialog) {
+        auto* dlg = new TextToSpeechDialog(
+            m_ttsEngine,
+            [this](const QString& path, QString& error) {
+                if (!m_voiceKeyerPlayer) {
+                    error = QStringLiteral("Playback is not available.");
+                    return false;
+                }
+                return m_voiceKeyerPlayer->play(path, error);
+            },
+            [this] {
+                if (m_voiceKeyerPlayer)
+                    m_voiceKeyerPlayer->stop();
+            },
+            this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        if (m_voiceKeyerPlayer) {
+            connect(m_voiceKeyerPlayer, &LocalWavPlayer::finished,
+                    dlg, &TextToSpeechDialog::onPreviewFinished);
+        }
+        m_ttsDialog = dlg;
+    }
+    // Save goes to whichever keyer the panel drives now — radio DVK or local.
+    m_ttsDialog->setTarget(m_dvkPanel ? m_dvkPanel->keyer() : nullptr, slot);
+    m_ttsDialog->show();
+    m_ttsDialog->raise();
+    m_ttsDialog->activateWindow();
+#else
+    Q_UNUSED(slot);
+#endif
 }
 
 } // namespace AetherSDR

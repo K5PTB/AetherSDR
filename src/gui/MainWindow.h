@@ -191,6 +191,8 @@ class DvkPanel;
 class LocalVoiceKeyer;
 class LocalWavPlayer;
 class GeneratedAudioTransmitter;
+class TextToSpeechEngine;
+class TextToSpeechDialog;
 #ifdef HAVE_RADE
 class RADEEngine;
 #endif
@@ -904,6 +906,7 @@ private:
     VoiceKeyerSource voiceKeyerSource() const;
     void applyVoiceKeyerSource();
     void showVoiceKeyerSourceMenu(const QPoint& globalPos);
+    void openTextToSpeechDialog(int slot);
     void showNr2ParamPopup(const QPoint& globalPos);
     void showNr4ParamPopup(const QPoint& globalPos);
     void showDfnrParamPopup(const QPoint& globalPos);
@@ -1542,6 +1545,9 @@ private:
     LocalVoiceKeyer* m_localVoiceKeyer{nullptr};
     LocalWavPlayer* m_voiceKeyerPlayer{nullptr};
     GeneratedAudioTransmitter* m_voiceKeyerTx{nullptr};   // local slots on the air
+    // Text to speech for DVK slots (RFC #4334); created on first use.
+    TextToSpeechEngine* m_ttsEngine{nullptr};
+    QPointer<TextToSpeechDialog> m_ttsDialog;
     QLabel* m_dvkIndicator{nullptr};
     QLabel* m_fdxIndicator{nullptr};
     QMetaObject::Connection m_tnfIndicatorConnection;

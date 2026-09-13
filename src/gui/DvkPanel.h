@@ -34,6 +34,13 @@ public:
     // to avoid Qt shortcut ambiguity. (#2582)
     void setShortcutsEnabled(bool enabled);
 
+    // Offer "Text to Speech…" in a slot's menu (only in builds that have it).
+    void setTextToSpeechAvailable(bool available) { m_ttsAvailable = available; }
+
+signals:
+    // The operator chose "Text to Speech…" for this slot.
+    void textToSpeechRequested(int slot);
+
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
 
@@ -48,6 +55,7 @@ private:
     QVector<QFrame*> m_rowFrames;
     QVector<QPushButton*> m_fkeyBtns;
     QVector<QLabel*> m_nameLabels;
+    QVector<QString> m_fullNames = QVector<QString>(12);   // untruncated slot names; labels show them elided
     QVector<QLabel*> m_durLabels;
     QVector<QProgressBar*> m_progressBars;
     QPushButton* m_recBtn;
@@ -56,6 +64,7 @@ private:
     QPushButton* m_xmitBtn;      // "XMIT": keys the transmitter
     QLabel* m_statusLabel;
     bool m_statusIsError{false};
+    bool m_ttsAvailable{false};
     int m_selectedSlot{1};
     QLineEdit* m_renameEdit{nullptr};
     int m_renameSlot{-1};
@@ -76,6 +85,7 @@ private:
     void refreshFromKeyer();
     void setStatusError(bool error);
     void rebuildXmitIcon();
+    void showName(int idx);
     void selectSlot(int id);
     void showContextMenu(int id, const QPoint& globalPos);
     void startRename(int id);

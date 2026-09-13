@@ -2679,6 +2679,24 @@ add_test(NAME radio_status_ownership_test COMMAND radio_status_ownership_test)
 
 # ASR (RFC #4333, Phase 1): prove the vendored whisper.cpp/ggml CPU engine
 # compiles and links via two model-free entry points. No model, no audio.
+# Text to speech for the voice keyer (RFC #4334) — only when aethertts builds.
+if (TARGET aethertts)
+    # Phonemizer port vs the reference (phonemizer + espeak-ng) golden output.
+    add_executable(tts_phonemizer_test tests/tts_phonemizer_test.cpp)
+    target_link_libraries(tts_phonemizer_test PRIVATE aethertts Qt6::Core)
+    add_test(NAME tts_phonemizer_test COMMAND tts_phonemizer_test)
+
+    # Voices file reader, silence trim, WAV writer — no model, no network.
+    add_executable(kokoro_voices_test tests/kokoro_voices_test.cpp)
+    target_link_libraries(kokoro_voices_test PRIVATE aethertts Qt6::Core)
+    add_test(NAME kokoro_voices_test COMMAND kokoro_voices_test)
+
+    # Real synthesis; SKIPS unless AETHER_TTS_MODELS_DIR holds the Kokoro files.
+    add_executable(tts_kokoro_smoke_test tests/tts_kokoro_smoke_test.cpp)
+    target_link_libraries(tts_kokoro_smoke_test PRIVATE aethertts Qt6::Core)
+    add_test(NAME tts_kokoro_smoke_test COMMAND tts_kokoro_smoke_test)
+endif()
+
 if (ENABLE_ASR)
     add_executable(asr_whisper_smoke_test tests/asr_whisper_smoke_test.cpp)
     target_link_libraries(asr_whisper_smoke_test PRIVATE ${_asr_whisper_link})

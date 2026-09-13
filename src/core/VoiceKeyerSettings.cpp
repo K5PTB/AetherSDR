@@ -11,7 +11,46 @@ namespace {
 const QString kVoiceKeyerKey = QStringLiteral("VoiceKeyer");
 const QString kSourceField   = QStringLiteral("source");
 const QString kSlotsField    = QStringLiteral("slots");
+const QString kSpeechField   = QStringLiteral("speech");
+
+QString speechSourceKey(VoiceKeyerSource source)
+{
+    return source == VoiceKeyerSource::Radio ? QStringLiteral("radio") : QStringLiteral("local");
+}
 } // namespace
+
+VoiceKeyerSettings::SpeechText VoiceKeyerSettings::speechText(VoiceKeyerSource source, int id)
+{
+    const QJsonObject entry = readObj().value(kSpeechField).toObject()
+        .value(speechSourceKey(source)).toObject()
+        .value(QString::number(id)).toObject();
+    return {entry.value(QStringLiteral("text")).toString(),
+            entry.value(QStringLiteral("label")).toString()};
+}
+
+void VoiceKeyerSettings::setSpeechText(VoiceKeyerSource source, int id,
+                                       const QString& text, const QString& label)
+{
+    QJsonObject o = readObj();
+    QJsonObject speech = o.value(kSpeechField).toObject();
+    QJsonObject perSource = speech.value(speechSourceKey(source)).toObject();
+    const QString key = QString::number(id);
+    if (text.isEmpty()) {
+        perSource.remove(key);
+    } else {
+        perSource[key] = QJsonObject{{QStringLiteral("text"), text},
+                                     {QStringLiteral("label"), label}};
+    }
+    if (perSource.isEmpty())
+        speech.remove(speechSourceKey(source));
+    else
+        speech[speechSourceKey(source)] = perSource;
+    if (speech.isEmpty())
+        o.remove(kSpeechField);
+    else
+        o[kSpeechField] = speech;
+    write(o);
+}
 
 QJsonObject VoiceKeyerSettings::readObj()
 {

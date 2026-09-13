@@ -23,6 +23,20 @@ public:
     static QString slotName(int id);
     static void setSlotName(int id, const QString& name);
 
+    // The full text-to-speech message behind a slot (RFC #4334), kept apart
+    // from its short label so the whole message can be edited and generated
+    // again. `label` is the slot label it was saved under: once the slot is
+    // renamed, re-recorded or re-imported its label no longer matches, and the
+    // stored text is stale. Kept per source, since a radio's slot 3 and the
+    // local slot 3 are different recordings.
+    struct SpeechText {
+        QString text;
+        QString label;
+    };
+    static SpeechText speechText(VoiceKeyerSource source, int id);
+    static void setSpeechText(VoiceKeyerSource source, int id,
+                              const QString& text, const QString& label);
+
     // Where local recordings live: ~/Documents/AetherSDR/VoiceKeyer, next to
     // QsoRecorder's ~/Documents/AetherSDR/Recordings, so operators can find,
     // copy and drop in WAVs.

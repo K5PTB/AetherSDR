@@ -6,6 +6,7 @@
 #include "TestSettingsProfile.h"
 #include "core/AppSettings.h"
 #include "core/LocalVoiceKeyerStore.h"
+#include "core/VoiceKeyerSettings.h"
 #include "models/LocalVoiceKeyer.h"
 
 #include <QByteArray>
@@ -356,6 +357,30 @@ int main(int argc, char** argv)
                wroteJunk && heard.transfers.size() == 1 && heard.transfers[0].startsWith("fail")
                    && keyer.recordings()[8].durationMs == 0,
                heard.transfers.join(" | ").toStdString());
+    }
+
+    // Text-to-speech messages are stored in full, apart from the short label,
+    // per source and per slot, and survive a reload of settings.
+    {
+        const QString message = QStringLiteral(
+            "CQ contest CQ contest this is Kilo Five Papa Tango Bravo, contest");
+        VoiceKeyerSettings::setSpeechText(VoiceKeyerSource::Local, 4, message, QStringLiteral("CQ contest…"));
+        VoiceKeyerSettings::setSpeechText(VoiceKeyerSource::Radio, 4, QStringLiteral("QRZ?"), QStringLiteral("QRZ?"));
+        AppSettings::instance().load();
+        const auto local = VoiceKeyerSettings::speechText(VoiceKeyerSource::Local, 4);
+        const auto radio = VoiceKeyerSettings::speechText(VoiceKeyerSource::Radio, 4);
+        const auto other = VoiceKeyerSettings::speechText(VoiceKeyerSource::Local, 5);
+        VoiceKeyerSettings::setSpeechText(VoiceKeyerSource::Local, 4, QString(), QString());
+        const auto cleared = VoiceKeyerSettings::speechText(VoiceKeyerSource::Local, 4);
+        report("speech text stored in full per source and slot, removable",
+               local.text == message && local.label == QString::fromUtf8("CQ contest…")
+                   && radio.text == QLatin1String("QRZ?") && other.text.isEmpty()
+                   && cleared.text.isEmpty()
+                   && VoiceKeyerSettings::speechText(VoiceKeyerSource::Radio, 4).text == QLatin1String("QRZ?"),
+               QString("local=[%1|%2] radio=[%3] other=[%4] cleared=[%5] radioAfter=[%6]")
+                   .arg(local.text, local.label, radio.text, other.text, cleared.text,
+                        VoiceKeyerSettings::speechText(VoiceKeyerSource::Radio, 4).text)
+                   .toStdString());
     }
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);

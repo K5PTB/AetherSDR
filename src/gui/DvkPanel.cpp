@@ -116,6 +116,11 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
 
         auto* nameLabel = new QLabel(QString("Recording %1").arg(id));
         nameLabel->setStyleSheet("QLabel { color: #505060; font-size: 10px; }");
+        // A long name (a whole text-to-speech message) must not widen the
+        // panel: the label takes the width it is given and shows the name
+        // elided, with the full name in its tooltip (see showName()).
+        nameLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        nameLabel->setMinimumWidth(1);
         rowLayout->addWidget(nameLabel, 1);
 
         auto* durLabel = new QLabel("Empty");
@@ -503,7 +508,8 @@ void DvkPanel::onRecordingChanged(int id)
             break;
         }
     }
-    m_nameLabels[idx]->setText(name);
+    m_fullNames[idx] = name;
+    showName(idx);
     m_durLabels[idx]->setText(durationMs > 0 ? formatDuration(durationMs) : "Empty");
     m_nameLabels[idx]->setStyleSheet(durationMs > 0
         ? kNameStyle
@@ -513,6 +519,20 @@ void DvkPanel::onRecordingChanged(int id)
     AetherSDR::ThemeManager::instance().applyStyleSheet(m_durLabels[idx], durationMs > 0
         ? "QLabel { color: {{color.text.primary}}; font-size: 9px; }"
         : "QLabel { color: {{color.text.label}}; font-size: 9px; }");
+}
+
+void DvkPanel::showName(int idx)
+{
+    if (idx < 0 || idx >= m_nameLabels.size())
+        return;
+    QLabel* nameText = m_nameLabels[idx];
+    const QString& full = m_fullNames[idx];
+    // Elide only once laid out on screen; before that the width means nothing.
+    const bool laidOut = nameText->isVisible() && nameText->width() > 1;
+    nameText->setText(laidOut
+        ? nameText->fontMetrics().elidedText(full, Qt::ElideRight, nameText->width())
+        : full);
+    nameText->setToolTip(full);
 }
 
 void DvkPanel::onElapsedTick()
@@ -570,6 +590,12 @@ bool DvkPanel::eventFilter(QObject* obj, QEvent* event)
     if (id < 1 || id > 12)
         return QWidget::eventFilter(obj, event);
 
+    // Re-elide a name label whenever its width or visibility changes.
+    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show)
+        && obj == m_nameLabels.value(id - 1)) {
+        showName(id - 1);
+    }
+
     if (event->type() == QEvent::MouseButtonPress) {
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
@@ -611,6 +637,16 @@ void DvkPanel::showContextMenu(int id, const QPoint& globalPos)
     deleteAct->setEnabled(hasRecording);
     importAct->setEnabled(notBusy);
     exportAct->setEnabled(notBusy && hasRecording);
+
+    if (m_ttsAvailable) {
+        menu.addSeparator();
+        QAction* ttsAct = menu.addAction(QStringLiteral("Text to Speech…"));
+        ttsAct->setEnabled(notBusy);
+        connect(ttsAct, &QAction::triggered, this, [this, id]() {
+            selectSlot(id);
+            emit textToSpeechRequested(id);
+        });
+    }
 
     connect(renameAct, &QAction::triggered, this, [this, id]() { startRename(id); });
     connect(clearAct, &QAction::triggered, this, [this, id]() { m_model->clear(id); });
@@ -667,7 +703,8 @@ void DvkPanel::startRename(int id)
     m_renameEdit = new QLineEdit;
     AetherSDR::ThemeManager::instance().applyStyleSheet(m_renameEdit, "QLineEdit { background: {{color.background.1}}; color: {{color.text.primary}}; border: 1px solid {{color.accent}}; "
         "border-radius: 2px; font-size: 10px; padding: 0px 2px; }");
-    m_renameEdit->setText(label->text());
+    // Edit the whole name, not the elided text on screen.
+    m_renameEdit->setText(m_fullNames[idx].isEmpty() ? label->text() : m_fullNames[idx]);
     m_renameEdit->selectAll();
     m_renameEdit->setMaxLength(40);
 

@@ -5056,6 +5056,11 @@ void MainWindow::buildUI()
     splitter->addWidget(m_dvkPanel);
     applyVoiceKeyerSource();  // Local may already be the saved choice
     m_dvkPanel->hide();
+#ifdef AETHER_TTS_ENABLED
+    m_dvkPanel->setTextToSpeechAvailable(true);
+    connect(m_dvkPanel, &DvkPanel::textToSpeechRequested,
+            this, &MainWindow::openTextToSpeechDialog);
+#endif
 
     // Centre — panadapter stack (one or more FFT + waterfall panes)
     m_panStack = new PanadapterStack(splitter);

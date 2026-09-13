@@ -244,6 +244,19 @@ int main(int argc, char** argv)
                && labelWithText(panel, QStringLiteral("Recording 2")) != nullptr);
     keyer.addRecording(2, QStringLiteral("CQ"), 3000);
 
+    // A long name (a whole text-to-speech message) is kept in full: the label
+    // carries it (elided only once on screen) and its tooltip shows all of it.
+    {
+        const QString longName = QStringLiteral(
+            "CQ contest CQ contest this is Kilo Five Papa Tango Bravo Kilo Five Papa Tango Bravo contest");
+        keyer.addRecording(3, longName, 6000);
+        emit keyer.recordingChanged(3);
+        QLabel* label = labelWithText(panel, longName);
+        report("long slot name kept in full with a full tooltip",
+               label && label->toolTip() == longName
+                   && label->sizePolicy().horizontalPolicy() == QSizePolicy::Ignored);
+    }
+
     // A recorded slot's duration is as bright as its name, not left dim.
     emit keyer.recordingChanged(2);
     {
