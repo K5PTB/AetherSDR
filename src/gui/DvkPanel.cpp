@@ -11,10 +11,47 @@
 #include <QFileDialog>
 #include <QDir>
 #include <QRegularExpression>
+#include <QIcon>
+#include <QPainter>
+#include <QPen>
 #include "core/ThemeManager.h"
 #include "core/TxKeyingMarker.h"
 
+#include <algorithm>
+
 namespace AetherSDR {
+
+namespace {
+
+// A transmitting antenna for XMIT: a mast on a splayed base with signal arcs
+// radiating from its tip. Drawn rather than an emoji so it takes the button's
+// own text colour and looks the same on every platform.
+QPixmap antennaPixmap(const QColor& color, int size, qreal dpr)
+{
+    QPixmap pm(QSize(size, size) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    const qreal s = size;
+    p.setPen(QPen(color, std::max<qreal>(1.0, s / 12.0), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const QPointF tip(s / 2, s * 0.36);
+    const QPointF hip(s / 2, s * 0.66);
+    p.drawLine(tip, QPointF(s / 2, s * 0.94));      // mast
+    p.drawLine(hip, QPointF(s * 0.32, s * 0.94));   // legs
+    p.drawLine(hip, QPointF(s * 0.68, s * 0.94));
+    for (int i = 1; i <= 2; ++i) {
+        const qreal r = s * 0.15 * i;
+        const QRectF box(tip.x() - r, tip.y() - r, 2 * r, 2 * r);
+        p.drawArc(box, 135 * 16, 90 * 16);   // left, centred on 9 o'clock
+        p.drawArc(box, -45 * 16, 90 * 16);   // right, centred on 3 o'clock
+    }
+    p.setBrush(color);
+    p.drawEllipse(tip, s / 16, s / 16);
+    return pm;
+}
+
+} // namespace
 
 static const char* kFKeyStyle =
     "QPushButton { background: #1a2a3a; color: #00b4d8; border: 1px solid #203040; "
@@ -72,7 +109,7 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
         fkeyBtn->setStyleSheet(kFKeyStyle);
         fkeyBtn->setFixedWidth(34);
         fkeyBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-        fkeyBtn->setToolTip(QString("Play recording %1 on-air (F%1)").arg(id));
+        fkeyBtn->setToolTip(QString("Transmit recording %1 on the air (F%1)").arg(id));
         // Keys the transmitter: the radio's DVK, or AetherSDR itself for Local.
         markTxKeying(fkeyBtn);
         rowLayout->addWidget(fkeyBtn);
@@ -133,7 +170,8 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
 
     outerVbox->addLayout(grid, 1);
 
-    // Control buttons: REC | STOP | PLAY | PREV (matches SmartSDR layout)
+    // Control buttons: REC | PLAY | STOP | XMIT. PLAY is heard only on this
+    // computer; XMIT is the one that puts the recording on the air.
     auto* btnRow = new QHBoxLayout;
     btnRow->setSpacing(3);
 
@@ -143,22 +181,27 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
         "QPushButton:checked { background: #cc3333; color: #fff; }");
     btnRow->addWidget(m_recBtn);
 
+    m_previewBtn = new QPushButton(QString::fromUtf8("\u25B6 PLAY"));
+    m_previewBtn->setCheckable(true);
+    m_previewBtn->setToolTip(QStringLiteral("Play the selected recording on this computer \u2014 not transmitted"));
+    m_previewBtn->setAccessibleName(QStringLiteral("Play recording on this computer"));
+    m_previewBtn->setStyleSheet(QString(kBtnStyle) +
+        "QPushButton:checked { background: #3388cc; color: #fff; }");
+    btnRow->addWidget(m_previewBtn);
+
     m_stopBtn = new QPushButton(QString::fromUtf8("\u25A0 STOP"));
     m_stopBtn->setStyleSheet(kBtnStyle);
     btnRow->addWidget(m_stopBtn);
 
-    m_playBtn = new QPushButton(QString::fromUtf8("\u25B6 PLAY"));
-    m_playBtn->setCheckable(true);
-    m_playBtn->setStyleSheet(QString(kBtnStyle) +
+    m_xmitBtn = new QPushButton(QStringLiteral("XMIT"));
+    m_xmitBtn->setCheckable(true);
+    m_xmitBtn->setToolTip(QStringLiteral("Transmit the selected recording on the air (F1\u2013F12)"));
+    m_xmitBtn->setAccessibleName(QStringLiteral("Transmit recording"));
+    m_xmitBtn->setStyleSheet(QString(kBtnStyle) +
         "QPushButton:checked { background: #33aa33; color: #fff; }");
-    markTxKeying(m_playBtn);
-    btnRow->addWidget(m_playBtn);
-
-    m_prevBtn = new QPushButton(QString::fromUtf8("\u25C0 PREV"));
-    m_prevBtn->setCheckable(true);
-    m_prevBtn->setStyleSheet(QString(kBtnStyle) +
-        "QPushButton:checked { background: #3388cc; color: #fff; }");
-    btnRow->addWidget(m_prevBtn);
+    markTxKeying(m_xmitBtn);
+    rebuildXmitIcon();
+    btnRow->addWidget(m_xmitBtn);
 
     outerVbox->addLayout(btnRow);
 
@@ -190,19 +233,19 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
         }
     });
 
-    connect(m_playBtn, &QPushButton::clicked, this, [this](bool checked) {
+    connect(m_xmitBtn, &QPushButton::clicked, this, [this](bool checked) {
         if (m_selectedSlot < 1) return;
         if (checked && durationForSlot(m_selectedSlot) > 0)
             m_model->playbackStart(m_selectedSlot);
-        else if (checked) { m_playBtn->blockSignals(true); m_playBtn->setChecked(false); m_playBtn->blockSignals(false); }
+        else if (checked) { m_xmitBtn->blockSignals(true); m_xmitBtn->setChecked(false); m_xmitBtn->blockSignals(false); }
         else m_model->playbackStop(m_selectedSlot);
     });
 
-    connect(m_prevBtn, &QPushButton::clicked, this, [this](bool checked) {
+    connect(m_previewBtn, &QPushButton::clicked, this, [this](bool checked) {
         if (m_selectedSlot < 1) return;
         if (checked && durationForSlot(m_selectedSlot) > 0)
             m_model->previewStart(m_selectedSlot);
-        else if (checked) { m_prevBtn->blockSignals(true); m_prevBtn->setChecked(false); m_prevBtn->blockSignals(false); }
+        else if (checked) { m_previewBtn->blockSignals(true); m_previewBtn->setChecked(false); m_previewBtn->blockSignals(false); }
         else m_model->previewStop(m_selectedSlot);
     });
 
@@ -334,6 +377,21 @@ int DvkPanel::selectedSlot() const
     return m_selectedSlot;
 }
 
+void DvkPanel::rebuildXmitIcon()
+{
+    // Off: the button's own text colour (from its stylesheet). On: the checked
+    // state's white text. Drawn at 2x at least so it stays sharp on HiDPI.
+    constexpr int kIconPx = 14;
+    const qreal dpr = std::max<qreal>(2.0, devicePixelRatioF());
+    m_xmitBtn->ensurePolished();
+    QIcon icon;
+    icon.addPixmap(antennaPixmap(m_xmitBtn->palette().color(QPalette::ButtonText), kIconPx, dpr),
+                   QIcon::Normal, QIcon::Off);
+    icon.addPixmap(antennaPixmap(QColor(Qt::white), kIconPx, dpr), QIcon::Normal, QIcon::On);
+    m_xmitBtn->setIcon(icon);
+    m_xmitBtn->setIconSize(QSize(kIconPx, kIconPx));
+}
+
 void DvkPanel::setStatusError(bool error)
 {
     // A failure the operator must act on is shown bold and in the theme's
@@ -352,16 +410,16 @@ void DvkPanel::onStatusChanged(int status, int id)
     setStatusError(false);
 
     m_recBtn->blockSignals(true);
-    m_playBtn->blockSignals(true);
-    m_prevBtn->blockSignals(true);
+    m_xmitBtn->blockSignals(true);
+    m_previewBtn->blockSignals(true);
 
     m_recBtn->setChecked(s == VoiceKeyer::Recording);
-    m_playBtn->setChecked(s == VoiceKeyer::Playback);
-    m_prevBtn->setChecked(s == VoiceKeyer::Preview);
+    m_xmitBtn->setChecked(s == VoiceKeyer::Playback);
+    m_previewBtn->setChecked(s == VoiceKeyer::Preview);
 
     m_recBtn->blockSignals(false);
-    m_playBtn->blockSignals(false);
-    m_prevBtn->blockSignals(false);
+    m_xmitBtn->blockSignals(false);
+    m_previewBtn->blockSignals(false);
 
     // Highlight active slot's F-key button
     for (int i = 0; i < m_fkeyBtns.size(); ++i) {
@@ -466,7 +524,8 @@ void DvkPanel::onElapsedTick()
         break;
     case VoiceKeyer::Playback:
     case VoiceKeyer::Preview: {
-        QString label = (s == VoiceKeyer::Playback) ? "Playback" : "Preview";
+        // Named after the buttons: XMIT transmits, PLAY plays locally.
+        QString label = (s == VoiceKeyer::Playback) ? "Transmitting" : "Playing";
         if (totalMs > 0)
             m_statusLabel->setText(QString("Status: %1 %2 / %3")
                 .arg(label).arg(m_timerSlotId).arg(elapsed));
