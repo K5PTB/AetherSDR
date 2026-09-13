@@ -7,6 +7,7 @@
 #include "models/VoiceKeyer.h"
 
 #include <QApplication>
+#include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
 #include <QPushButton>
@@ -124,21 +125,45 @@ int main(int argc, char** argv)
 
     // Controls that key the transmitter carry the automation bridge's TX
     // marker, so an agent can never press them against a live radio (#3646);
-    // record, stop and preview never key and stay drivable.
+    // record, stop and local PLAY never key and stay drivable.
     {
         bool keyingMarked = true;
         for (int id = 1; id <= 12; ++id) {
             QPushButton* b = buttonByText(panel, QStringLiteral("F%1").arg(id));
             keyingMarked = keyingMarked && b && b->property(kTxKeyingProperty).toBool();
         }
-        QPushButton* play = buttonByText(panel, QString::fromUtf8("▶ PLAY"));
+        QPushButton* xmit = buttonByText(panel, QStringLiteral("XMIT"));
         QPushButton* stop = buttonByText(panel, QString::fromUtf8("■ STOP"));
-        QPushButton* prev = buttonByText(panel, QString::fromUtf8("◀ PREV"));
-        report("play_and_fkeys_are_marked_tx_keying",
-               keyingMarked && play && play->property(kTxKeyingProperty).toBool() && stop && prev
+        QPushButton* play = buttonByText(panel, QString::fromUtf8("▶ PLAY"));
+        report("xmit_and_fkeys_are_marked_tx_keying",
+               keyingMarked && xmit && xmit->property(kTxKeyingProperty).toBool() && stop && play
                    && !rec->property(kTxKeyingProperty).toBool()
                    && !stop->property(kTxKeyingProperty).toBool()
-                   && !prev->property(kTxKeyingProperty).toBool());
+                   && !play->property(kTxKeyingProperty).toBool());
+
+        // The row reads REC, PLAY, STOP, XMIT, and XMIT carries its antenna.
+        QHBoxLayout* row = nullptr;
+        for (auto* l : panel.findChildren<QHBoxLayout*>())
+            if (l->indexOf(rec) >= 0) row = l;
+        const bool ordered = row && xmit && stop && play
+            && row->indexOf(rec) < row->indexOf(play)
+            && row->indexOf(play) < row->indexOf(stop)
+            && row->indexOf(stop) < row->indexOf(xmit);
+        report("buttons_read_rec_play_stop_xmit_with_antenna",
+               ordered && !xmit->icon().isNull());
+
+        // PLAY previews locally; XMIT transmits.
+        keyer.addRecording(1, QStringLiteral("Test"), 1000);
+        keyer.calls.clear();
+        play->click();
+        keyer.pushStatus(VoiceKeyer::Idle, -1);
+        xmit->click();
+        keyer.pushStatus(VoiceKeyer::Idle, -1);
+        report("play_previews_and_xmit_transmits",
+               keyer.calls == QStringList({"previewStart 1", "playbackStart 1"}),
+               joined(keyer.calls));
+        keyer.recs.clear();
+        keyer.calls.clear();
     }
 
     // An empty slot never goes on the air.

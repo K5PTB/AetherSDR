@@ -52,8 +52,8 @@ private:
     QVector<QProgressBar*> m_progressBars;
     QPushButton* m_recBtn;
     QPushButton* m_stopBtn;
-    QPushButton* m_playBtn;
-    QPushButton* m_prevBtn;
+    QPushButton* m_previewBtn;   // "PLAY": heard on this computer only
+    QPushButton* m_xmitBtn;      // "XMIT": keys the transmitter
     QLabel* m_statusLabel;
     bool m_statusIsError{false};
     int m_selectedSlot{1};
@@ -75,6 +75,7 @@ private:
     void connectKeyer();
     void refreshFromKeyer();
     void setStatusError(bool error);
+    void rebuildXmitIcon();
     void selectSlot(int id);
     void showContextMenu(int id, const QPoint& globalPos);
     void startRename(int id);

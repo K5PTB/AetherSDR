@@ -12,7 +12,7 @@ class QAudioSink;
 namespace AetherSDR {
 
 // Plays a WAV file on this computer's speakers — the client-side voice keyer's
-// PREV (RFC #4214). Never touches the radio or the transmitter.
+// PLAY (RFC #4214). Never touches the radio or the transmitter.
 //
 // Follows QsoRecorder's playback pattern: the output device the operator chose
 // (fed through AudioOutputRouter), the shared format ladder, and a request to
