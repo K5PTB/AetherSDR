@@ -20,6 +20,7 @@
 #include "VoiceModeGate.h"
 #include "core/GeneratedAudioTransmitter.h"
 #include "core/LocalWavPlayer.h"
+#include "core/ThemeManager.h"
 #include "core/VoiceKeyerSettings.h"
 #include "models/LocalVoiceKeyer.h"
 
@@ -1762,6 +1763,12 @@ void MainWindow::showVoiceKeyerSourceMenu(const QPoint& globalPos)
     const bool resolvedLocal = voiceKeyerSource() == VoiceKeyerSource::Local;
 
     QMenu menu(this);
+    // The app-wide menu style sets one text colour for every item, which hides
+    // Qt's own greying of a disabled one — restate it so an unavailable choice
+    // reads as unavailable, not merely unresponsive.
+    AetherSDR::ThemeManager::instance().applyStyleSheet(&menu,
+        "QMenu::item:disabled, QMenu::item:disabled:checked "
+        "{ color: {{color.button.foreground.disabled}}; }");
     auto* group = new QActionGroup(&menu);
     auto addChoice = [&](const QString& text, VoiceKeyerSourceSetting value) {
         QAction* a = menu.addAction(text);
@@ -1774,7 +1781,18 @@ void MainWindow::showVoiceKeyerSourceMenu(const QPoint& globalPos)
     addChoice(QStringLiteral("Automatic by radio licence (now: %1)")
                   .arg(resolvedLocal ? QStringLiteral("Local") : QStringLiteral("Radio")),
               VoiceKeyerSourceSetting::Auto);
-    addChoice(QStringLiteral("Radio DVK — recordings on the radio"), VoiceKeyerSourceSetting::Radio);
+    // The radio's own DVK can only be chosen when this radio has one and has
+    // not said the entitlement is off; a disabled action cannot be triggered.
+    const QString radioUnavailable = radioVoiceKeyerUnavailableReason(
+        m_radioModel.hasVoiceKeyer(),
+        m_radioModel.licenseFeatureSeen(kDvkLicenseFeature),
+        m_radioModel.licenseFeatureEnabled(kDvkLicenseFeature));
+    QAction* radioChoice = addChoice(
+        radioUnavailable.isEmpty()
+            ? QStringLiteral("Radio DVK — recordings on the radio")
+            : QStringLiteral("Radio DVK — %1").arg(radioUnavailable),
+        VoiceKeyerSourceSetting::Radio);
+    radioChoice->setEnabled(radioUnavailable.isEmpty());
     addChoice(QStringLiteral("Local — recordings on this computer"), VoiceKeyerSourceSetting::Local);
     menu.addSeparator();
     QAction* openFolder = menu.addAction(QStringLiteral("Open Local Recordings Folder"));
