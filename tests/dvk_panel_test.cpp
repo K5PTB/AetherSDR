@@ -11,6 +11,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QShortcut>
 #include <QStringList>
 
@@ -242,6 +243,26 @@ int main(int argc, char** argv)
            labelWithText(panel, QStringLiteral("CQ")) == nullptr
                && labelWithText(panel, QStringLiteral("Recording 2")) != nullptr);
     keyer.addRecording(2, QStringLiteral("CQ"), 3000);
+
+    // A recorded slot's duration is as bright as its name, not left dim.
+    emit keyer.recordingChanged(2);
+    {
+        static const QRegularExpression colourRe(QStringLiteral("color:\\s*(#[0-9a-fA-F]{3,8})"));
+        const auto colourOf = [](QLabel* l) {
+            return l ? colourRe.match(l->styleSheet()).captured(1).toLower() : QString();
+        };
+        QLabel* name = labelWithText(panel, QStringLiteral("CQ"));
+        QLabel* duration = nullptr;
+        if (name && name->parentWidget()) {
+            for (auto* l : name->parentWidget()->findChildren<QLabel*>())
+                if (l != name) duration = l;
+        }
+        const QString nameColour = colourOf(name);
+        const QString recordedColour = colourOf(duration);
+        report("recorded_duration_matches_name_brightness",
+               duration && !nameColour.isEmpty() && recordedColour == nameColour,
+               (nameColour + QStringLiteral(" vs ") + recordedColour).toStdString());
+    }
 
     // Switching keyers re-reads everything and cuts the old keyer off.
     FakeKeyer local;
