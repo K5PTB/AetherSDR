@@ -15,6 +15,7 @@
 
 #include "MainWindow.h"
 
+#include <QMouseEvent>
 #include <QApplication>
 #include <QKeyEvent>
 
@@ -27,6 +28,7 @@
 #include "GuardedSlider.h"
 #include "MeterSlider.h"
 #include "PanLayoutDialog.h"
+#include "models/LocalVoiceKeyer.h"
 #include "PanadapterStack.h"
 #include "RxApplet.h"
 #include "SpectrumOverlayMenu.h"
@@ -627,6 +629,14 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
         showAddPanadapterDialog();
         return true;
     }
+    // Right-click chooses the keyer (radio DVK / local recordings). Handled
+    // before the enabled check: a dimmed indicator on an unlicensed radio is
+    // exactly where an operator needs to reach "Local".
+    if (obj == m_dvkIndicator && event->type() == QEvent::MouseButtonPress
+        && static_cast<QMouseEvent*>(event)->button() == Qt::RightButton) {
+        showVoiceKeyerSourceMenu(static_cast<QMouseEvent*>(event)->globalPosition().toPoint());
+        return true;
+    }
     if (obj == m_dvkIndicator && event->type() == QEvent::MouseButtonPress) {
         if (!m_dvkIndicator->isEnabled()) return true;
         toggleVoiceKeyerPanel();
@@ -686,6 +696,9 @@ void MainWindow::toggleVoiceKeyerPanel()
     const bool show = !m_dvkPanel->isVisible();
     if (show && m_cwxPanel && m_cwxPanel->isVisible()) {
         m_cwxPanel->hide();
+    }
+    if (show && m_localVoiceKeyer) {
+        m_localVoiceKeyer->reload();  // pick up WAVs dropped into the folder
     }
 
     m_dvkPanel->setVisible(show);

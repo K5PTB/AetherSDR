@@ -49,6 +49,8 @@ public:
     bool isTransferring() const override { return m_transferBusyProbe && m_transferBusyProbe(); }
     void setWavTransferBusyProbe(std::function<bool()> probe) { m_transferBusyProbe = std::move(probe); }
 
+    QString sourceLabel() const override { return QStringLiteral("Radio"); }
+
     // Status parsing (called from RadioModel)
     void applyStatus(const QString& object, const QMap<QString, QString>& kvs);
 

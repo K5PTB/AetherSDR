@@ -42,9 +42,9 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
     outerVbox->setSpacing(4);
 
     // Title
-    auto* title = new QLabel("Digital Voice Keyer");
-    AetherSDR::ThemeManager::instance().applyStyleSheet(title, "QLabel { color: {{color.accent}}; font-weight: bold; font-size: 12px; }");
-    outerVbox->addWidget(title);
+    m_titleLabel = new QLabel;
+    AetherSDR::ThemeManager::instance().applyStyleSheet(m_titleLabel, "QLabel { color: {{color.accent}}; font-weight: bold; font-size: 12px; }");
+    outerVbox->addWidget(m_titleLabel);
 
     // Grid of slots — each row gets equal stretch
     auto* grid = new QGridLayout;
@@ -198,31 +198,7 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
         else m_model->previewStop(m_selectedSlot);
     });
 
-    // Wire model signals
-    connect(m_model, &VoiceKeyer::statusChanged, this, &DvkPanel::onStatusChanged);
-    connect(m_model, &VoiceKeyer::recordingChanged, this, &DvkPanel::onRecordingChanged);
-
-    // Surface radio rejections instead of silently toggling buttons.  Without
-    // this the REC button latched "checked" on a rejected rec_start. (#3377)
-    connect(m_model, &VoiceKeyer::commandFailed, this,
-            [this](const QString& verb, int id, uint /*code*/, const QString& message) {
-        // Re-drive the buttons from the current (unchanged) status so the
-        // failed momentary press is visually released.  This must run *first*:
-        // onStatusChanged() rewrites m_statusLabel ("Status: Idle"), so set the
-        // failure text afterwards or it gets clobbered before the event loop
-        // returns and the user never sees the rejection. (#3377)
-        onStatusChanged(static_cast<int>(m_model->status()), m_model->activeId());
-        m_statusLabel->setText(QString("Status: %1 (slot %2) failed — %3")
-                                   .arg(verb).arg(id).arg(message));
-    });
-
-    // WAV import/export progress and outcome, whichever keyer carries it.
-    connect(m_model, &VoiceKeyer::transferStatusChanged,
-            m_statusLabel, &QLabel::setText);
-    connect(m_model, &VoiceKeyer::transferFinished,
-            this, [this](bool success, const QString& msg) {
-        m_statusLabel->setText(success ? msg : QString("Transfer failed: %1").arg(msg));
-    });
+    connectKeyer();
 
     // F1-F12 hotkeys (only play if slot has a recording).  Registered as
     // Qt::ApplicationShortcut on window() and created disabled — MainWindow
@@ -272,6 +248,57 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
 
     m_selectedSlot = 1;
     selectSlot(1);
+    refreshFromKeyer();
+}
+
+void DvkPanel::connectKeyer()
+{
+    connect(m_model, &VoiceKeyer::statusChanged, this, &DvkPanel::onStatusChanged);
+    connect(m_model, &VoiceKeyer::recordingChanged, this, &DvkPanel::onRecordingChanged);
+
+    // Surface radio rejections instead of silently toggling buttons.  Without
+    // this the REC button latched "checked" on a rejected rec_start. (#3377)
+    connect(m_model, &VoiceKeyer::commandFailed, this,
+            [this](const QString& verb, int id, uint /*code*/, const QString& message) {
+        // Re-drive the buttons from the current (unchanged) status so the
+        // failed momentary press is visually released.  This must run *first*:
+        // onStatusChanged() rewrites m_statusLabel ("Status: Idle"), so set the
+        // failure text afterwards or it gets clobbered before the event loop
+        // returns and the user never sees the rejection. (#3377)
+        onStatusChanged(static_cast<int>(m_model->status()), m_model->activeId());
+        m_statusLabel->setText(QString("Status: %1 (slot %2) failed — %3")
+                                   .arg(verb).arg(id).arg(message));
+    });
+
+    // WAV import/export progress and outcome, whichever keyer carries it.
+    connect(m_model, &VoiceKeyer::transferStatusChanged,
+            m_statusLabel, &QLabel::setText);
+    connect(m_model, &VoiceKeyer::transferFinished,
+            this, [this](bool success, const QString& msg) {
+        m_statusLabel->setText(success ? msg : QString("Transfer failed: %1").arg(msg));
+    });
+}
+
+void DvkPanel::refreshFromKeyer()
+{
+    const QString source = m_model->sourceLabel();
+    m_titleLabel->setText(source.isEmpty() ? QStringLiteral("Digital Voice Keyer")
+                                           : QStringLiteral("Digital Voice Keyer (%1)").arg(source));
+    for (int id = 1; id <= 12; ++id)
+        onRecordingChanged(id);
+    onStatusChanged(static_cast<int>(m_model->status()), m_model->activeId());
+}
+
+void DvkPanel::setKeyer(VoiceKeyer* keyer)
+{
+    if (!keyer || keyer == m_model)
+        return;
+    cancelRename();
+    disconnect(m_model, nullptr, this, nullptr);
+    disconnect(m_model, nullptr, m_statusLabel, nullptr);
+    m_model = keyer;
+    connectKeyer();
+    refreshFromKeyer();
 }
 
 void DvkPanel::setShortcutsEnabled(bool enabled)
@@ -382,17 +409,22 @@ void DvkPanel::onRecordingChanged(int id)
 {
     if (id < 1 || id > 12) return;
     int idx = id - 1;
-    const auto& recs = m_model->recordings();
-    for (const auto& r : recs) {
+    // A slot the keyer holds nothing for (deleted, or a keyer that never had
+    // it) shows as an empty row rather than keeping whatever was there before.
+    QString name = QString("Recording %1").arg(id);
+    int durationMs = 0;
+    for (const auto& r : m_model->recordings()) {
         if (r.id == id) {
-            m_nameLabels[idx]->setText(r.name);
-            m_durLabels[idx]->setText(r.durationMs > 0 ? formatDuration(r.durationMs) : "Empty");
-            m_nameLabels[idx]->setStyleSheet(r.durationMs > 0
-                ? kNameStyle
-                : "QLabel { color: #505060; font-size: 10px; }");
+            name = r.name;
+            durationMs = r.durationMs;
             break;
         }
     }
+    m_nameLabels[idx]->setText(name);
+    m_durLabels[idx]->setText(durationMs > 0 ? formatDuration(durationMs) : "Empty");
+    m_nameLabels[idx]->setStyleSheet(durationMs > 0
+        ? kNameStyle
+        : "QLabel { color: #505060; font-size: 10px; }");
 }
 
 void DvkPanel::onElapsedTick()

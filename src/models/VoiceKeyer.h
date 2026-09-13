@@ -52,6 +52,10 @@ public:
     virtual bool canTransferWav() const = 0;  // false: import/export unavailable
     virtual bool isTransferring() const = 0;
 
+    // Short name for where recordings live — "Radio" or "Local" — shown with
+    // the panel title so the operator always knows which keyer they drive.
+    virtual QString sourceLabel() const = 0;
+
 signals:
     void statusChanged(AetherSDR::VoiceKeyer::Status status, int id);
     void recordingChanged(int id);

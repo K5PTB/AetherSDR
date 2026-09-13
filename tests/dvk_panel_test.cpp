@@ -34,6 +34,7 @@ public:
     Status st{Idle};
     int active{-1};
     QVector<VoiceKeyerRecording> recs;
+    QString label{QStringLiteral("Radio")};
 
     Status status() const override { return st; }
     int activeId() const override { return active; }
@@ -52,6 +53,7 @@ public:
     void exportWav(int id, const QString& p) override { calls << QString("exportWav %1 %2").arg(id).arg(p); }
     bool canTransferWav() const override { return true; }
     bool isTransferring() const override { return false; }
+    QString sourceLabel() const override { return label; }
 
     void addRecording(int id, const QString& name, int ms)
     {
@@ -77,6 +79,13 @@ QLabel* statusLabel(DvkPanel& panel)
 {
     for (auto* l : panel.findChildren<QLabel*>())
         if (l->text().startsWith(QLatin1String("Status:"))) return l;
+    return nullptr;
+}
+
+QLabel* labelWithText(DvkPanel& panel, const QString& text)
+{
+    for (auto* l : panel.findChildren<QLabel*>())
+        if (l->text() == text) return l;
     return nullptr;
 }
 
@@ -170,6 +179,34 @@ int main(int argc, char** argv)
     if (f2Key) emit f2Key->activated();
     report("fkey_shortcut_disabled_until_enabled_then_plays",
            startsDisabled && keyer.calls == QStringList{"playbackStart 2"}, joined(keyer.calls));
+
+    report("title_names_the_source",
+           labelWithText(panel, QStringLiteral("Digital Voice Keyer (Radio)")) != nullptr);
+
+    // A slot the keyer no longer holds shows as empty, not as its old name.
+    keyer.recs.clear();
+    emit keyer.recordingChanged(2);
+    report("vanished_recording_resets_its_row",
+           labelWithText(panel, QStringLiteral("CQ")) == nullptr
+               && labelWithText(panel, QStringLiteral("Recording 2")) != nullptr);
+    keyer.addRecording(2, QStringLiteral("CQ"), 3000);
+
+    // Switching keyers re-reads everything and cuts the old keyer off.
+    FakeKeyer local;
+    local.label = QStringLiteral("Local");
+    local.recs.append({4, QStringLiteral("Local CQ"), 2500});
+    panel.setKeyer(&local);
+    const bool titleOk = labelWithText(panel, QStringLiteral("Digital Voice Keyer (Local)")) != nullptr;
+    const bool rowsOk = labelWithText(panel, QStringLiteral("Local CQ")) != nullptr
+                        && labelWithText(panel, QStringLiteral("CQ")) == nullptr;
+    emit keyer.commandFailed(QStringLiteral("rec_start"), 1, 1u, QStringLiteral("old keyer"));
+    const bool oldCutOff = !status->text().contains(QLatin1String("old keyer"));
+    keyer.calls.clear();
+    buttonByText(panel, QStringLiteral("F4"))->click();
+    report("set_keyer_rereads_rows_title_and_routes_presses",
+           titleOk && rowsOk && oldCutOff && keyer.calls.isEmpty()
+               && local.calls == QStringList{"playbackStart 4"},
+           joined(local.calls));
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);
     return g_failed ? 1 : 0;

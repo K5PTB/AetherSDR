@@ -15,6 +15,17 @@
 // Pure code motion from MainWindow.cpp — same class, no header changes.
 
 #include "MainWindow.h"
+#include "DvkAvailabilityGate.h"
+#include "DvkPanel.h"
+#include "core/LocalWavPlayer.h"
+#include "core/VoiceKeyerSettings.h"
+#include "models/LocalVoiceKeyer.h"
+
+#include <QActionGroup>
+#include <QDesktopServices>
+#include <QDir>
+#include <QMenu>
+#include <QUrl>
 #include "DStarAvailabilityGate.h"
 
 #include "AppletPanel.h"
@@ -1541,6 +1552,112 @@ void MainWindow::showPskReporterMapDialog()
     m_pskReporterMapDialog->show();
     m_pskReporterMapDialog->raise();
     m_pskReporterMapDialog->activateWindow();
+}
+
+
+// ── Client-side voice keyer (RFC #4214) ─────────────────────────────────────
+//
+// The DVK panel drives either the radio's DVK or LocalVoiceKeyer. Local
+// recordings come from the PC-mic tap (never keys TX) and preview on this
+// computer's speakers. On-air playback of local recordings is a later step.
+
+void MainWindow::wireLocalVoiceKeyer()
+{
+    m_localVoiceKeyer = new LocalVoiceKeyer(VoiceKeyerSettings::recordingsDir(), this);
+    m_voiceKeyerPlayer = new LocalWavPlayer(this);
+    m_outputRouter->addFollower(m_voiceKeyerPlayer);
+
+    m_localVoiceKeyer->setMicSourceProbe([this] {
+        return m_radioModel.transmitModel().micSelection();
+    });
+    m_localVoiceKeyer->setPreviewHandlers(
+        [this](const QString& path, QString& error) { return m_voiceKeyerPlayer->play(path, error); },
+        [this] { m_voiceKeyerPlayer->stop(); });
+    connect(m_voiceKeyerPlayer, &LocalWavPlayer::finished,
+            m_localVoiceKeyer, &LocalVoiceKeyer::onPreviewFinished);
+
+    // Preview is heard on its own: live RX leaves the sink for the duration,
+    // exactly as QSO-recorder and PooDoo playback do (see their handlers).
+    connect(m_voiceKeyerPlayer, &LocalWavPlayer::muteRxRequested, this, [this](bool mute) {
+        m_rxMutedForPlayback = mute;   // seam backends
+        if (mute) {
+            disconnect(m_radioModel.panStream(), &PanadapterStream::pcmFrameReady,
+                       m_audio, &AudioEngine::feedPcmFrame);
+        } else if (!backendFeedsEngineDirectly()) {
+            connect(m_radioModel.panStream(), &PanadapterStream::pcmFrameReady,
+                    m_audio, &AudioEngine::feedPcmFrame, Qt::UniqueConnection);
+        }
+    });
+
+    // The final TX monitor runs whenever the PC mic is captured, keyed or not.
+    // Emitted on the audio thread; queued onto the keyer's (GUI) thread.
+    connect(m_audio, &AudioEngine::txFinalMonitorPcmReady,
+            m_localVoiceKeyer, &LocalVoiceKeyer::onMicPcm);
+}
+
+VoiceKeyerSource MainWindow::voiceKeyerSource() const
+{
+    return resolveVoiceKeyerSource(
+        VoiceKeyerSettings::source(),
+        m_radioModel.licenseFeatureSeen(kDvkLicenseFeature),
+        m_radioModel.licenseFeatureEnabled(kDvkLicenseFeature));
+}
+
+void MainWindow::applyVoiceKeyerSource()
+{
+    if (!m_dvkPanel || !m_localVoiceKeyer)
+        return;
+    VoiceKeyer* wanted = voiceKeyerSource() == VoiceKeyerSource::Local
+                             ? static_cast<VoiceKeyer*>(m_localVoiceKeyer)
+                             : static_cast<VoiceKeyer*>(&m_radioModel.dvkModel());
+    VoiceKeyer* current = m_dvkPanel->keyer();
+    if (wanted == current)
+        return;
+    // Never pull the panel out from under a recording, preview or playback; the
+    // next availability update switches once the current keyer is idle.
+    const auto busy = current ? current->status() : VoiceKeyer::Idle;
+    if (busy == VoiceKeyer::Recording || busy == VoiceKeyer::Preview
+        || busy == VoiceKeyer::Playback)
+        return;
+    m_dvkPanel->setKeyer(wanted);
+}
+
+void MainWindow::showVoiceKeyerSourceMenu(const QPoint& globalPos)
+{
+    const VoiceKeyerSourceSetting setting = VoiceKeyerSettings::source();
+    const bool resolvedLocal = voiceKeyerSource() == VoiceKeyerSource::Local;
+
+    QMenu menu(this);
+    auto* group = new QActionGroup(&menu);
+    auto addChoice = [&](const QString& text, VoiceKeyerSourceSetting value) {
+        QAction* a = menu.addAction(text);
+        a->setCheckable(true);
+        a->setChecked(setting == value);
+        a->setData(static_cast<int>(value));
+        group->addAction(a);
+        return a;
+    };
+    addChoice(QStringLiteral("Automatic by radio licence (now: %1)")
+                  .arg(resolvedLocal ? QStringLiteral("Local") : QStringLiteral("Radio")),
+              VoiceKeyerSourceSetting::Auto);
+    addChoice(QStringLiteral("Radio DVK — recordings on the radio"), VoiceKeyerSourceSetting::Radio);
+    addChoice(QStringLiteral("Local — recordings on this computer"), VoiceKeyerSourceSetting::Local);
+    menu.addSeparator();
+    QAction* openFolder = menu.addAction(QStringLiteral("Open Local Recordings Folder"));
+    openFolder->setToolTip(VoiceKeyerSettings::recordingsDir());
+
+    QAction* chosen = menu.exec(globalPos);
+    if (!chosen)
+        return;
+    if (chosen == openFolder) {
+        const QString dir = VoiceKeyerSettings::recordingsDir();
+        QDir().mkpath(dir);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+        return;
+    }
+    VoiceKeyerSettings::setSource(static_cast<VoiceKeyerSourceSetting>(chosen->data().toInt()));
+    m_localVoiceKeyer->reload();
+    updateKeyerAvailability();
 }
 
 } // namespace AetherSDR
