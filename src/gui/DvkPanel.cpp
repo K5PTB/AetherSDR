@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QRegularExpression>
 #include "core/ThemeManager.h"
+#include "core/TxKeyingMarker.h"
 
 namespace AetherSDR {
 
@@ -72,6 +73,8 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
         fkeyBtn->setFixedWidth(34);
         fkeyBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         fkeyBtn->setToolTip(QString("Play recording %1 on-air (F%1)").arg(id));
+        // Keys the transmitter: the radio's DVK, or AetherSDR itself for Local.
+        markTxKeying(fkeyBtn);
         rowLayout->addWidget(fkeyBtn);
 
         auto* nameLabel = new QLabel(QString("Recording %1").arg(id));
@@ -148,6 +151,7 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
     m_playBtn->setCheckable(true);
     m_playBtn->setStyleSheet(QString(kBtnStyle) +
         "QPushButton:checked { background: #33aa33; color: #fff; }");
+    markTxKeying(m_playBtn);
     btnRow->addWidget(m_playBtn);
 
     m_prevBtn = new QPushButton(QString::fromUtf8("\u25C0 PREV"));

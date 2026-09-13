@@ -1,9 +1,11 @@
 #pragma once
 
 #include "VoiceKeyer.h"
+#include "core/GeneratedAudioTransmitter.h"
 #include "core/LocalVoiceKeyerStore.h"
 
 #include <QByteArray>
+#include <QPointer>
 #include <QString>
 #include <QVector>
 
@@ -21,7 +23,9 @@ namespace AetherSDR {
 // a radio-side mic source selected, REC refuses and says why rather than
 // recording silence.
 //
-// On-air playback is not wired yet — playbackStart refuses with an explanation.
+// On-air playback hands the slot's audio to the shared
+// GeneratedAudioTransmitter, which owns keying, pacing and the unkey; every
+// transmission starts from an operator PLAY or F-key and ends on its own.
 class LocalVoiceKeyer : public VoiceKeyer {
     Q_OBJECT
 public:
@@ -63,6 +67,9 @@ public:
     using PreviewStop  = std::function<void()>;
     void setPreviewHandlers(PreviewStart start, PreviewStop stop);
 
+    // On-air playback. Without one, PLAY refuses and says so.
+    void setTransmitter(GeneratedAudioTransmitter* transmitter);
+
 public slots:
     // AudioEngine::txFinalMonitorPcmReady — 24 kHz stereo int16. Only the
     // operator's own mic is recorded: client-leveled audio is a TCI/DAX
@@ -78,6 +85,7 @@ private:
     void setStatus(Status status, int id);
     void refuse(const QString& verb, int id, const QString& message);
     bool busyRefusal(const QString& verb, int id);
+    void onTransmitFinished(GeneratedAudioTransmitter::Outcome outcome, const QString& reason);
 
     LocalVoiceKeyerStore m_store;
     QVector<VoiceKeyerRecording> m_recordings;
@@ -87,6 +95,8 @@ private:
     MicSourceProbe m_micSource;
     PreviewStart m_previewStart;
     PreviewStop m_previewStop;
+    QPointer<GeneratedAudioTransmitter> m_transmitter;
+    QMetaObject::Connection m_transmitterFinished;
 
     QByteArray m_recordBuffer;
     bool m_recordCapped{false};

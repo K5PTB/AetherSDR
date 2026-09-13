@@ -2,6 +2,7 @@
 // slot management and WAV import/export — no radio, no audio device.
 // Run: ./build/local_voice_keyer_test
 
+#include "FakeTxAudioRoute.h"
 #include "TestSettingsProfile.h"
 #include "core/AppSettings.h"
 #include "core/LocalVoiceKeyerStore.h"
@@ -9,6 +10,8 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QStringList>
@@ -205,13 +208,102 @@ int main(int argc, char** argv)
         heard.failures.clear();
     }
 
-    // On-air playback is not wired in this step and must say so.
+    // On-air playback with no transmitter wired refuses and says so.
     keyer.playbackStart(3);
-    report("on_air_playback_refused_for_now",
+    report("playback_without_transmitter_is_refused",
            heard.failures.size() == 1 && heard.failures[0].startsWith("playback_start 3")
-               && keyer.status() == VoiceKeyer::Idle,
+               && heard.failures[0].contains("not available") && keyer.status() == VoiceKeyer::Idle,
            heard.failures.join(" | ").toStdString());
     heard.failures.clear();
+
+    // On-air playback sends the slot's own audio through the transmitter.
+    {
+        const auto waitIdle = [&] {
+            QElapsedTimer t;
+            t.start();
+            while (keyer.status() != VoiceKeyer::Idle && t.elapsed() < 3000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            return keyer.status() == VoiceKeyer::Idle;
+        };
+        GeneratedAudioTiming fast;
+        fast.settleMs = 1;
+        fast.leadMs = 1;
+        fast.chunkMs = 2;
+        fast.leadBufferMs = 1000;   // the whole slot in the first tick
+        fast.tailMs = 1;
+        FakeTxAudioRoute route;
+        GeneratedAudioTransmitter tx(&route, nullptr, fast);
+        route.tx = &tx;
+        keyer.setTransmitter(&tx);
+
+        keyer.playbackStart(3);
+        const bool playing = keyer.status() == VoiceKeyer::Playback && keyer.activeId() == 3;
+        keyer.recStart(6);
+        const bool busyRefused = heard.failures.size() == 1
+                                 && heard.failures[0].startsWith("rec_start 6");
+        heard.failures.clear();
+        const bool idle = waitIdle();
+        // 500 ms of 24 kHz stereo float; frame 100 is the recorded tone.
+        const bool sizeOk = route.sent.size() == 12000 * 8;
+        const auto* f = reinterpret_cast<const float*>(route.sent.constData());
+        const float want = float(qint16(8000 * std::sin(2 * kPi * 700.0 * 100 / 24000.0))) / 32768.0f;
+        const bool contentOk = sizeOk && std::abs(f[200] - want) < 1e-3f && f[200] == f[201];
+        report("playback_transmits_the_slot_and_returns_to_idle",
+               playing && busyRefused && idle && contentOk && heard.failures.isEmpty()
+                   && route.calls.contains("keyOff"),
+               QString("sent=%1 calls=%2").arg(route.sent.size()).arg(route.calls.join(","))
+                   .toStdString());
+
+        // The route's refusal reaches the panel as the reason.
+        route.refusal = QStringLiteral("The transmit slice is in CW.");
+        keyer.playbackStart(3);
+        report("playback_refusal_is_reported_with_reason",
+               keyer.status() == VoiceKeyer::Idle && heard.failures.size() == 1
+                   && heard.failures[0].contains("in CW"),
+               heard.failures.join(" | ").toStdString());
+        route.refusal.clear();
+        heard.failures.clear();
+
+        // A failure after the start (PTT refused) ends playback with the reason.
+        route.keyEngages = false;
+        keyer.playbackStart(3);
+        const bool failedIdle = waitIdle();
+        report("playback_failure_after_start_is_reported",
+               failedIdle && heard.failures.size() == 1
+                   && heard.failures[0].startsWith("playback 3")
+                   && heard.failures[0].contains("did not engage"),
+               heard.failures.join(" | ").toStdString());
+        route.keyEngages = true;
+        heard.failures.clear();
+
+        // PLAY while previewing never reaches the transmitter.
+        keyer.setPreviewHandlers([](const QString&, QString&) { return true; }, [] {});
+        keyer.previewStart(3);
+        route.calls.clear();
+        keyer.playbackStart(3);
+        report("playback_refused_while_previewing",
+               keyer.status() == VoiceKeyer::Preview && route.calls.isEmpty() && !tx.isActive()
+                   && heard.failures.size() == 1 && heard.failures[0].startsWith("playback_start 3"),
+               heard.failures.join(" | ").toStdString());
+        keyer.previewStop(3);
+        heard.failures.clear();
+
+        // Stop is not a failure.
+        keyer.playbackStart(3);
+        keyer.playbackStop(3);
+        report("playback_stop_returns_to_idle_quietly",
+               keyer.status() == VoiceKeyer::Idle && heard.failures.isEmpty() && !tx.isActive());
+
+        // An empty slot never reaches the transmitter.
+        route.calls.clear();
+        keyer.playbackStart(7);
+        report("playback_of_empty_slot_is_refused",
+               heard.failures.size() == 1 && heard.failures[0].contains("no recording")
+                   && route.calls.isEmpty(),
+               heard.failures.join(" | ").toStdString());
+        heard.failures.clear();
+        keyer.setTransmitter(nullptr);
+    }
 
     // Labels persist in settings and survive a new keyer on the same folder.
     keyer.setName(3, QStringLiteral("  CQ Contest  "));
@@ -257,12 +349,11 @@ int main(int argc, char** argv)
         heard.transfers.clear();
         const QString junk = dir.path() + QStringLiteral("/not-audio.wav");
         QFile f(junk);
-        f.open(QIODevice::WriteOnly);
-        f.write(QByteArray(200, 'x'));
+        const bool wroteJunk = f.open(QIODevice::WriteOnly) && f.write(QByteArray(200, 'x')) == 200;
         f.close();
         keyer.importWav(9, junk);
         report("import_rejects_a_non_wav",
-               heard.transfers.size() == 1 && heard.transfers[0].startsWith("fail")
+               wroteJunk && heard.transfers.size() == 1 && heard.transfers[0].startsWith("fail")
                    && keyer.recordings()[8].durationMs == 0,
                heard.transfers.join(" | ").toStdString());
     }

@@ -190,6 +190,7 @@ class CwxPanel;
 class DvkPanel;
 class LocalVoiceKeyer;
 class LocalWavPlayer;
+class GeneratedAudioTransmitter;
 #ifdef HAVE_RADE
 class RADEEngine;
 #endif
@@ -1565,6 +1566,7 @@ private:
     // through the same DVK panel as the radio DVK. See wireLocalVoiceKeyer().
     LocalVoiceKeyer* m_localVoiceKeyer{nullptr};
     LocalWavPlayer* m_voiceKeyerPlayer{nullptr};
+    GeneratedAudioTransmitter* m_voiceKeyerTx{nullptr};   // local slots on the air
     QLabel* m_dvkIndicator{nullptr};
     QLabel* m_fdxIndicator{nullptr};
     QMetaObject::Connection m_tnfIndicatorConnection;
