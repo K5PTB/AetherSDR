@@ -55,6 +55,7 @@ private:
     QPushButton* m_playBtn;
     QPushButton* m_prevBtn;
     QLabel* m_statusLabel;
+    bool m_statusIsError{false};
     int m_selectedSlot{1};
     QLineEdit* m_renameEdit{nullptr};
     int m_renameSlot{-1};
@@ -73,6 +74,7 @@ private:
 
     void connectKeyer();
     void refreshFromKeyer();
+    void setStatusError(bool error);
     void selectSlot(int id);
     void showContextMenu(int id, const QPoint& globalPos);
     void startRename(int id);
