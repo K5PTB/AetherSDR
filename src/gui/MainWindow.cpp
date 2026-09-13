@@ -1398,6 +1398,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_outputRouter->setCurrentDevice(m_audio->outputDevice());
     m_outputRouter->addFollower(m_finalMonitor);
     m_outputRouter->addFollower(m_qsoRecorder);
+    wireLocalVoiceKeyer();
 
     // Wire the Quindar tone coordinator (#2262).  TransmitModel needs
     // the DSP module (to drive intro/outro phases) and a TX-mode
@@ -5052,6 +5053,7 @@ void MainWindow::buildUI()
     });
     m_dvkPanel = new DvkPanel(&dvkModel, splitter);
     splitter->addWidget(m_dvkPanel);
+    applyVoiceKeyerSource();  // Local may already be the saved choice
     m_dvkPanel->hide();
 
     // Centre — panadapter stack (one or more FFT + waterfall panes)
@@ -9959,7 +9961,11 @@ void MainWindow::updateKeyerAvailability()
     // evaluated once here and applied to the indicator, the panel and the
     // F1-F12 shortcuts alike — otherwise the keys stay armed and each keypress
     // is refused by the radio (the "silently does nothing" report).
-    const DvkIndicatorBlocker dvkBlocker = dvkIndicatorBlocker(
+    // Radio vs Local keyer (RFC #4214) follows the same licence statuses, so
+    // re-resolve it here; with Local selected the entitlement stops gating.
+    applyVoiceKeyerSource();
+    const DvkIndicatorBlocker dvkBlocker = voiceKeyerIndicatorBlocker(
+        voiceKeyerSource(),
         txIsSsb,
         m_radioModel.licenseFeatureSeen(kDvkLicenseFeature),
         m_radioModel.licenseFeatureEnabled(kDvkLicenseFeature));

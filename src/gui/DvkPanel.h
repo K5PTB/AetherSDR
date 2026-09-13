@@ -22,6 +22,12 @@ public:
     explicit DvkPanel(VoiceKeyer* keyer, QWidget* parent = nullptr);
     int selectedSlot() const;
 
+    // Switch the panel to another keyer (radio DVK <-> client-side). Rows,
+    // title and buttons are re-read from the new keyer; the old one's signals
+    // no longer reach the panel.
+    void setKeyer(VoiceKeyer* keyer);
+    VoiceKeyer* keyer() const { return m_model; }
+
     // Enable/disable the F1-F12 and Esc ApplicationShortcuts. Driven by
     // the active slice's mode in MainWindow so the keys fire regardless
     // of panel visibility, while staying mutually exclusive with CwxPanel
@@ -38,6 +44,7 @@ private slots:
 
 private:
     VoiceKeyer* m_model;
+    QLabel* m_titleLabel{nullptr};
     QVector<QFrame*> m_rowFrames;
     QVector<QPushButton*> m_fkeyBtns;
     QVector<QLabel*> m_nameLabels;
@@ -64,6 +71,8 @@ private:
     // (#2464, #2582).
     QVector<QShortcut*> m_shortcuts;
 
+    void connectKeyer();
+    void refreshFromKeyer();
     void selectSlot(int id);
     void showContextMenu(int id, const QPoint& globalPos);
     void startRename(int id);

@@ -81,6 +81,17 @@ int main()
            dvkIndicatorTooltip(B::None)
                == QStringLiteral("Digital Voice Keyer — click to toggle"));
 
+    // ── RFC #4214: the client-side keyer ignores the radio's entitlement ────
+    using VS = VoiceKeyerSource;
+    report("local keyer + unlicensed + voice -> None (no licence needed)",
+           voiceKeyerIndicatorBlocker(VS::Local, true, true, false) == B::None);
+    report("local keyer + unlicensed + non-voice -> TxModeNotVoice",
+           voiceKeyerIndicatorBlocker(VS::Local, false, true, false) == B::TxModeNotVoice);
+    report("radio keyer + unlicensed + voice -> NotLicensed (unchanged)",
+           voiceKeyerIndicatorBlocker(VS::Radio, true, true, false) == B::NotLicensed);
+    report("radio keyer + unseen entitlement + voice -> None (still fails open)",
+           voiceKeyerIndicatorBlocker(VS::Radio, true, false, false) == B::None);
+
     // ── The feature name is the FlexLib one ─────────────────────────────────
     report("license feature name matches FlexLib's digital_voice_keyer",
            QString(kDvkLicenseFeature) == QStringLiteral("digital_voice_keyer"));

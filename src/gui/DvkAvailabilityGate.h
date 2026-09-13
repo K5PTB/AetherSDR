@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/VoiceKeyerSource.h"
+
 #include <QLatin1String>
 #include <QString>
 
@@ -48,6 +50,22 @@ inline DvkIndicatorBlocker dvkIndicatorBlocker(bool txModeIsVoice,
         return DvkIndicatorBlocker::TxModeNotVoice;
     }
     return DvkIndicatorBlocker::None;
+}
+
+// The same gate once RFC #4214's client-side keyer exists. With the Local keyer
+// selected, recordings and playback never touch the radio's DVK, so the radio's
+// entitlement is irrelevant and only the TX-mode gate applies. With the Radio
+// keyer selected, nothing changes.
+inline DvkIndicatorBlocker voiceKeyerIndicatorBlocker(VoiceKeyerSource source,
+                                                      bool txModeIsVoice,
+                                                      bool licenseSeen,
+                                                      bool licenseEnabled)
+{
+    if (source == VoiceKeyerSource::Local) {
+        return txModeIsVoice ? DvkIndicatorBlocker::None
+                             : DvkIndicatorBlocker::TxModeNotVoice;
+    }
+    return dvkIndicatorBlocker(txModeIsVoice, licenseSeen, licenseEnabled);
 }
 
 // Tooltip for the DVK indicator, dimmed or not. The gated text names the

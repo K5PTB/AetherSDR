@@ -896,6 +896,10 @@ set(CORE_SOURCES
     src/core/DigitalVoiceWaveformTelemetry.cpp
     src/core/DigitalVoiceWaveformProcess.cpp
     src/core/DvkWavTransfer.cpp
+    src/core/VoiceKeyerWavDecoder.cpp
+    src/core/VoiceKeyerSettings.cpp
+    src/core/LocalVoiceKeyerStore.cpp
+    src/core/LocalWavPlayer.cpp
     src/core/ZipArchive.cpp
     src/core/ProfileTransfer.cpp
     src/core/QsoRecorder.cpp
@@ -1010,6 +1014,7 @@ set(MODEL_SOURCES
     src/models/CwxModel.cpp
     src/models/DvkModel.cpp
     src/models/VoiceKeyer.cpp
+    src/models/LocalVoiceKeyer.cpp
     src/models/NavtexModel.cpp
     src/models/FlexWaveformModel.cpp
     src/models/DStarModel.cpp
