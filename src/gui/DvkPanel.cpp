@@ -164,7 +164,11 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
 
     // Status label
     m_statusLabel = new QLabel("Status: Idle");
-    AetherSDR::ThemeManager::instance().applyStyleSheet(m_statusLabel, "QLabel { color: {{color.text.label}}; font-size: 10px; }");
+    // Refusals ("set the mic source to PC…") are long and must be read, so the
+    // label wraps rather than clipping them.
+    m_statusLabel->setWordWrap(true);
+    m_statusIsError = true;   // force the first style application
+    setStatusError(false);
     outerVbox->addWidget(m_statusLabel);
 
     // Wire buttons
@@ -270,15 +274,19 @@ void DvkPanel::connectKeyer()
         // failure text afterwards or it gets clobbered before the event loop
         // returns and the user never sees the rejection. (#3377)
         onStatusChanged(static_cast<int>(m_model->status()), m_model->activeId());
+        setStatusError(true);
         m_statusLabel->setText(QString("Status: %1 (slot %2) failed — %3")
                                    .arg(verb).arg(id).arg(message));
     });
 
     // WAV import/export progress and outcome, whichever keyer carries it.
-    connect(m_model, &VoiceKeyer::transferStatusChanged,
-            m_statusLabel, &QLabel::setText);
+    connect(m_model, &VoiceKeyer::transferStatusChanged, this, [this](const QString& msg) {
+        setStatusError(false);
+        m_statusLabel->setText(msg);
+    });
     connect(m_model, &VoiceKeyer::transferFinished,
             this, [this](bool success, const QString& msg) {
+        setStatusError(!success);
         m_statusLabel->setText(success ? msg : QString("Transfer failed: %1").arg(msg));
     });
 }
@@ -326,9 +334,22 @@ int DvkPanel::selectedSlot() const
     return m_selectedSlot;
 }
 
+void DvkPanel::setStatusError(bool error)
+{
+    // A failure the operator must act on is shown bold and in the theme's
+    // danger colour; the next ordinary status puts the quiet style back.
+    if (error == m_statusIsError)
+        return;
+    m_statusIsError = error;
+    AetherSDR::ThemeManager::instance().applyStyleSheet(m_statusLabel, error
+        ? "QLabel { color: {{color.accent.danger}}; font-weight: bold; font-size: 12px; }"
+        : "QLabel { color: {{color.text.label}}; font-size: 10px; }");
+}
+
 void DvkPanel::onStatusChanged(int status, int id)
 {
     auto s = static_cast<VoiceKeyer::Status>(status);
+    setStatusError(false);
 
     m_recBtn->blockSignals(true);
     m_playBtn->blockSignals(true);

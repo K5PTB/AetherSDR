@@ -181,6 +181,13 @@ int main(int argc, char** argv)
            status->text() == QString::fromUtf8(
                "Status: rec_start (slot 3) failed — port already in use on radio"),
            status->text().toStdString());
+    // …and stands out: bold, larger, wrapped. The next status is quiet again.
+    const bool refusalLoud = status->styleSheet().contains(QLatin1String("bold"))
+                             && status->wordWrap();
+    keyer.pushStatus(VoiceKeyer::Idle, -1);
+    report("refusal_is_emphasised_until_the_next_status",
+           refusalLoud && !status->styleSheet().contains(QLatin1String("bold")),
+           status->styleSheet().toStdString());
 
     emit keyer.transferStatusChanged(QStringLiteral("Uploading slot 2"));
     const bool progressShown = status->text() == QLatin1String("Uploading slot 2");
