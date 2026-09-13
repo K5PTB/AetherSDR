@@ -119,6 +119,7 @@
 #include "FlexControlDialog.h"
 #include "CwxPanel.h"
 #include "DvkAvailabilityGate.h"
+#include "core/GeneratedAudioTransmitter.h"
 #include "VoiceModeGate.h"
 #include "DvkPanel.h"
 #include "core/DvkWavTransfer.h"
@@ -9964,6 +9965,11 @@ void MainWindow::updateKeyerAvailability()
     // Radio vs Local keyer (RFC #4214) follows the same licence statuses, so
     // re-resolve it here; with Local selected the entitlement stops gating.
     applyVoiceKeyerSource();
+    // Local playback is voice audio: if the TX slice leaves a voice mode
+    // mid-message, unkey rather than feed speech into CW or data (Principle VI).
+    if (m_voiceKeyerTx && m_voiceKeyerTx->isActive() && txSlice && !txIsSsb) {
+        m_voiceKeyerTx->abort(QStringLiteral("The transmit slice left voice mode."));
+    }
     const DvkIndicatorBlocker dvkBlocker = voiceKeyerIndicatorBlocker(
         voiceKeyerSource(),
         txIsSsb,

@@ -1,6 +1,7 @@
 #include "LocalVoiceKeyer.h"
 
 #include "core/VoiceKeyerSettings.h"
+#include "core/VoiceKeyerWavDecoder.h"
 
 #include <QFileInfo>
 
@@ -73,7 +74,7 @@ bool LocalVoiceKeyer::busyRefusal(const QString& verb, int id)
 {
     if (m_status == Idle)
         return false;
-    refuse(verb, id, QStringLiteral("Stop the current recording or preview first."));
+    refuse(verb, id, QStringLiteral("Stop the current recording, preview or playback first."));
     return true;
 }
 
@@ -178,17 +179,61 @@ void LocalVoiceKeyer::onPreviewFinished()
 
 // ── On-air playback ─────────────────────────────────────────────────────────
 
+void LocalVoiceKeyer::setTransmitter(GeneratedAudioTransmitter* transmitter)
+{
+    if (m_transmitterFinished)
+        disconnect(m_transmitterFinished);
+    m_transmitter = transmitter;
+    if (transmitter)
+        m_transmitterFinished = connect(transmitter, &GeneratedAudioTransmitter::finished,
+                                        this, &LocalVoiceKeyer::onTransmitFinished);
+}
+
 void LocalVoiceKeyer::playbackStart(int id)
 {
-    if (!validSlot(id))
+    const QString verb = QStringLiteral("playback_start");
+    if (!validSlot(id) || busyRefusal(verb, id))
         return;
-    refuse(QStringLiteral("playback_start"), id,
-           QStringLiteral("On-air playback of local recordings is not available yet."));
+    if (m_store.durationMs(id) <= 0) {
+        refuse(verb, id, QStringLiteral("Slot %1 has no recording.").arg(id));
+        return;
+    }
+    if (!m_transmitter) {
+        refuse(verb, id, QStringLiteral("On-air playback is not available."));
+        return;
+    }
+    // Read fresh each time: the folder is the operator's, and a WAV dropped
+    // in since the last play is what they expect to hear on the air.
+    QByteArray mono;
+    int rate = 0;
+    QString error;
+    if (!VoiceKeyerWavDecoder::decodeToMonoFloat(m_store.slotPath(id), mono, rate, error)) {
+        refuse(verb, id, error);
+        return;
+    }
+    if (!m_transmitter->start(VoiceKeyerWavDecoder::toTxStereo24k(mono, rate), error)) {
+        refuse(verb, id, error);
+        return;
+    }
+    setStatus(Playback, id);
 }
 
 void LocalVoiceKeyer::playbackStop(int id)
 {
     Q_UNUSED(id);
+    if (m_status == Playback && m_transmitter)
+        m_transmitter->stop();   // finished() returns the keyer to Idle
+}
+
+void LocalVoiceKeyer::onTransmitFinished(GeneratedAudioTransmitter::Outcome outcome,
+                                         const QString& reason)
+{
+    if (m_status != Playback)
+        return;   // the transmitter is shared; this one was not ours
+    const int slot = m_activeId;
+    setStatus(Idle, -1);
+    if (outcome == GeneratedAudioTransmitter::Outcome::Failed)
+        refuse(QStringLiteral("playback"), slot, reason);
 }
 
 // ── Slot management ─────────────────────────────────────────────────────────

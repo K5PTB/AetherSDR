@@ -900,6 +900,7 @@ set(CORE_SOURCES
     src/core/VoiceKeyerSettings.cpp
     src/core/LocalVoiceKeyerStore.cpp
     src/core/LocalWavPlayer.cpp
+    src/core/GeneratedAudioTransmitter.cpp
     src/core/ZipArchive.cpp
     src/core/ProfileTransfer.cpp
     src/core/QsoRecorder.cpp

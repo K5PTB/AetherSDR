@@ -321,6 +321,14 @@ void testDaxTxPolicy()
     windowsWspr.reason = DaxTxRequestReason::WsprBeacon;
     check(evaluateDaxTxPolicy(windowsWspr).allowed,
           "built-in WSPR creates its own dax_tx stream independently of DAX2");
+
+    DaxTxPolicyContext windowsVoiceKeyer = windowsExternalRoute;
+    windowsVoiceKeyer.reason = DaxTxRequestReason::ClientVoiceKeyerTx;
+    check(evaluateDaxTxPolicy(windowsVoiceKeyer).allowed,
+          "client voice keyer creates its own dax_tx stream independently of DAX2 (RFC #4214)");
+    check(daxTxRequestReasonName(DaxTxRequestReason::ClientVoiceKeyerTx)
+              == QStringLiteral("client_voice_keyer_tx"),
+          "client voice keyer reason has its own log name");
 }
 
 void testUdpRegistrationPolicy()

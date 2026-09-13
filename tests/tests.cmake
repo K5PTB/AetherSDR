@@ -3576,16 +3576,32 @@ add_executable(local_voice_keyer_test
     src/core/VoiceKeyerSettings.cpp
     src/core/VoiceKeyerWavDecoder.cpp
     src/core/Resampler.cpp
+    src/core/GeneratedAudioTransmitter.cpp
     ${AETHER_SETTINGS_SOURCES}
     src/core/LogManager.cpp
     src/core/AsyncLogWriter.cpp
 )
 target_include_directories(local_voice_keyer_test PRIVATE
     src
+    tests
     ${CMAKE_SOURCE_DIR}/third_party/r8brain
 )
 target_link_libraries(local_voice_keyer_test PRIVATE Qt6::Core)
 add_test(NAME local_voice_keyer_test COMMAND local_voice_keyer_test)
+
+# Shared generated-audio transmitter (RFC #4214): key/send/drain/unkey
+# sequencing for Flex, HL2 and Icom route shapes, against a scripted route.
+add_executable(generated_audio_transmitter_test
+    tests/generated_audio_transmitter_test.cpp
+    tests/FakeTxAudioRoute.h
+    src/core/GeneratedAudioTransmitter.cpp
+    ${AETHER_SETTINGS_SOURCES}
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+)
+target_include_directories(generated_audio_transmitter_test PRIVATE src tests)
+target_link_libraries(generated_audio_transmitter_test PRIVATE Qt6::Core)
+add_test(NAME generated_audio_transmitter_test COMMAND generated_audio_transmitter_test)
 
 add_executable(meter_model_test
     tests/meter_model_test.cpp
@@ -5370,6 +5386,7 @@ set(AETHER_SETTINGS_CONSUMERS
     cwx_panel_test
     dvk_panel_test
     local_voice_keyer_test
+    generated_audio_transmitter_test
     meter_model_test
     health_applet_test
     meter_applet_capability_test

@@ -2,6 +2,7 @@
 // Run: ./build/dvk_panel_test
 
 #include "TestSettingsProfile.h"
+#include "core/TxKeyingMarker.h"
 #include "gui/DvkPanel.h"
 #include "models/VoiceKeyer.h"
 
@@ -119,6 +120,25 @@ int main(int argc, char** argv)
     if (!(status && f1 && f2 && f5 && rec)) {
         std::printf("\nFAILED (cannot continue)\n");
         return 1;
+    }
+
+    // Controls that key the transmitter carry the automation bridge's TX
+    // marker, so an agent can never press them against a live radio (#3646);
+    // record, stop and preview never key and stay drivable.
+    {
+        bool keyingMarked = true;
+        for (int id = 1; id <= 12; ++id) {
+            QPushButton* b = buttonByText(panel, QStringLiteral("F%1").arg(id));
+            keyingMarked = keyingMarked && b && b->property(kTxKeyingProperty).toBool();
+        }
+        QPushButton* play = buttonByText(panel, QString::fromUtf8("▶ PLAY"));
+        QPushButton* stop = buttonByText(panel, QString::fromUtf8("■ STOP"));
+        QPushButton* prev = buttonByText(panel, QString::fromUtf8("◀ PREV"));
+        report("play_and_fkeys_are_marked_tx_keying",
+               keyingMarked && play && play->property(kTxKeyingProperty).toBool() && stop && prev
+                   && !rec->property(kTxKeyingProperty).toBool()
+                   && !stop->property(kTxKeyingProperty).toBool()
+                   && !prev->property(kTxKeyingProperty).toBool());
     }
 
     // An empty slot never goes on the air.

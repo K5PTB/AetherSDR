@@ -17,6 +17,8 @@
 #include "MainWindow.h"
 #include "DvkAvailabilityGate.h"
 #include "DvkPanel.h"
+#include "VoiceModeGate.h"
+#include "core/GeneratedAudioTransmitter.h"
 #include "core/LocalWavPlayer.h"
 #include "core/VoiceKeyerSettings.h"
 #include "models/LocalVoiceKeyer.h"
@@ -1558,8 +1560,114 @@ void MainWindow::showPskReporterMapDialog()
 // ── Client-side voice keyer (RFC #4214) ─────────────────────────────────────
 //
 // The DVK panel drives either the radio's DVK or LocalVoiceKeyer. Local
-// recordings come from the PC-mic tap (never keys TX) and preview on this
-// computer's speakers. On-air playback of local recordings is a later step.
+// recordings come from the PC-mic tap (never keys TX), preview on this
+// computer's speakers, and go on the air through GeneratedAudioTransmitter.
+
+namespace {
+
+// The transmitter's view of the connected radio. Every per-family difference
+// is an answer read from RadioCapabilities, never a family name — the same
+// questions Ax25HfPacketDecodeDialog asks, so HL2 and Icom need no new code.
+class VoiceKeyerTxRoute : public QObject, public TxAudioRoute {
+public:
+    VoiceKeyerTxRoute(RadioModel& radio, AudioEngine* audio, QObject* parent)
+        : QObject(parent), m_radio(radio), m_audio(audio) {}
+
+    QString startRefusal() const override
+    {
+        if (!m_radio.isConnected() || !m_audio)
+            return QStringLiteral("Connect to a radio to transmit.");
+        if (!m_radio.backendCapabilities().canTransmit)
+            return QStringLiteral("This radio cannot transmit.");
+        SliceModel* s = m_radio.txSlice();
+        if (!s)
+            return QStringLiteral("No transmit slice is assigned.");
+        if (!isVoiceMode(s->mode()))
+            return QStringLiteral("The transmit slice is in %1 — voice keyer playback needs a "
+                                  "voice mode.").arg(s->mode());
+        if (m_radio.transmitModel().isTransmitting())
+            return QStringLiteral("The radio is already transmitting.");
+        // In a voice mode DAX TX mode is only on while another generated
+        // source (TCI, WSPR, AetherModem) owns the transmit audio.
+        if (m_audio->isDaxTxMode())
+            return QStringLiteral("Another application is already sending transmit audio.");
+        return {};
+    }
+
+    bool needsStream() const override
+    {
+        const RadioCapabilities caps = m_radio.backendCapabilities();
+        return !(caps.hostModulates || caps.takesTxAudioOverSeam);
+    }
+    bool streamReady() const override { return m_audio && m_audio->txStreamId() != 0; }
+    bool requestStream() override
+    {
+        return m_radio.ensureDaxTxStream(DaxTxRequestReason::ClientVoiceKeyerTx);
+    }
+
+    void claimAudioPath() override
+    {
+        // Local DAX TX mode keeps the mic off the wire on every family;
+        // `transmit dax` only means something to a radio with its own
+        // modulator input choice (see Ax25HfPacketDecodeDialog).
+        m_prevAudioDax = m_audio->isDaxTxMode();
+        m_audio->setDaxTxMode(true);
+        m_restoreTransmitDax = needsStream();
+        if (m_restoreTransmitDax) {
+            auto& tx = m_radio.transmitModel();
+            m_prevTransmitDax = tx.daxOn();
+            tx.setDax(true);
+        }
+    }
+    void releaseAudioPath() override
+    {
+        if (m_restoreTransmitDax)
+            m_radio.transmitModel().setDax(m_prevTransmitDax);
+        m_restoreTransmitDax = false;
+        if (m_audio)
+            m_audio->setDaxTxMode(m_prevAudioDax);
+    }
+
+    void keyOn() override { m_radio.transmitModel().requestPttOn(TransmitModel::PttSource::Dax); }
+    void keyOff() override { m_radio.transmitModel().requestPttOff(TransmitModel::PttSource::Dax); }
+    bool isKeyed() const override { return m_radio.transmitModel().isTransmitting(); }
+    bool waitsForRadioPtt() const override
+    {
+        return m_radio.backendCapabilities().hasRadioPttReadback;
+    }
+    bool isRadioKeyed() const override { return m_radio.isRadioTransmitting(); }
+
+    void sendAudio(const QByteArray& pcm) override
+    {
+        QPointer<AudioEngine> audio = m_audio;
+        QMetaObject::invokeMethod(m_audio, [audio, pcm] {
+            if (audio)
+                audio->sendModemTxAudio(pcm);
+        }, Qt::QueuedConnection);
+    }
+    bool finishAudio(quint64 token) override
+    {
+        QPointer<AudioEngine> audio = m_audio;
+        return QMetaObject::invokeMethod(m_audio, [audio, token] {
+            if (audio)
+                audio->finishModemTxAudio(token);
+        }, Qt::QueuedConnection);
+    }
+    void clearAudio() override
+    {
+        if (m_audio)
+            m_audio->clearTxAccumulators();   // self-marshals
+    }
+
+private:
+    RadioModel& m_radio;
+    QPointer<AudioEngine> m_audio;
+    bool m_prevAudioDax{false};
+    bool m_prevTransmitDax{false};
+    bool m_restoreTransmitDax{false};
+};
+
+} // namespace
 
 void MainWindow::wireLocalVoiceKeyer()
 {
@@ -1593,6 +1701,32 @@ void MainWindow::wireLocalVoiceKeyer()
     // Emitted on the audio thread; queued onto the keyer's (GUI) thread.
     connect(m_audio, &AudioEngine::txFinalMonitorPcmReady,
             m_localVoiceKeyer, &LocalVoiceKeyer::onMicPcm);
+
+    // On-air playback. The route is parented to this window; the transmitter
+    // to the route, so it never outlives what it calls.
+    auto* route = new VoiceKeyerTxRoute(m_radioModel, m_audio, this);
+    m_voiceKeyerTx = new GeneratedAudioTransmitter(route, route);
+    auto* tx = m_voiceKeyerTx;
+    auto& txModel = m_radioModel.transmitModel();
+    connect(&m_radioModel, &RadioModel::txAudioStreamReady,
+            tx, [tx](quint32) { tx->onStreamReady(); });
+    connect(&m_radioModel, &RadioModel::txAudioFinished,
+            tx, &GeneratedAudioTransmitter::onAudioFinished);
+    connect(&m_radioModel, &RadioModel::radioTransmittingChanged,
+            tx, &GeneratedAudioTransmitter::onRadioKeyed);
+    connect(&m_radioModel, &RadioModel::radioTransmitConfirmed,
+            tx, &GeneratedAudioTransmitter::onRadioKeyed);
+    connect(&txModel, &TransmitModel::pttBlocked,
+            tx, &GeneratedAudioTransmitter::onPttBlocked);
+    connect(&txModel, &TransmitModel::moxChanged, tx, [tx](bool on) {
+        if (!on)
+            tx->onKeyReleased();
+    });
+    connect(&m_radioModel, &RadioModel::connectionStateChanged, tx, [tx](bool connected) {
+        if (!connected)
+            tx->abort(QStringLiteral("The radio disconnected."));
+    });
+    m_localVoiceKeyer->setTransmitter(tx);
 }
 
 VoiceKeyerSource MainWindow::voiceKeyerSource() const
