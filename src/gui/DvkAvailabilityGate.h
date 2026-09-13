@@ -68,6 +68,23 @@ inline DvkIndicatorBlocker voiceKeyerIndicatorBlocker(VoiceKeyerSource source,
     return dvkIndicatorBlocker(txModeIsVoice, licenseSeen, licenseEnabled);
 }
 
+// Why the "Radio DVK" choice in the keyer-source menu cannot be picked, or an
+// empty string when it can. Same radio-authoritative, fail-open rules as the
+// indicator: a radio with no DVK at all, or one that SAYS the entitlement is
+// off, disables the choice; an entitlement not yet reported leaves it open.
+inline QString radioVoiceKeyerUnavailableReason(bool hasVoiceKeyer,
+                                                bool licenseSeen,
+                                                bool licenseEnabled)
+{
+    if (!hasVoiceKeyer) {
+        return QStringLiteral("not available on this radio");
+    }
+    if (licenseSeen && !licenseEnabled) {
+        return QStringLiteral("requires an active SmartSDR+ subscription");
+    }
+    return QString();
+}
+
 // Tooltip for the DVK indicator, dimmed or not. The gated text names the
 // requirement outright instead of echoing FlexLib's marketing copy ("Subscribe
 // to SmartSDR+ to use this feature!"), which tells an operator to buy something

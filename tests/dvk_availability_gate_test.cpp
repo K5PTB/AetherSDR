@@ -92,6 +92,17 @@ int main()
     report("radio keyer + unseen entitlement + voice -> None (still fails open)",
            voiceKeyerIndicatorBlocker(VS::Radio, true, false, false) == B::None);
 
+    // ── Keyer-source menu: the Radio DVK choice follows the same gate ───────
+    report("radio choice open when licensed",
+           radioVoiceKeyerUnavailableReason(true, true, true).isEmpty());
+    report("radio choice open while the entitlement is unreported (fails open)",
+           radioVoiceKeyerUnavailableReason(true, false, false).isEmpty());
+    report("radio choice closed when the radio reports no entitlement",
+           radioVoiceKeyerUnavailableReason(true, true, false).contains(QStringLiteral("SmartSDR+")));
+    report("radio choice closed on a radio with no DVK, whatever the licence says",
+           radioVoiceKeyerUnavailableReason(false, true, true)
+               == QStringLiteral("not available on this radio"));
+
     // ── The feature name is the FlexLib one ─────────────────────────────────
     report("license feature name matches FlexLib's digital_voice_keyer",
            QString(kDvkLicenseFeature) == QStringLiteral("digital_voice_keyer"));
