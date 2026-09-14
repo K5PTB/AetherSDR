@@ -464,6 +464,11 @@ void AetherDspWidget::resetCurrentTab()
         if (m_nr2GainFloorSlider)m_nr2GainFloorSlider->setValue(0);
         if (m_nr2SmoothSlider)   m_nr2SmoothSlider->setValue(85);
         if (m_nr2QsppSlider)     m_nr2QsppSlider->setValue(20);
+        // Upstream's post2 defaults: off, 0.15 level, 0.15 white blend.
+        if (m_nr2Post2Check)        m_nr2Post2Check->setChecked(false);
+        if (m_nr2Post2NlevelSlider) m_nr2Post2NlevelSlider->setValue(15);
+        if (m_nr2Post2FactorSlider) m_nr2Post2FactorSlider->setValue(15);
+        if (m_nr2Post2TaperSlider)  m_nr2Post2TaperSlider->setValue(2871);
     } else if (name == "NNR") {
         // Every NNR control resets to the value WDSP itself starts from, which
         // is the value its marker is drawn at — NnrControls.h is the one place
@@ -612,10 +617,20 @@ QWidget* AetherDspWidget::buildNr2Page()
         "QLabel { color: #c8d8e8; font-size: 11px; min-width: 40px; }"
         "QLabel:disabled { color: #48515a; }");
 
+    // Every label on this page is styled through here rather than each one
+    // calling setStyleSheet itself. That is what the hardcoded-colour ratchet
+    // asks for -- it counts call sites, not colours, so fourteen scattered
+    // calls are fourteen places to migrate when these two strings become
+    // theme tokens, and this is one.
+    const auto styled = [](QLabel* label, const QString& style) {
+        label->setStyleSheet(style);
+        return label;
+    };
+
     // Gain Method — exclusive toggle row, styled like the slice DSP buttons.
     {
         auto* hdr = new QLabel("Gain Method:");
-        hdr->setStyleSheet(labelStyle);
+        styled(hdr, labelStyle);
         vbox->addWidget(hdr);
 
         auto* row = new QHBoxLayout;
@@ -659,7 +674,7 @@ QWidget* AetherDspWidget::buildNr2Page()
     // NPE Method — exclusive toggle row.
     {
         auto* hdr = new QLabel("NPE Method:");
-        hdr->setStyleSheet(labelStyle);
+        styled(hdr, labelStyle);
         vbox->addWidget(hdr);
 
         auto* row = new QHBoxLayout;
@@ -720,6 +735,39 @@ QWidget* AetherDspWidget::buildNr2Page()
         vbox->addLayout(aeRow);
     }
 
+    // ── Noise fill (WDSP's post2 psychoacoustic stage, #5702) ─────────────
+    // Spectral NR leaves the gaps between syllables completely silent, which
+    // operators hear as the receiver going dead. This mixes a controlled
+    // amount of noise back in -- partly the genuine residual just removed,
+    // partly synthetic -- over a tapered low band. Off by default, as WDSP
+    // ships it, so nothing changes for an existing install until it is asked
+    // for.
+    m_nr2Post2Check = new QCheckBox("Noise fill (psychoacoustic)");
+    m_nr2Post2Check->setObjectName(QStringLiteral("nr2Post2RunCheck"));
+    m_nr2Post2Check->setAccessibleName(QStringLiteral("NR2 noise fill"));
+    m_nr2Post2Check->setToolTip(
+        "Mixes noise back into the gaps so the receiver does not sound dead\n"
+        "between syllables, and can let very weak signals through.\n"
+        "Also band-limits the output to the fill band.");
+    m_nr2Post2Check->setAccessibleDescription(m_nr2Post2Check->toolTip());
+    m_nr2Post2Check->setChecked(Nr2SettingsModel::instance().config().post2Run);
+    connect(m_nr2Post2Check, &QCheckBox::toggled, this, [this](bool on) {
+        Nr2SettingsModel::instance().setPost2Run(on);
+        if (m_nr2Post2NlevelSlider) m_nr2Post2NlevelSlider->setEnabled(on);
+        if (m_nr2Post2FactorSlider) m_nr2Post2FactorSlider->setEnabled(on);
+        if (m_nr2Post2TaperSlider)  m_nr2Post2TaperSlider->setEnabled(on);
+        emit nr2Post2RunChanged(on);
+        emit nr2Post2SettingsChanged();
+    });
+    {
+        auto* row = new QHBoxLayout;
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(0);
+        row->addWidget(m_nr2Post2Check);
+        row->addStretch(1);
+        vbox->addLayout(row);
+    }
+
     // Sliders: GainMax, GainSmooth, Q_SPP
     auto* sliderGrid = new QGridLayout;
     int row = 0;
@@ -727,7 +775,7 @@ QWidget* AetherDspWidget::buildNr2Page()
     // Gain Max (reduction depth)
     {
         auto* lbl = new QLabel("Reduction:");
-        lbl->setStyleSheet(labelStyle);
+        styled(lbl, labelStyle);
         sliderGrid->addWidget(lbl, row, 0);
         m_nr2GainMaxSlider = new GuardedSlider(Qt::Horizontal);
         m_nr2GainMaxSlider->setObjectName(
@@ -746,7 +794,7 @@ QWidget* AetherDspWidget::buildNr2Page()
             "higher values retain more of the input level.");
         sliderGrid->addWidget(m_nr2GainMaxSlider, row, 1);
         m_nr2GainMaxLabel = new QLabel("1.00");
-        m_nr2GainMaxLabel->setStyleSheet(valStyle);
+        styled(m_nr2GainMaxLabel, valStyle);
         m_nr2GainMaxLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         sliderGrid->addWidget(m_nr2GainMaxLabel, row, 2);
         connect(m_nr2GainMaxSlider, &QSlider::valueChanged, this, [this](int v) {
@@ -761,7 +809,7 @@ QWidget* AetherDspWidget::buildNr2Page()
     // Gain floor (naturalness / musical-noise tradeoff)
     {
         auto* lbl = new QLabel("Naturalness:");
-        lbl->setStyleSheet(labelStyle);
+        styled(lbl, labelStyle);
         sliderGrid->addWidget(lbl, row, 0);
         m_nr2GainFloorSlider = new GuardedSlider(Qt::Horizontal);
         m_nr2GainFloorSlider->setObjectName(
@@ -785,7 +833,7 @@ QWidget* AetherDspWidget::buildNr2Page()
             "metallic or musical artifacts.");
         sliderGrid->addWidget(m_nr2GainFloorSlider, row, 1);
         m_nr2GainFloorLabel = new QLabel("0.00");
-        m_nr2GainFloorLabel->setStyleSheet(valStyle);
+        styled(m_nr2GainFloorLabel, valStyle);
         m_nr2GainFloorLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         sliderGrid->addWidget(m_nr2GainFloorLabel, row, 2);
         connect(m_nr2GainFloorSlider, &QSlider::valueChanged,
@@ -802,7 +850,7 @@ QWidget* AetherDspWidget::buildNr2Page()
     // Gain Smooth
     {
         auto* lbl = new QLabel("Smoothing:");
-        lbl->setStyleSheet(labelStyle);
+        styled(lbl, labelStyle);
         sliderGrid->addWidget(lbl, row, 0);
         m_nr2SmoothSlider = new GuardedSlider(Qt::Horizontal);
         m_nr2SmoothSlider->setObjectName(
@@ -821,7 +869,7 @@ QWidget* AetherDspWidget::buildNr2Page()
             "change more slowly and can reduce musical artifacts.");
         sliderGrid->addWidget(m_nr2SmoothSlider, row, 1);
         m_nr2SmoothLabel = new QLabel("0.85");
-        m_nr2SmoothLabel->setStyleSheet(valStyle);
+        styled(m_nr2SmoothLabel, valStyle);
         m_nr2SmoothLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         sliderGrid->addWidget(m_nr2SmoothLabel, row, 2);
         connect(m_nr2SmoothSlider, &QSlider::valueChanged, this, [this](int v) {
@@ -836,7 +884,7 @@ QWidget* AetherDspWidget::buildNr2Page()
     // Q_SPP (voice threshold)
     {
         m_nr2QsppTitleLabel = new QLabel("Threshold:");
-        m_nr2QsppTitleLabel->setStyleSheet(labelStyle);
+        styled(m_nr2QsppTitleLabel, labelStyle);
         sliderGrid->addWidget(m_nr2QsppTitleLabel, row, 0);
         m_nr2QsppSlider = new GuardedSlider(Qt::Horizontal);
         m_nr2QsppSlider->setObjectName(
@@ -856,7 +904,7 @@ QWidget* AetherDspWidget::buildNr2Page()
             "noise.");
         sliderGrid->addWidget(m_nr2QsppSlider, row, 1);
         m_nr2QsppLabel = new QLabel("0.20");
-        m_nr2QsppLabel->setStyleSheet(valStyle);
+        styled(m_nr2QsppLabel, valStyle);
         m_nr2QsppLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         sliderGrid->addWidget(m_nr2QsppLabel, row, 2);
         connect(m_nr2QsppSlider, &QSlider::valueChanged, this, [this](int v) {
@@ -864,6 +912,102 @@ QWidget* AetherDspWidget::buildNr2Page()
             m_nr2QsppLabel->setText(QString::number(val, 'f', 2));
             Nr2SettingsModel::instance().setQspp(val);
             emit nr2QsppChanged(val);
+        });
+        ++row;
+    }
+
+    // The two noise-fill controls, dimmed until the stage is switched on.
+    {
+        const Nr2SettingsModel::Config cfg = Nr2SettingsModel::instance().config();
+
+        m_nr2Post2NlevelSlider = new GuardedSlider(Qt::Horizontal);
+        m_nr2Post2NlevelSlider->setObjectName(QStringLiteral("nr2Post2NlevelSlider"));
+        m_nr2Post2NlevelSlider->setAccessibleName(tr("NR2 noise fill level"));
+        m_nr2Post2NlevelSlider->setAccessibleDescription(
+            tr("How much noise is mixed back into the gaps."));
+        m_nr2Post2NlevelSlider->setRange(0, 100);
+        m_nr2Post2NlevelSlider->setValue(
+            static_cast<int>(std::lround(cfg.post2Nlevel * 100.0f)));
+        m_nr2Post2NlevelSlider->setEnabled(cfg.post2Run);
+        m_nr2Post2NlevelSlider->setToolTip("How much noise is mixed back in. 0 injects nothing.");
+        applyPrimarySliderStyle(m_nr2Post2NlevelSlider);
+        auto* nlevelTitle = new QLabel("Fill level:");
+        styled(nlevelTitle, labelStyle);
+        sliderGrid->addWidget(nlevelTitle, row, 0);
+        sliderGrid->addWidget(m_nr2Post2NlevelSlider, row, 1);
+        m_nr2Post2NlevelLabel = new QLabel(QString::number(cfg.post2Nlevel, 'f', 2));
+        styled(m_nr2Post2NlevelLabel, valStyle);
+        m_nr2Post2NlevelLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        sliderGrid->addWidget(m_nr2Post2NlevelLabel, row, 2);
+        connect(m_nr2Post2NlevelSlider, &QSlider::valueChanged, this, [this](int v) {
+            const float val = v / 100.0f;
+            m_nr2Post2NlevelLabel->setText(QString::number(val, 'f', 2));
+            Nr2SettingsModel::instance().setPost2Nlevel(val);
+            emit nr2Post2SettingsChanged();
+        });
+        ++row;
+
+        // 0 mixes back the noise this reduction actually removed; 1 replaces
+        // it with synthetic white. The blend is what makes the fill sound like
+        // the band rather than like a hiss generator.
+        m_nr2Post2FactorSlider = new GuardedSlider(Qt::Horizontal);
+        m_nr2Post2FactorSlider->setObjectName(QStringLiteral("nr2Post2FactorSlider"));
+        m_nr2Post2FactorSlider->setAccessibleName(tr("NR2 noise fill character"));
+        m_nr2Post2FactorSlider->setAccessibleDescription(
+            tr("Blend between the removed noise and synthetic white noise."));
+        m_nr2Post2FactorSlider->setRange(0, 100);
+        m_nr2Post2FactorSlider->setValue(
+            static_cast<int>(std::lround(cfg.post2Factor * 100.0f)));
+        m_nr2Post2FactorSlider->setEnabled(cfg.post2Run);
+        m_nr2Post2FactorSlider->setToolTip(
+            "0 = the noise actually removed from this signal\n"
+            "1 = synthetic white noise");
+        applyPrimarySliderStyle(m_nr2Post2FactorSlider);
+        auto* factorTitle = new QLabel("Fill character:");
+        styled(factorTitle, labelStyle);
+        sliderGrid->addWidget(factorTitle, row, 0);
+        sliderGrid->addWidget(m_nr2Post2FactorSlider, row, 1);
+        m_nr2Post2FactorLabel = new QLabel(QString::number(cfg.post2Factor, 'f', 2));
+        styled(m_nr2Post2FactorLabel, valStyle);
+        m_nr2Post2FactorLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        sliderGrid->addWidget(m_nr2Post2FactorLabel, row, 2);
+        connect(m_nr2Post2FactorSlider, &QSlider::valueChanged, this, [this](int v) {
+            const float val = v / 100.0f;
+            m_nr2Post2FactorLabel->setText(QString::number(val, 'f', 2));
+            Nr2SettingsModel::instance().setPost2Factor(val);
+            emit nr2Post2SettingsChanged();
+        });
+        ++row;
+
+        // The band limit, which is NOT cosmetic: the stage zeroes every bin
+        // above it, so enabling noise fill lowpasses the audio here. Left at
+        // the default an AM, FM or ESSB listener would lose their highs with
+        // no control to explain it.
+        m_nr2Post2TaperSlider = new GuardedSlider(Qt::Horizontal);
+        m_nr2Post2TaperSlider->setObjectName(QStringLiteral("nr2Post2TaperSlider"));
+        m_nr2Post2TaperSlider->setAccessibleName(tr("NR2 noise fill bandwidth"));
+        m_nr2Post2TaperSlider->setAccessibleDescription(
+            tr("Highest frequency the noise fill covers. Audio above it is removed."));
+        m_nr2Post2TaperSlider->setRange(300, 6000);
+        m_nr2Post2TaperSlider->setValue(
+            static_cast<int>(std::lround(cfg.post2TaperHz)));
+        m_nr2Post2TaperSlider->setEnabled(cfg.post2Run);
+        m_nr2Post2TaperSlider->setToolTip(
+            "Highest frequency the fill covers.\n"
+            "AUDIO ABOVE THIS IS REMOVED, so raise it for AM, FM or wide SSB.\n"
+            "2871 Hz matches WDSP's own default band.");
+        applyPrimarySliderStyle(m_nr2Post2TaperSlider);
+        auto* taperTitle = styled(new QLabel("Fill bandwidth:"), labelStyle);
+        sliderGrid->addWidget(taperTitle, row, 0);
+        sliderGrid->addWidget(m_nr2Post2TaperSlider, row, 1);
+        m_nr2Post2TaperLabel = styled(
+            new QLabel(QString::number(static_cast<int>(cfg.post2TaperHz))), valStyle);
+        m_nr2Post2TaperLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        sliderGrid->addWidget(m_nr2Post2TaperLabel, row, 2);
+        connect(m_nr2Post2TaperSlider, &QSlider::valueChanged, this, [this](int v) {
+            m_nr2Post2TaperLabel->setText(QString::number(v));
+            Nr2SettingsModel::instance().setPost2TaperHz(static_cast<float>(v));
+            emit nr2Post2SettingsChanged();
         });
         ++row;
     }
@@ -1986,6 +2130,44 @@ void AetherDspWidget::syncNr2Settings()
 {
     const Nr2SettingsModel::Config config =
         Nr2SettingsModel::instance().config();
+
+    // The post-processing group, which a profile switch or a reset changes
+    // from outside this widget. Signals blocked: this is a refresh FROM the
+    // model, so re-emitting would write the value we just read back into it.
+    if (m_nr2Post2Check) {
+        QSignalBlocker blocker(m_nr2Post2Check);
+        m_nr2Post2Check->setChecked(config.post2Run);
+    }
+    if (m_nr2Post2NlevelSlider) {
+        QSignalBlocker blocker(m_nr2Post2NlevelSlider);
+        m_nr2Post2NlevelSlider->setValue(
+            static_cast<int>(std::lround(config.post2Nlevel * 100.0f)));
+        m_nr2Post2NlevelSlider->setEnabled(config.post2Run);
+        if (m_nr2Post2NlevelLabel) {
+            m_nr2Post2NlevelLabel->setText(
+                QString::number(config.post2Nlevel, 'f', 2));
+        }
+    }
+    if (m_nr2Post2FactorSlider) {
+        QSignalBlocker blocker(m_nr2Post2FactorSlider);
+        m_nr2Post2FactorSlider->setValue(
+            static_cast<int>(std::lround(config.post2Factor * 100.0f)));
+        m_nr2Post2FactorSlider->setEnabled(config.post2Run);
+        if (m_nr2Post2FactorLabel) {
+            m_nr2Post2FactorLabel->setText(
+                QString::number(config.post2Factor, 'f', 2));
+        }
+    }
+    if (m_nr2Post2TaperSlider) {
+        QSignalBlocker blocker(m_nr2Post2TaperSlider);
+        m_nr2Post2TaperSlider->setValue(
+            static_cast<int>(std::lround(config.post2TaperHz)));
+        m_nr2Post2TaperSlider->setEnabled(config.post2Run);
+        if (m_nr2Post2TaperLabel) {
+            m_nr2Post2TaperLabel->setText(
+                QString::number(static_cast<int>(config.post2TaperHz)));
+        }
+    }
 
     if (QAbstractButton* button =
             m_nr2GainGroup->button(config.gainMethod)) {
