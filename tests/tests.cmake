@@ -3934,6 +3934,30 @@ target_link_libraries(radiomodel_pan_range_null_test PRIVATE aethercore Qt6::Cor
 add_test(NAME radiomodel_pan_range_null_test COMMAND radiomodel_pan_range_null_test)
 
 
+# Checker regression tests are socket-free and run when Python is available.
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME check_a11y_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_a11y_test.py)
+endif()
+
+# #5262 M3a: the three-state control doctrine as a mechanism. Pins the two
+# behaviours the per-site setVisible() plumbing got wrong — registration applies
+# immediately, and an unavailable control is dimmed with an announced reason.
+# The registry is src/gui/ code — it uses QWidget, so it cannot live in
+# aethercore without breaking the engine boundary. Compiled directly into the
+# test, the way every other gui-widget test in this file does it.
+add_executable(control_availability_registry_test
+    tests/control_availability_registry_test.cpp
+    src/gui/ControlAvailabilityRegistry.cpp
+    ${THEME_TEST_RESOURCES})
+target_include_directories(control_availability_registry_test PRIVATE src)
+target_link_libraries(control_availability_registry_test PRIVATE aethercore Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+set_target_properties(control_availability_registry_test PROPERTIES AUTOMOC ON)
+add_test(NAME control_availability_registry_test COMMAND control_availability_registry_test)
+set_tests_properties(control_availability_registry_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # #5262 M1: family-specific verbs gate on the declared extension namespace, not
 # on the family string. Socket-free.
 add_executable(extension_namespace_gate_test tests/extension_namespace_gate_test.cpp)
@@ -5336,6 +5360,7 @@ set(AETHER_SETTINGS_CONSUMERS
     backend_capability_revision_test
     radio_capacity_declaration_test
     extension_namespace_gate_test
+    control_availability_registry_test
     tx_operation_integration_test
     backend_slice_lifecycle_test
     waterfall_time_marker_settings_test
