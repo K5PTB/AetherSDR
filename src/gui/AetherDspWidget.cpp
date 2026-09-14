@@ -474,8 +474,7 @@ void AetherDspWidget::resetCurrentTab()
         // is the value its marker is drawn at — NnrControls.h is the one place
         // both come from, so "reset" and "the mark" cannot disagree.
         if (m_nnrStrengthSlider) {
-            m_nnrStrengthSlider->setValue(
-                static_cast<int>(std::lround(Nnr::markerPosition(Nnr::kMaskFloor) * 100.0)));
+            m_nnrStrengthSlider->setValue(Nnr::kMaskFloorDefaultStrength);
         }
         if (m_nnrModelGroup) {
             if (auto* b = m_nnrModelGroup->button(0)) b->click();
@@ -1824,7 +1823,11 @@ QWidget* AetherDspWidget::buildNnrPage()
         "Neural noise reduction trained on off-air HF: over a hundred noise "
         "recordings from real receivers, with speech put through an SSB "
         "transmit chain before mixing. Voice modes only — it treats a steady "
-        "carrier as noise and removes it.");
+        "carrier as noise and removes it.\n\n"
+        "Runs after the AGC, so set the AGC threshold as far above the noise "
+        "floor as is practical. An AGC riding the noise floor moves the level "
+        "faster than this model's own 2-second level tracker follows, and the "
+        "result sounds worse than no noise reduction at all.");
     info->setWordWrap(true);
     AetherSDR::ThemeManager::instance().applyStyleSheet(
         info, "QLabel { color: {{color.text.secondary}}; font-size: 12px; }");
@@ -1855,7 +1858,7 @@ QWidget* AetherDspWidget::buildNnrPage()
     // a weak signal, and the tooltip says so, because "more is better" is the
     // wrong instinct here.
     grid->addWidget(new QLabel("Strength:"), row, 0);
-    m_nnrStrengthSlider = new MarkedSlider(Nnr::markerPosition(Nnr::kMaskFloor));
+    m_nnrStrengthSlider = new MarkedSlider(Nnr::maskFloorMarkerPosition());
     m_nnrStrengthSlider->setObjectName(QStringLiteral("nnrStrengthSlider"));
     m_nnrStrengthSlider->setAccessibleName(tr("NNR strength"));
     m_nnrStrengthSlider->setAccessibleDescription(
@@ -1955,13 +1958,20 @@ QWidget* AetherDspWidget::buildNnrPage()
                            static_cast<int>(std::lround(c.spec->maximum * c.scale)));
         c.slider->setValue(static_cast<int>(std::lround(stored[i] * c.scale)));
         applyPrimarySliderStyle(c.slider);
+        // Tau is the level tracker the AGC note above refers to, so its
+        // tooltip carries the connection rather than leaving the operator to
+        // infer it from a Greek letter.
+        const QString extra = (c.spec == &Nnr::kTau)
+            ? QStringLiteral("\nHow fast the model follows level changes. Raise it "
+                             "if an active AGC makes the output pump.")
+            : QString();
         c.slider->setToolTip(
             QStringLiteral("%1 %2 — WDSP's default is %3%4. The mark is that value.")
                 .arg(QString::fromLatin1(c.title).remove(QLatin1Char(':')))
                 .arg(QString::fromLatin1(c.spec->unit).isEmpty()
                          ? QString() : QStringLiteral("(%1)").arg(QString::fromLatin1(c.spec->unit)))
                 .arg(c.spec->defaultValue, 0, 'f', c.decimals)
-                .arg(QString::fromLatin1(c.spec->unit)));
+                .arg(QString::fromLatin1(c.spec->unit)) + extra);
         grid->addWidget(c.slider, row, 1);
         c.value = new QLabel(QString::number(stored[i], 'f', c.decimals));
         c.value->setFixedWidth(40);
