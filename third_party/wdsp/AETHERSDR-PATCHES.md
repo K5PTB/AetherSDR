@@ -2,7 +2,9 @@
 
 The source snapshot is pinned to TAPR/OpenHPSDR-wdsp commit
 `b02d5bac675dd2f33ec2bab2b339f79a597c47dd` (`Release Version 2.10`).
-AetherSDR carries four fixes in the otherwise exact `Source/*.[ch]` snapshot:
+AetherSDR carries six local changes in the otherwise exact `Source/*.[ch]`
+snapshot — three teardown corrections, two null/lifetime fixes, and one added
+accessor set:
 
 1. `upstream/nbp.c`: `destroy_notchdb()` now frees the `notchdb` object after
    its member allocations.
@@ -79,6 +81,52 @@ AetherSDR carries four fixes in the otherwise exact `Source/*.[ch]` snapshot:
    `flushChannel()` has the same detached shape and no handshake; it has not
    surfaced, and gets the same treatment if it does.
 
+5. `upstream/nnr.c`, `upstream/nnr.h`: a standalone control surface for Neural
+   Noise Reduction — `setRun_nnr`, `setPosition_nnr`, `setCmode_nnr`,
+   `setMaskFloor_nnr`, `setTestMode_nnr`, `setAlpha_nnr`, `setAlphaKnee_nnr`,
+   `setTau_nnr`, `setMaxGain_nnr` and `setSmooth_nnr`.
+
+   Upstream exposes all ten only as `SetRXANNR*` properties, which index
+   `rxa[channel]`. `create_nnr()`, `xnnr()` and `destroy_nnr()` touch neither
+   `ch[]` nor `rxa[]`, so the block runs perfectly well outside a channel — the
+   way `create_anbEXT()`/`xanbEXT()` already run the impulse blanker — but a
+   host that does so can reach none of its settings, because `nnr->nets[]` and
+   the `NNR_ALL_MODELS` macro are private to `nnr.c`. Only `setModel_nnr()` has
+   a standalone form.
+
+   Each added function is the body of its RXA property without the
+   `ch[channel].csDSP` section, and each RXA property keeps working unchanged.
+   Locking is the caller's, because a standalone block has no channel whose
+   critical section to take.
+
+   **Additive only** — no existing function is modified, which is what makes
+   this survive a refresh as a clean re-apply rather than a conflict.
+
+   Worth offering upstream: `create_nnr()` already takes `mask_floor` as a
+   constructor argument, so the accessor is the setter that argument implies.
+   Drop any function a future release provides itself.
+
+6. `upstream/nnet.c`: `setAlpha_nnet()` and `setKnee_nnet()` now check `n->df`
+   before writing through it.
+
+   They are the only two of the six NNET tuning setters without that guard —
+   `setSmooth_nnet()` checks `if (n->df)`, `setMaxGain_nnet()` and
+   `setFloor_nnet()` check `if (n->ready)`, `setTau_nnet()` checks `if (n->cnd)`.
+   A slot whose model fails to build never reaches `create_dfhead()`, so `df`
+   stays NULL from `malloc0`, and `calc_nnr()` stores slot 0 unconditionally
+   (unlike slots 1+, which it validates with `ok_nnet()`).
+
+   **Reachable in a shipping configuration, and reproduced:** a well-formed
+   model with different dimensions, named `wdsp_nnr_0.bin` in the process's
+   working directory, is loaded in preference to the built-in (RFC #5684 §8
+   keeps that lookup). WDSP's designed response is to pass audio through — and
+   then the first `setAlpha`/`setKnee` write dereferences NULL. Confirmed as
+   SIGSEGV against an unpatched build; exits cleanly with the guard.
+
+   Latent upstream too, via `SetRXANNRAlpha`/`SetRXANNRAlphaKnee`, for any
+   console that offers those controls. Reported as TAPR/OpenHPSDR-wdsp#4 with
+   a fix in TAPR/OpenHPSDR-wdsp#5; drop this when a release carries the guard.
+
 Without the first two, opening and closing one RX channel leaks one `notchdb`
 object and two NURBS objects. `wdsp_channel_test` detects that deterministically.
 Without the third, every channel open reads and writes freed memory; ASan fails
@@ -86,6 +134,11 @@ Without the third, every channel open reads and writes freed memory; ASan fails
 Without the fourth, every channel close is a use-after-free race on the
 worker thread; `wdsp_channel_test` and the HL2 backend tests show it under
 ThreadSanitizer.
+Without the fifth, the only NNR setting a host outside an RXA channel can
+change is the model slot.
+Without the sixth, `nnr_controls_test`'s scenario segfaults: a model file with
+the wrong dimensions in the working directory leaves slot 0 not-ready, and the
+first alpha or knee write goes through a null `df`.
 
 When refreshing WDSP, first check whether upstream contains equivalent frees.
 If it does, drop the corresponding local patch. Otherwise reapply only these

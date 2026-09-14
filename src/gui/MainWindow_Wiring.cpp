@@ -62,6 +62,7 @@
 #include "VfoWidget.h"
 #include "core/BandStackSettings.h"
 #include "core/AppSettings.h"
+#include "core/NnrSettings.h"
 #include "core/SpotCommandPolicy.h"
 #include "core/WaterfallRate.h"
 #include "core/SpotModeResolver.h"
@@ -1758,6 +1759,8 @@ void MainWindow::onSliceAdded(SliceModel* s)
                 QMetaObject::invokeMethod(m_audio, [this]() { m_audio->setDfnrEnabled(true); });
             else if (settings.value("ClientMnrEnabled", "False").toString() == "True")
                 QMetaObject::invokeMethod(m_audio, [this]() { m_audio->setMnrEnabled(true); });
+            else if (NnrSettings::enabled())
+                QMetaObject::invokeMethod(m_audio, [this]() { m_audio->setNnrEnabled(true); });
             // BNR not auto-restored — requires manual enable each session
 
             refreshCwDecodeState();
@@ -6022,14 +6025,14 @@ void MainWindow::wireVfoWidget(VfoWidget* w, SliceModel* s)
     // the reporter's gap — "enable NR4 and nothing on the main surface shows it"
     // — is closed without opening the applet (#3800). The client modules are
     // global AudioEngine state, so every slice's ADSP button tracks the same OR
-    // of the six *Enabled() flags. Bound to w so it drops when the slice closes.
+    // of the seven *Enabled() flags. Bound to w so it drops when the slice closes.
     if (m_audio) {
         auto syncAetherDsp = [this, w] {
             if (!m_audio) return;
             const bool active = m_audio->nr2Enabled() || m_audio->nr4Enabled()
                              || m_audio->mnrEnabled()
                              || m_audio->dfnrEnabled() || m_audio->rn2Enabled()
-                             || m_audio->nvAfxEnabled();
+                             || m_audio->nvAfxEnabled() || m_audio->nnrEnabled();
             w->setAetherDspActive(active);
         };
         connect(m_audio, &AudioEngine::nr2EnabledChanged,  w, [syncAetherDsp](bool){ syncAetherDsp(); });
@@ -6038,6 +6041,7 @@ void MainWindow::wireVfoWidget(VfoWidget* w, SliceModel* s)
         connect(m_audio, &AudioEngine::dfnrEnabledChanged, w, [syncAetherDsp](bool){ syncAetherDsp(); });
         connect(m_audio, &AudioEngine::rn2EnabledChanged,  w, [syncAetherDsp](bool){ syncAetherDsp(); });
         connect(m_audio, &AudioEngine::nvAfxEnabledChanged, w, [syncAetherDsp](bool){ syncAetherDsp(); });
+        connect(m_audio, &AudioEngine::nnrEnabledChanged,   w, [syncAetherDsp](bool){ syncAetherDsp(); });
         syncAetherDsp();  // apply current state to this freshly-wired slice
     }
 
