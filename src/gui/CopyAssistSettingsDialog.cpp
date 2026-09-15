@@ -125,6 +125,25 @@ CopyAssistSettingsDialog::CopyAssistSettingsDialog(QWidget* parent)
     });
     form->addRow(m_useSilero);
 
+    // Where in the RX chain Copy Assist listens (RFC #4861). Unchecked is the
+    // historical behaviour and the default: the recogniser hears what the
+    // speaker plays. The operator's audio is unaffected either way.
+    m_rawAudio = new QCheckBox(
+        tr("Transcribe from unprocessed audio (bypasses NR and RX effects)"), this);
+    m_rawAudio->setObjectName(QStringLiteral("CopyAssistRawAudio"));
+    m_rawAudio->setToolTip(tr(
+        "Off: transcribe the receive audio after AetherSDR's noise reduction and RX "
+        "effects, as you hear it. On: transcribe it before them \u2014 noise reduction "
+        "artifacts can confuse the speech model more than the noise does. What you "
+        "hear is unchanged, and processing done by the radio itself still applies.\n\n"
+        "On a noisy band the unprocessed feed has little level difference between "
+        "speech and the noise floor, so the energy-based Sensitivity gate will admit "
+        "almost everything. Enable Silero VAD below if that matters \u2014 it decides "
+        "speech by content rather than by loudness. Switching starts the "
+        "transcription over."));
+    connect(m_rawAudio, &QCheckBox::toggled, this, &CopyAssistSettingsDialog::rawAudioToggled);
+    form->addRow(m_rawAudio);
+
     auto* vadRow = new QHBoxLayout;
     m_vadPath = new QLineEdit(this);
     m_vadPath->setObjectName(QStringLiteral("CopyAssistVadPath"));
@@ -359,6 +378,21 @@ QString CopyAssistSettingsDialog::logFilePath() const
 void CopyAssistSettingsDialog::setUseSileroVad(bool on)
 {
     m_useSilero->setChecked(on); // fires toggled → enables the path row + emits
+}
+
+void CopyAssistSettingsDialog::setRawAudio(bool on)
+{
+    if (m_rawAudio == nullptr) {
+        return;
+    }
+    // Seeding from the store must not echo back as an operator edit.
+    const QSignalBlocker block(m_rawAudio);
+    m_rawAudio->setChecked(on);
+}
+
+bool CopyAssistSettingsDialog::isRawAudio() const
+{
+    return m_rawAudio != nullptr && m_rawAudio->isChecked();
 }
 
 bool CopyAssistSettingsDialog::useSileroVad() const

@@ -12,8 +12,10 @@
 #include "asr/AsrCrashMarker.h"    // fault-record decision (header-inline, whisper-free)
 #include "asr/WhisperAsrBackend.h" // asrLanguageOrDefault (header-inline, whisper-free)
 #include "gui/CopyAssistSettings.h" // foldLegacyKeys + value/setValue
+#include "gui/AsrTapPolicy.h"       // AsrTapPoint setting encoding (header-only)
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QComboBox>
@@ -82,6 +84,34 @@ int main(int argc, char** argv)
         expect(CopyAssistSettings::value(QStringLiteral("AsrLanguage")).toString()
                    == QStringLiteral("fr"),
                "setValue then value round-trips through the nested object");
+    }
+
+    // ---- Tap point (the panel's NR button) survives a restart -------------
+    // Operator requirement: turning NR off must still be off after a restart.
+    // AppSettings::load() drops every in-memory value and re-reads the settings
+    // database, so a value that only lived in memory would read back as the
+    // PostDsp default here — exactly the failure a restart would show.
+    {
+        expect(asrTapPointFromSetting(
+                   CopyAssistSettings::value(QStringLiteral("AsrTapPoint")).toString())
+                   == AsrTapPoint::PostDsp,
+               "a profile that never touched NR reads as PostDsp (NR on)");
+
+        CopyAssistSettings::setValue(QStringLiteral("AsrTapPoint"),
+                                     asrTapPointToSetting(AsrTapPoint::PreDsp));
+        AppSettings::instance().load(); // simulate a restart
+        expect(asrTapPointFromSetting(
+                   CopyAssistSettings::value(QStringLiteral("AsrTapPoint")).toString())
+                   == AsrTapPoint::PreDsp,
+               "NR off (PreDsp) is still set after settings are reloaded from disk");
+
+        CopyAssistSettings::setValue(QStringLiteral("AsrTapPoint"),
+                                     asrTapPointToSetting(AsrTapPoint::PostDsp));
+        AppSettings::instance().load();
+        expect(asrTapPointFromSetting(
+                   CopyAssistSettings::value(QStringLiteral("AsrTapPoint")).toString())
+                   == AsrTapPoint::PostDsp,
+               "turning NR back on also survives a reload");
     }
 
     // Frameless-window behavior (from #4414) shares this offscreen harness.
@@ -575,6 +605,42 @@ int main(int argc, char** argv)
             dlg.clearFaultStandDown();
             expect(!dlg.faultStandDownVisible() && reason->text().isEmpty(),
                    "clearFaultStandDown hides the row and drops the reason");
+        }
+    }
+
+    // ---- Tap point: "unprocessed audio" checkbox (RFC #4861) --------------
+    // Replaces the header NR button: same stored setting, the name the RFC
+    // thread agreed on, and OFF by default so a fresh profile transcribes
+    // after NR exactly as every build before this did.
+    {
+        CopyAssistSettingsDialog fresh;
+        expect(!fresh.isRawAudio(),
+               "unprocessed-audio is OFF by default (transcribe after NR, as before)");
+
+        auto* box = dlg.findChild<QCheckBox*>(QStringLiteral("CopyAssistRawAudio"));
+        expect(box != nullptr, "the unprocessed-audio checkbox exists");
+        if (box != nullptr) {
+            expect(box->text().contains(QStringLiteral("unprocessed"))
+                       && box->text().contains(QStringLiteral("RX effects")),
+                   "the label names what is bypassed, not just NR");
+            // The tooltip must address the gate, because on a noisy band the
+            // unprocessed feed has almost no speech-vs-noise level contrast
+            // (measured 0.2 dB) and the energy gate admits nearly everything.
+            // Silero decides by content, so it is the right pointer here.
+            expect(box->toolTip().contains(QStringLiteral("Sensitivity"))
+                       && box->toolTip().contains(QStringLiteral("Silero")),
+                   "the tooltip explains the gate and points at Silero VAD");
+
+            QSignalSpy rawSpy(&dlg, &CopyAssistSettingsDialog::rawAudioToggled);
+            dlg.setRawAudio(true);
+            expect(dlg.isRawAudio(), "setRawAudio reflects state");
+            expect(rawSpy.isEmpty(), "seeding from the store does not emit");
+
+            box->click();
+            expect(!dlg.isRawAudio(), "clicking toggles it");
+            expect(!rawSpy.isEmpty() && rawSpy.last().at(0).toBool() == false,
+                   "rawAudioToggled carries the operator's new state");
+            dlg.setRawAudio(false);
         }
     }
 

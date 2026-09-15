@@ -7,6 +7,8 @@
 #include <QLoggingCategory>
 #include <QVector>
 
+#include <cmath>
+
 namespace AetherSDR {
 
 Q_LOGGING_CATEGORY(lcAsrTap, "aether.asr.tap")
@@ -35,15 +37,7 @@ void AsrAudioTap::setEnabled(bool on)
         m_policy.reset();
         m_clock.start();
         m_warnedUndecodable = false;
-        if (m_audio != nullptr) {
-            // Queued so the audio-thread emit lands on this (main) thread; the
-            // heavy resample+inference then happens on the ASR worker thread.
-            //
-            // Unthrottled by design — see the note in the header. Every block
-            // this signal carries must reach the engine.
-            m_conn = connect(m_audio, &AudioEngine::receivePresentationPostDspAudioReady,
-                             this, &AsrAudioTap::onRxAudio, Qt::QueuedConnection);
-        }
+        connectSelectedTap();
     } else {
         disconnect(m_conn);
         m_policy.reset();
@@ -52,15 +46,117 @@ void AsrAudioTap::setEnabled(bool on)
     }
 }
 
-void AsrAudioTap::onRxAudio(const QString& source,
+void AsrAudioTap::setTapPoint(AsrTapPoint point)
+{
+    if (point == m_tapPoint) {
+        return;
+    }
+    m_tapPoint = point;
+    if (!m_enabled) {
+        return; // the next setEnabled(true) connects the new point
+    }
+
+    disconnect(m_conn);
+    // Start over rather than carry on. An utterance begun through one chain
+    // and finished through the other is spliced across a level step and a
+    // latency step (an NR stage delays its output), and the receiver lock was
+    // earned on the other signal. The engine reset drops the partial
+    // utterance, carried context and speaker clusters — a speaker's embedding
+    // shifts with NR anyway, so clusters would not survive the switch intact.
+    m_policy.reset();
+    m_clock.restart();
+    m_warnedUndecodable = false;
+    if (m_asr != nullptr) {
+        m_asr->reset();
+    }
+    // The two points arrive at different levels, so the gate's threshold has
+    // to move with the switch or a saved Sensitivity silently means something
+    // else on the other side.
+    m_speechRmsApplied = false;
+    applySpeechRmsForTapPoint();
+    connectSelectedTap();
+}
+
+void AsrAudioTap::setBaseSpeechRms(float rms)
+{
+    m_baseSpeechRms = rms;
+    m_speechRmsApplied = false;   // force a push even if the gain is unchanged
+    applySpeechRmsForTapPoint();
+}
+
+void AsrAudioTap::applySpeechRmsForTapPoint()
+{
+    if (m_asr == nullptr || m_audio == nullptr || m_baseSpeechRms <= 0.0f) {
+        return;   // nothing seeded yet
+    }
+    const bool boost = m_audio->rxBoost();
+    const float trimDb = m_audio->rxOutputTrimDb();
+    const float rms = asrSpeechRmsForTapPoint(m_baseSpeechRms, m_tapPoint, boost, trimDb);
+    // Change detection on the gain, not the rms, so float noise in the trim
+    // does not re-push every block.
+    const float gainDb = (m_tapPoint == AsrTapPoint::PostDsp)
+                             ? 0.0f
+                             : (boost ? 6.0206f : 0.0f) + trimDb;
+    if (m_speechRmsApplied && std::fabs(gainDb - m_appliedGainDb) < 0.01f) {
+        return;
+    }
+    m_appliedGainDb = gainDb;
+    m_speechRmsApplied = true;
+    m_asr->setSpeechRms(rms);
+}
+
+void AsrAudioTap::connectSelectedTap()
+{
+    if (m_audio == nullptr) {
+        return;
+    }
+    // Queued so the audio-thread emit lands on this (main) thread; the heavy
+    // resample+inference then happens on the ASR worker thread.
+    //
+    // Both signals are unthrottled by design — see the note in the header.
+    // Every block they carry must reach the engine.
+    if (m_tapPoint == AsrTapPoint::PreDsp) {
+        m_conn = connect(m_audio, &AudioEngine::receivePresentationPreDspAudioReady,
+                         this, &AsrAudioTap::onPreDspAudio, Qt::QueuedConnection);
+    } else {
+        m_conn = connect(m_audio, &AudioEngine::receivePresentationPostDspAudioReady,
+                         this, &AsrAudioTap::onPostDspAudio, Qt::QueuedConnection);
+    }
+}
+
+void AsrAudioTap::onPostDspAudio(const QString& source, const QString& sourceId,
+                                 const QByteArray& pcmFloat, int sampleRate,
+                                 int channels)
+{
+    onRxAudio(AsrTapPoint::PostDsp, source, sourceId, pcmFloat, sampleRate, channels);
+}
+
+void AsrAudioTap::onPreDspAudio(const QString& source, const QString& sourceId,
+                                const QByteArray& pcmFloat, int sampleRate,
+                                int channels)
+{
+    onRxAudio(AsrTapPoint::PreDsp, source, sourceId, pcmFloat, sampleRate, channels);
+}
+
+void AsrAudioTap::onRxAudio(AsrTapPoint from,
+                            const QString& source,
                             const QString& sourceId,
                             const QByteArray& pcmFloat,
                             int sampleRate,
                             int channels)
 {
-    if (!m_enabled || m_asr == nullptr) {
+    // disconnect() does not withdraw calls a queued connection has already
+    // posted, so blocks from the old point can still arrive after a switch —
+    // after the engine reset above, where they would open the new session
+    // with audio from the wrong chain. They name their point; drop them.
+    if (!m_enabled || m_asr == nullptr || from != m_tapPoint) {
         return;
     }
+
+    // AudioEngine publishes no change signal for the RX boost or the output
+    // trim, so the gain is re-read here. Cheap: two atomic loads and a
+    // compare, and setSpeechRms is only called when the gain actually moves.
+    applySpeechRmsForTapPoint();
     if (!m_policy.accepts(source, sourceId,
                           m_clock.isValid() ? m_clock.elapsed() : 0)) {
         return;

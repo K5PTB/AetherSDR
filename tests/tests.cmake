@@ -162,6 +162,15 @@ target_link_libraries(audio_engine_rates_test PRIVATE aethercore Qt6::Core)
 add_test(NAME audio_engine_rates_test COMMAND audio_engine_rates_test)
 set_tests_properties(audio_engine_rates_test PROPERTIES TIMEOUT 120)
 
+# The pre-NR fan-out Copy Assist's "unprocessed audio" tap subscribes to
+# (RFC #4861). Same socket-free engine seam as audio_engine_rates_test; pins
+# that the emit sits ABOVE the NR early-return, which no other test covers.
+add_executable(asr_pre_dsp_emit_test tests/asr_pre_dsp_emit_test.cpp)
+target_include_directories(asr_pre_dsp_emit_test PRIVATE src tests)
+target_link_libraries(asr_pre_dsp_emit_test PRIVATE aethercore Qt6::Core)
+add_test(NAME asr_pre_dsp_emit_test COMMAND asr_pre_dsp_emit_test)
+set_tests_properties(asr_pre_dsp_emit_test PROPERTIES TIMEOUT 120)
+
 # RX BYPASS snapshots and restores the running AetherNR method along with the
 # chain stages (#5913); enable flags only, no sockets/devices.
 add_executable(audio_engine_rx_bypass_nr_test tests/audio_engine_rx_bypass_nr_test.cpp)
