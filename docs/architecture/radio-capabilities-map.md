@@ -355,7 +355,8 @@ the operator can go looking for.
 Three things do **not** move with them:
 
 - **ASR (Copy Assist)** sits in the same row and is host-side. `AsrAudioTap`
-  subscribes to `AudioEngine::receivePresentationPostDspAudioReady` and whisper
+  subscribes to `AudioEngine::receivePresentationPostDspAudioReady` (or
+  `receivePresentationPreDspAudioReady`, operator's choice) and whisper
   runs on this machine, so it works on every family. Gating it would remove a
   working control — the `EQ`-applet mistake above, one row over.
 - **TNF**, and its `+TNF` sibling in the pan overlay menu. `tnf create/remove/

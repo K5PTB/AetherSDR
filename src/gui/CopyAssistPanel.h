@@ -49,6 +49,9 @@ public:
     // The "Context" context-carry toggle (RFC #4818) — exposed so the controller
     // can apply the themed applet-toggle style (panel stays ThemeManager-free).
     QPushButton* contextCarryButton() const { return m_contextCarry; }
+    // The "NR" tap-point toggle, immediately left of Context — exposed for the
+    // same themed styling.
+    QPushButton* nrButton() const { return m_nr; }
 
     // When on, each utterance (VAD end-of-speech) begins on a new line.
     void setNewlineOnSilence(bool on);
@@ -59,6 +62,13 @@ public:
     // on the non-whisper tiers whose backends can't honor it (with a tooltip).
     void setContextCarryChecked(bool on);
     void setContextCarryAvailable(bool available);
+
+    // Tap-point header toggle: checked (the default) = transcribe the RX audio
+    // after client noise reduction and the RX effects chain; unchecked = before
+    // them. Reflects persisted state without re-emitting. Every backend honours
+    // it, so unlike Context it never greys out.
+    void setNrChecked(bool on);
+    bool isNrChecked() const;
 
     // Decode-buffer size in milliseconds (1000–20000). The slider works in
     // whole seconds; setBufferMs rounds/clamps into range.
@@ -92,6 +102,7 @@ signals:
     void fontPxChanged(int px);
     void newlineOnSilenceChanged(bool on);
     void contextCarryToggled(bool on);
+    void nrToggled(bool on);
 
 private:
     static QString colorForConfidence(float confidence);
@@ -106,6 +117,7 @@ private:
     QTextEdit* m_text = nullptr;
     QPushButton* m_enable = nullptr;   // checkable: "Enable" / "Disable"
     QPushButton* m_newline = nullptr;  // checkable ↵: newline on each silence
+    QPushButton* m_nr = nullptr;           // checkable: transcribe after client NR (default)
     QPushButton* m_contextCarry = nullptr; // checkable: carry context across segments
     QPushButton* m_settings = nullptr; // ⚙: opens the modeless settings dialog
     QLabel* m_status = nullptr;
