@@ -9,9 +9,41 @@
 
 namespace AetherSDR {
 
+// Where in the RX chain Copy Assist listens.
+//
+// PostDsp is the historical behaviour and the default: the recogniser hears
+// what the speaker plays, after client NR and the RX effects chain. PreDsp
+// takes each block before any of that, for operators who find that NR's
+// artifacts confuse the speech model more than the noise NR removes. Neither
+// undoes processing the radio itself applied.
+enum class AsrTapPoint {
+    PostDsp,
+    PreDsp,
+};
+
+// Persisted as a name rather than a bool so a third point (after NR but before
+// the effects chain, say) is an added value instead of a migration.
+inline QString asrTapPointToSetting(AsrTapPoint point)
+{
+    return point == AsrTapPoint::PreDsp ? QStringLiteral("PreDsp")
+                                        : QStringLiteral("PostDsp");
+}
+
+// Anything unrecognised — a hand-edited profile, a value from a build that
+// knows a point this one does not — reads as PostDsp, which is what every
+// build before this setting did. The dialog then shows the box unchecked, so
+// what the operator sees still matches what is being transcribed.
+inline AsrTapPoint asrTapPointFromSetting(const QString& value)
+{
+    return value == QLatin1String("PreDsp") ? AsrTapPoint::PreDsp
+                                            : AsrTapPoint::PostDsp;
+}
+
 // The two decisions AsrAudioTap has to make about the RX audio it forwards to
-// the ASR engine: WHICH receiver's blocks to follow, and how to turn a post-DSP
-// stereo block into the mono float32 the engine expects.
+// the ASR engine: WHICH receiver's blocks to follow, and how to turn a stereo
+// block — post-DSP or pre-DSP, per AsrTapPoint — into the mono float32 the
+// engine expects. Both signals are emitted per RX source with the same tags,
+// so the source lock below applies to either unchanged.
 //
 // Split out of AsrAudioTap because that class is a QObject wired to a concrete
 // AudioEngine, and AudioEngine cannot be constructed in a headless test (it

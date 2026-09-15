@@ -172,6 +172,7 @@ CopyAssistController::CopyAssistController(AudioEngine* audio, CopyAssistPanel* 
         " color: {{color.text.primary}}; border: 1px solid {{color.accent.bright}}; }");
     ThemeManager::instance().applyStyleSheet(m_panel->enableButton(), appletToggleStyle);
     ThemeManager::instance().applyStyleSheet(m_panel->newlineButton(), appletToggleStyle);
+    ThemeManager::instance().applyStyleSheet(m_panel->nrButton(), appletToggleStyle);
     ThemeManager::instance().applyStyleSheet(m_panel->contextCarryButton(), appletToggleStyle);
 
     // ⚙ settings button — modeled on the band-stack gear button but themed and
@@ -403,6 +404,26 @@ CopyAssistController::CopyAssistController(AudioEngine* audio, CopyAssistPanel* 
                                      on ? QStringLiteral("True") : QStringLiteral("False"));
         if (m_asr) {
             m_asr->setContextCarryEnabled(on);
+        }
+    });
+
+    // Tap point (before or after client NR + RX effects), the header button
+    // beside Context so it can be flipped mid-QSO to compare. Seeded silently;
+    // applied live to the current tap, and buildEngine() applies the stored
+    // value to every tap it creates.
+    // An absent value reads as PostDsp, so a fresh profile shows NR on; every
+    // toggle is written (and saved) immediately, so the choice survives restart.
+    m_panel->setNrChecked(
+        asrTapPointFromSetting(
+            CopyAssistSettings::value(QStringLiteral("AsrTapPoint"),
+                                      asrTapPointToSetting(AsrTapPoint::PostDsp))
+                .toString())
+        == AsrTapPoint::PostDsp);
+    connect(m_panel, &CopyAssistPanel::nrToggled, this, [this](bool on) {
+        const AsrTapPoint point = on ? AsrTapPoint::PostDsp : AsrTapPoint::PreDsp;
+        CopyAssistSettings::setValue(QStringLiteral("AsrTapPoint"), asrTapPointToSetting(point));
+        if (m_tap) {
+            m_tap->setTapPoint(point);
         }
     });
 
@@ -749,6 +770,11 @@ void CopyAssistController::buildEngine()
         break;
     }
     m_tap = new AsrAudioTap(m_audio, m_asr, this);
+    // Before any enable, so the first connection is already the right signal.
+    m_tap->setTapPoint(asrTapPointFromSetting(
+        CopyAssistSettings::value(QStringLiteral("AsrTapPoint"),
+                                  asrTapPointToSetting(AsrTapPoint::PostDsp))
+            .toString()));
 
     connect(m_asr, &AsrEngine::ready, this, [this] {
         m_panel->setBusy(false);

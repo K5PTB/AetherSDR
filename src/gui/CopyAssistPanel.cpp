@@ -117,6 +117,27 @@ CopyAssistPanel::CopyAssistPanel(QWidget* parent)
     });
     controls->addWidget(m_newline);
 
+    // Tap-point toggle, named for what the recogniser hears. On (the default,
+    // and every build's behaviour before this button) transcribes the audio
+    // after client NR and the RX effects — what the speaker plays. Off
+    // transcribes each block before them, because NR's artifacts can confuse
+    // the model more than the noise it removes. On the header beside Context
+    // for the same reason Context is: so it can be A/B'd against the same
+    // signal without opening ⚙ settings.
+    m_nr = new QPushButton(tr("NR"), this);
+    m_nr->setObjectName(QStringLiteral("CopyAssistNrButton"));
+    m_nr->setCheckable(true);
+    m_nr->setChecked(true); // before connect: the default is not an operator edit
+    m_nr->setToolTip(tr("On: transcribe the receive audio after AetherSDR's noise reduction "
+                        "(NR2, RN2, NR4, DFNR…) and RX effects, as you hear it. Off: "
+                        "transcribe it before them — noise reduction artifacts can confuse "
+                        "the speech model more than the noise does. What you hear is "
+                        "unchanged, and processing done by the radio itself still applies. "
+                        "Switching starts the transcription over."));
+    m_nr->setAccessibleName(tr("Transcribe after noise reduction"));
+    connect(m_nr, &QPushButton::toggled, this, &CopyAssistPanel::nrToggled);
+    controls->addWidget(m_nr);
+
     // Context-carry toggle (RFC #4818). When on, each decode is conditioned on the
     // previous confident segment's text for continuity across boundaries. Here on
     // the header (not buried in ⚙ settings) so it can be A/B'd on the fly; the
@@ -376,6 +397,18 @@ void CopyAssistPanel::setContextCarryAvailable(bool available)
     // context hooks. The checked state is preserved so it re-applies if the
     // operator switches back to whisper.
     m_contextCarry->setEnabled(available);
+}
+
+void CopyAssistPanel::setNrChecked(bool on)
+{
+    // Silent for the same reason as setContextCarryChecked().
+    const QSignalBlocker block(m_nr);
+    m_nr->setChecked(on);
+}
+
+bool CopyAssistPanel::isNrChecked() const
+{
+    return m_nr->isChecked();
 }
 
 void CopyAssistPanel::clearText()

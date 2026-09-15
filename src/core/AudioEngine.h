@@ -842,6 +842,25 @@ signals:
                                               const QByteArray& pcmFloat,
                                               int sampleRate,
                                               int channels);
+    // The same source-tagged, unthrottled stream, taken where each block
+    // ENTERS processMixedRxAudioData(): ahead of the client NR stage
+    // (NR2/RN2/NR4/DFNR/BNR/MNR), the RX effects chain, output resampling,
+    // boost, trim and pan. Whatever the radio or the Kiwi did to the audio is
+    // still in it — this is "before AetherSDR's DSP", not "off the antenna".
+    //
+    // `sampleRate` is the source's PRODUCER rate (the Flex stream's rate,
+    // 24 kHz for a Kiwi), not the output rate the post-DSP signal carries.
+    // The two differ whenever the sink runs at another rate, so a consumer
+    // that switches between them must read it rather than carry it over.
+    //
+    // Copy Assist listens here when the operator asks to transcribe ahead of
+    // noise reduction, whose artifacts can confuse a speech model more than
+    // the noise it removes.
+    void receivePresentationPreDspAudioReady(const QString& source,
+                                             const QString& sourceId,
+                                             const QByteArray& pcmFloat,
+                                             int sampleRate,
+                                             int channels);
     void receivePresentationOutputAudioReady(const QString& source,
                                              const QString& sourceId,
                                              const QByteArray& pcmStereoFloat,

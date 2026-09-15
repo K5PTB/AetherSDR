@@ -10288,7 +10288,8 @@ void MainWindow::updateKeyerAvailability()
     //
     // The selected slice is a PROXY, not the audio source, and the difference
     // matters to anyone changing this: the tap subscribes to
-    // AudioEngine::receivePresentationPostDspAudioReady and AsrTapPolicy locks
+    // AudioEngine::receivePresentationPostDspAudioReady (or its PreDsp twin,
+    // when the operator transcribes ahead of NR) and AsrTapPolicy locks
     // onto a RECEIVER (the Flex, the applet Kiwi, an external Kiwi) on a
     // first-block-wins rule with a 2 s release window — never onto a slice. On a
     // Flex that stream is every audible slice already mixed together. So this

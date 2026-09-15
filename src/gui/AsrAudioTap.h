@@ -44,6 +44,16 @@ class AsrEngine;
 // Do NOT "fix" this by relaxing the 8 ms throttle: StripWaveformPanel and
 // MainWindow are its intended consumers and frame-dropping is right for them.
 //
+// ── Which point in the chain (AsrTapPoint) ────────────────────────────────
+//
+// By default the tap follows the post-DSP signal above. The operator can move
+// it to receivePresentationPreDspAudioReady, the same unthrottled, source-
+// tagged stream taken before client NR and the RX effects — NR artifacts can
+// confuse the model more than the noise NR removes. Both signals are connected
+// to separate slots that name their own point, so a block queued from the old
+// point before a switch is recognised and dropped instead of being spliced
+// into the new stream.
+//
 // In the aetherd future this glue moves to the engine/daemon side; the thin UI
 // then subscribes to AsrEngine::finalText streamed over the wire and never sees
 // audio or whisper.
@@ -55,8 +65,19 @@ public:
     void setEnabled(bool on);
     bool isEnabled() const { return m_enabled; }
 
+    // Applied live. Switching while enabled starts transcription over (see the
+    // .cpp); switching while disabled only takes effect at the next enable.
+    void setTapPoint(AsrTapPoint point);
+    AsrTapPoint tapPoint() const { return m_tapPoint; }
+
 private:
-    void onRxAudio(const QString& source,
+    void connectSelectedTap();
+    void onPostDspAudio(const QString& source, const QString& sourceId,
+                        const QByteArray& pcmFloat, int sampleRate, int channels);
+    void onPreDspAudio(const QString& source, const QString& sourceId,
+                       const QByteArray& pcmFloat, int sampleRate, int channels);
+    void onRxAudio(AsrTapPoint from,
+                   const QString& source,
                    const QString& sourceId,
                    const QByteArray& pcmFloat,
                    int sampleRate,
@@ -66,6 +87,7 @@ private:
     AsrEngine* m_asr = nullptr;
     QMetaObject::Connection m_conn;
     bool m_enabled = false;
+    AsrTapPoint m_tapPoint = AsrTapPoint::PostDsp;
     AsrTapPolicy m_policy;
     QElapsedTimer m_clock;   // monotonic source for the policy's release window
     // Latch so a block toMono() cannot decode warns once per enable rather

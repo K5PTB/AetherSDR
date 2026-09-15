@@ -5,6 +5,7 @@
 #include "gui/CopyAssistPanel.h"
 
 #include <QApplication>
+#include <QHBoxLayout>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTextEdit>
@@ -111,6 +112,48 @@ int main(int argc, char** argv)
         expect(panel.fontPx() == 32, "font size clamps to 32 px max");
         panel.setFontPx(1);
         expect(panel.fontPx() == 8, "font size clamps to 8 px min");
+    }
+
+    // ---- NR tap-point toggle ----------------------------------------------
+    // Operator spec: a header button labelled "NR", immediately LEFT of Context,
+    // ON by default (transcribe after NR, the historical behaviour). Position is
+    // checked by layout index rather than geometry so it holds offscreen at any
+    // width.
+    {
+        // A fresh panel, so the default is observed before anything touches it.
+        CopyAssistPanel fresh;
+        expect(fresh.isNrChecked(), "NR is on by default (post-DSP, as before)");
+
+        QPushButton* nr = panel.nrButton();
+        QPushButton* context = panel.contextCarryButton();
+        expect(nr != nullptr && nr->isCheckable(), "NR is a checkable button");
+        expect(nr != nullptr && nr->text() == QStringLiteral("NR"), "the button is labelled \"NR\"");
+
+        bool adjacent = false;
+        for (QHBoxLayout* row : panel.findChildren<QHBoxLayout*>()) {
+            const int p = row->indexOf(nr);
+            if (p >= 0) {
+                adjacent = row->indexOf(context) == p + 1;
+            }
+        }
+        expect(adjacent, "NR sits immediately left of Context in the header row");
+
+        // Seeding from the store must not echo back as an operator toggle.
+        QSignalSpy nrSpy(&panel, &CopyAssistPanel::nrToggled);
+        panel.setNrChecked(false);
+        expect(!panel.isNrChecked(), "setNrChecked reflects state");
+        expect(nrSpy.isEmpty(), "a programmatic NR set does not emit");
+
+        nr->click(); // a real operator toggle
+        expect(panel.isNrChecked(), "clicking NR toggles it");
+        expect(!nrSpy.isEmpty() && nrSpy.last().at(0).toBool(),
+               "nrToggled carries the operator's new state");
+
+        // Context greys out on backends without context hooks; the tap point
+        // is backend-independent and must not go with it.
+        panel.setContextCarryAvailable(false);
+        expect(nr->isEnabled(), "NR stays enabled when Context is unavailable");
+        panel.setContextCarryAvailable(true);
     }
 
     std::printf(g_failures == 0 ? "\nCopy Assist panel: ALL PASS\n"

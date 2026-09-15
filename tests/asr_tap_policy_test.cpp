@@ -236,6 +236,39 @@ static void testNoSamplesAreDropped()
           "ten packets arriving in the same millisecond all reach the engine");
 }
 
+// ── Tap point setting ─────────────────────────────────────────────────────
+
+// The names are what operator profiles store under CopyAssist.AsrTapPoint, so
+// they are pinned literally: renaming one would silently move every operator
+// who turned Copy Assist's NR button off back to post-DSP on upgrade.
+static void testTapPointSettingNamesArePinned()
+{
+    check(asrTapPointToSetting(AsrTapPoint::PostDsp) == QLatin1String("PostDsp"),
+          "PostDsp is stored as \"PostDsp\"");
+    check(asrTapPointToSetting(AsrTapPoint::PreDsp) == QLatin1String("PreDsp"),
+          "PreDsp is stored as \"PreDsp\"");
+    check(asrTapPointFromSetting(asrTapPointToSetting(AsrTapPoint::PreDsp))
+              == AsrTapPoint::PreDsp,
+          "PreDsp round-trips through its stored name");
+    check(asrTapPointFromSetting(asrTapPointToSetting(AsrTapPoint::PostDsp))
+              == AsrTapPoint::PostDsp,
+          "PostDsp round-trips through its stored name");
+}
+
+// Every build before this setting transcribed post-DSP, so a missing, empty or
+// unrecognised value must mean exactly that — never the new behaviour.
+static void testUnknownTapPointFallsBackToPostDsp()
+{
+    check(asrTapPointFromSetting(QString()) == AsrTapPoint::PostDsp,
+          "an absent setting reads as PostDsp");
+    check(asrTapPointFromSetting(QStringLiteral("predsp")) == AsrTapPoint::PostDsp,
+          "a mis-cased value is not guessed at");
+    check(asrTapPointFromSetting(QStringLiteral("PostNr")) == AsrTapPoint::PostDsp,
+          "a point this build does not know reads as PostDsp");
+    check(asrTapPointFromSetting(QStringLiteral("True")) == AsrTapPoint::PostDsp,
+          "a bool-style value is not taken as PreDsp");
+}
+
 }  // namespace AetherSDR
 
 int main(int argc, char** argv)
@@ -252,6 +285,8 @@ int main(int argc, char** argv)
     AetherSDR::testMonoPassthroughForMonoChannelCount();
     AetherSDR::testMalformedLengthIsRejectedNotReinterpreted();
     AetherSDR::testNoSamplesAreDropped();
+    AetherSDR::testTapPointSettingNamesArePinned();
+    AetherSDR::testUnknownTapPointFallsBackToPostDsp();
 
     if (AetherSDR::g_failures == 0)
         std::fprintf(stderr, "asr_tap_policy_test: all checks passed\n");
