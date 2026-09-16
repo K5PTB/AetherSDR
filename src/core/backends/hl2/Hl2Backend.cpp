@@ -506,6 +506,14 @@ Hl2Backend::Hl2Backend(QObject* parent) : IRadioBackend(parent)
         publishWideState();
     });
     connect(m_metis, &MetisClient::linkDown, this, [this] {
+        // The PA temperature pole belongs to the SESSION. Left standing, the
+        // first sample of the next stream would be averaged against a reading
+        // from before the drop — kPaTempAlpha would drag a cold radio toward a
+        // temperature it had an hour ago, and the row would take several
+        // samples to tell the truth. Clearing it makes the next reading seed
+        // the filter instead of blending with history.
+        m_havePaTemp = false;
+        m_paTempC = 0.0;
         if (m_connected) {
             m_connected = false;
             m_ceilingAnnouncer.reset();   // #5594 (M1): re-seeded on the next connect
@@ -742,9 +750,37 @@ void Hl2Backend::updateTelemetryPollState()
     if (!m_telemetryService)
         return;
 
-    // Only the link state. Demand belongs to the service: it is recorded by the
+    // The link state. Demand belongs to the service: it is recorded by the
     // health read itself, which every consumer performs and none can forget.
-    m_telemetryService->setLinkState(telemetryLinkState());
+    const Hl2LinkState state = telemetryLinkState();
+    m_telemetryService->setLinkState(state);
+
+    // AND THE PA TEMPERATURE METER, when the in-band path is not delivering it.
+    //
+    // `RAD:PATEMP` was published from exactly one place -- publishTelemetry(),
+    // which runs only while EP6 is arriving. So once the stream stopped, the
+    // needle held whatever it last showed, indefinitely, while the health row
+    // beside it correctly said nothing. A meter that keeps displaying a reading
+    // from a session that ended is the same frozen-reading failure this whole
+    // feature exists to expose, one surface over (#5642 review).
+    //
+    // The poller's reading is used RAW rather than fed into m_paTempC: that
+    // pole belongs to the in-band session and linkDown() clears it, so blending
+    // a 1 Hz out-of-band sample into it would re-seed the filter the next
+    // stream is supposed to start clean. This is one poll, published as itself.
+    //
+    // WHAT THIS DOES NOT FIX, stated rather than implied: the meter seam carries
+    // a bare double and has no way to spell "unknown", so with NO stream-free
+    // reading either -- disconnected with nobody watching, which stops the
+    // polling by design -- the needle still holds its last value. The health row
+    // beside it says nothing, correctly, and that remains the surface that can
+    // tell the two apart.
+    if (state == Hl2LinkState::Streaming)
+        return;   // in-band owns the meter whenever it is live
+    const std::optional<DiscoveryReply> reply = m_telemetryService->lastReply();
+    if (reply && reply->temperatureRaw)
+        emit meterUpdate(QStringLiteral("RAD:PATEMP"),
+                         hl2TemperatureCelsius(*reply->temperatureRaw));
 }
 
 void Hl2Backend::setTelemetryPollTarget(const QHostAddress& addr, bool heldByOther)
@@ -4851,8 +4887,16 @@ IRadioBackend::HealthSnapshot Hl2Backend::healthSnapshot() const
     }
 
     section("temperatureC", QStringLiteral("Analog / thermal"));
+    // `inBandLive`, like every row around it. m_paTempC is a SMOOTHED value
+    // with no age of its own: publishTelemetry() sets m_havePaTemp and nothing
+    // ever clears it, so without this gate the one row a human actually reads
+    // would keep showing a figure from a stream that stopped minutes ago while
+    // temperatureRaw beside it correctly reported nothing and yielded to the
+    // poller. The telemetrySource row two sections down already reasons this
+    // way — "we hold one forever" — and this row was the exception
+    // (aethersdr-agent, #5642 review).
     put("temperatureC", QStringLiteral("PA temperature (°C)"),
-        m_havePaTemp ? QVariant(m_paTempC) : QVariant());
+        (inBandLive && m_havePaTemp) ? QVariant(m_paTempC) : QVariant());
     put("temperatureRaw", QStringLiteral("Temperature (raw counts)"),
         opt(t.temperatureRaw));
     put("biasCurrentRaw", QStringLiteral("PA bias current (raw counts)"),
@@ -6078,10 +6122,12 @@ double Hl2Backend::wattsToDbm(double watts)
 
 double Hl2Backend::temperatureCelsius(int raw)
 {
-    // AD9866 on-die temperature via the HL2's instrumentation ADC. The scaling
-    // below is the Hermes-Lite 2 wiki's published formula. It is NOT verified
-    // against a reference thermometer here, so treat it as indicative.
-    return (3.26 * (static_cast<double>(raw) / 4096.0) - 0.5) / 0.01;
+    // MOVED, NOT COPIED. The formula is in MetisProtocol.h beside the decode
+    // that produces `raw`, because the stream-free poller needs the same
+    // conversion and shares no other header with this class. This stays as a
+    // forwarder so the existing callers and the tests that pin them keep
+    // naming one function rather than a re-typed twin.
+    return hl2TemperatureCelsius(raw);
 }
 
 void Hl2Backend::applyIoBoardFrequency()

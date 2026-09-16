@@ -150,7 +150,7 @@ public:
                                         Hl2TxDsp* txDsp);
     LinkStats linkStats() const override;
 
-    // Point the stream-free telemetry poller at a radio (roadmap #15).
+    // Point the stream-free telemetry poller at a radio.
     //
     // Separate from connectRadio() ON PURPOSE: the case this feature exists for
     // is a radio we are NOT connected to, because somebody else has the stream.
@@ -163,9 +163,27 @@ public:
     // now also reads the radio's own in-use bit out of the poller's replies,
     // which is fresher than any scan and arrives on the path that needs it.
     void setTelemetryPollTarget(const QHostAddress& addr, bool heldByOther);
-    // Injected by RadioModel, which owns it. Null is legitimate: a backend
-    // built before the service exists simply does not drive it.
+    // Borrowed, never owned. Null is legitimate: a backend built before the
+    // service exists simply does not drive it.
     void setTelemetryService(Hl2TelemetryService* svc) { m_telemetryService = svc; }
+
+    // IRadioBackend seam: take the model's offline health source, if it is one
+    // we can use.
+    //
+    // THE dynamic_cast IS DELIBERATE AND IS ON THE RIGHT SIDE OF THE LINE.
+    // Knowing your own concrete type inside your own family directory is
+    // tautological; doing it in `RadioModel` is the seam leak #5554 §2.8 wants
+    // retired, and is what this override exists to remove. The model now hands
+    // every backend the same interface pointer and never asks what family it
+    // built.
+    //
+    // A null or foreign source disables the in-band drive rather than erroring:
+    // an offline source belonging to some other family is not a fault, it is
+    // simply not ours.
+    void setOfflineHealthSource(IOfflineHealthSource* src) override
+    {
+        setTelemetryService(dynamic_cast<Hl2TelemetryService*>(src));
+    }
 
 signals:
     // Connect-time progress for the CLIENT-SIDE DSP build, and deliberately not
@@ -287,7 +305,7 @@ private:
     void defineMeters();
     void publishTelemetry(const Hl2Telemetry& t);
 
-    // ---- stream-free telemetry (roadmap #15) ----
+    // ---- stream-free telemetry ----
     //
     // Drive the poller's LinkState from what the IQ path is actually doing, so
     // the cadence rule in Hl2TelemetryCadence.h is CONNECTED rather than merely
@@ -314,7 +332,7 @@ private:
     Hl2TxDsp* m_txDsp = nullptr;
     bool m_connected = false;
 
-    // ---- stream-free telemetry (roadmap #15) ----
+    // ---- stream-free telemetry ----
     //
     // Reads the radio over the alternate control port while the in-band EP6
     // path cannot: another client holds the radio, our stream has stalled, or
