@@ -109,7 +109,7 @@ public:
     void setKeying(bool key) override;
     void setCwKeying(bool down, bool breakIn, int breakInDelayMs) override;
     void submitTxAudio(const QByteArray& int16Stereo, int sampleRateHz,
-                       bool clientLeveled) override;
+                       TxAudioSource source) override;
     void setTxPower(int percent) override;
     void setTxFilter(int lowHz, int highHz) override;
     void setMicGain(int level) override;
@@ -954,6 +954,13 @@ private:
     // to keep that change from reading as a revert. Set in submitTxAudio(),
     // cleared on each key edge in setKeying().
     bool m_txAudioClientLeveled = false;
+    // Set when any block of THIS transmission was tagged EngineGenerated — the
+    // WSPR pump, which is the only producer. Gates the unkey "raise mic gain"
+    // diagnostic off: a beacon has no mic slider in its path, so the advice
+    // would name a control that cannot move it. NOT set for the AX.25 modem,
+    // which is tagged Microphone precisely because the slider IS its only
+    // control, so the advice is right for a quiet packet frame.
+    bool m_txAudioEngineGenerated = false;
 
     // The passband to push at the modulator for `mode`: the operator's if they
     // have chosen one, otherwise that mode's default.

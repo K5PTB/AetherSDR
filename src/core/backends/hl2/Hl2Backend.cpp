@@ -3531,41 +3531,139 @@ void Hl2Backend::setKeying(bool key)
         }
         m_cwAutoKeyed = false;
     }
-    // THE QUIET-MICROPHONE ADVICE IS NOT IN THIS CHANGE, AND THAT IS DELIBERATE.
+    // THE QUIET-MICROPHONE ADVICE, RESTORED, AND NOW AIMABLE.
     //
-    // Making the ALC reduction-only means the pre-ALC mic peak IS the on-air
-    // level, so an operator whose gain nobody set now goes out quiet with
+    // Making the ALC reduction-only (#5646) means the pre-ALC mic peak IS the
+    // on-air level, so an operator whose gain nobody set goes out quiet with
     // nothing to say so. An unkey-time "raise mic gain" line is the right
-    // instrument for that, and an earlier revision of this PR carried one.
+    // instrument for that.
     //
-    // IT CANNOT BE AIMED FROM THIS BRANCH. The advice must not fire for audio
-    // the operator's microphone did not produce: WSPR, AX.25 and RADE reach
-    // submitTxAudio() with `clientLeveled` false, exactly like the microphone,
-    // and a beacon at its -20 dBFS default sits about 18.6 dB under the target
-    // — well past any sensible margin. Every beacon unkey would advise raising
-    // a mic gain that has nothing to do with the level (K5PTB, #5646 review).
+    // IT COULD NOT BE AIMED FROM #5646, AND IT CAN BE AIMED FROM HERE.
     //
-    // The information needed to aim it does not exist here. This branch's seam
-    // is `submitTxAudio(..., bool clientLeveled)` — two states, and engine
-    // audio is not one of them. Distinguishing it means the three-state
-    // TxAudioSource, which is #5647's substance and reaches four files above
-    // the HL2 backend. Importing that here would move #5647 into #5646 rather
-    // than fix #5646, and would take this change's localization from one hit
-    // to four.
+    // #5646 removed the advice rather than misaim it, and said why in as many
+    // words: WSPR, AX.25 and RADE all reached submitTxAudio() with
+    // `clientLeveled` false, exactly like the microphone, so a beacon at its
+    // -20 dBFS default would have drawn "raise mic gain" on every unattended
+    // unkey (K5PTB, #5646 review). The seam had two states and engine audio was
+    // not one of them. That branch's own comment delegated the fix here:
+    // "#5647 reintroduces it gated on `!m_txAudioEngineGenerated`".
     //
-    // So: no advice rather than misaimed advice, and #5647 reintroduces it
-    // gated on `!m_txAudioEngineGenerated`. The measurement it needs is kept —
-    // `m_txMicPeakMaxDbfs` still tracks and still reaches the health snapshot,
-    // so an operator can see the number even while nothing volunteers it.
+    // This is that reintroduction. The gate exists now because the seam carries
+    // TxAudioSource, and it is the ONLY reason the advice is safe to restore.
+    // The measurement never went away — m_txMicPeakMaxDbfs kept tracking and
+    // kept reaching the health snapshot throughout.
     //
-    // MERGE ORDER MATTERS ONE WAY ONLY. #5647 carries the advice with its
-    // gate; this removal must not be applied over it. If #5647 lands first,
-    // this hunk is the one to drop.
+    // Note the gate is narrower than #5646 anticipated: AX.25 is tagged
+    // Microphone, not EngineGenerated, so the advice DOES fire for a quiet
+    // packet frame. That is correct. The mic slider is the only control in the
+    // product that can move an AX.25 frame (kTxAfskAmplitude is a constant and
+    // the packet dialog has no level control), so "raise mic gain" is exactly
+    // the right instrument there. Only the WSPR beacon has no slider in its
+    // path, and only the WSPR beacon is gated off.
+    //
+    // At unkey, once per transmission, on the main thread: the DSP worker must
+    // not log per block, and a per-block test would fire on every normal
+    // transmission because the pauses between words sit far below the target.
+    if (m_keyed && !key) {
+        // HOW FAR BELOW THE TARGET COUNTS AS QUIET. Upper bound MEASURED;
+        // the value inside it CHOSEN. Both halves are stated because they have
+        // different standing.
+        //
+        // The old -45 dBFS was a property of the hold — a real threshold in the
+        // DSP that an over either cleared or did not. Nothing in the DSP
+        // replaces it, so this is a judgement about the air, informed by a
+        // measurement rather than derived from one.
+        //
+        // MEASURED (d81b-speech-pauses-alc, four legs, twelve speech bursts,
+        // two mic gains 20 dB apart, on this build — against hpsdrsim on a
+        // loopback approval, NOT on the air, and nothing radiated):
+        //
+        //   speech crest factor            18.87 dB, sd 0.80
+        //   burst-to-burst level spread    <= 0.91 dB
+        //   mic slider 50 (unity)          peak 19.56-19.67 dB BELOW
+        //                                  alcTargetPeak
+        //
+        // The unity figure is read off d81b's own result.json rather than off a
+        // summary of it: speech_output_dbfs is -21.08 dBFS on the fault leg and
+        // -20.97 dBFS on the control leg, both at mic_level 50, against
+        // 20*log10(0.85) = -1.4116 dBFS.
+        //
+        // THE UPPER BOUND IS ~19.56 dB AND IT IS HARD. Unity is where an operator
+        // who has never moved the slider sits, and on this build that is about
+        // 19.6 dB short of the target — precisely the operator this diagnostic
+        // exists to reach. A margin at or above 19.56 would stay SILENT on them.
+        // The earlier placeholder here was 20.0 dB, so it was outside its own
+        // bound and would have failed in the one case it was written for. That
+        // is why a guess with a name is still a guess.
+        //
+        // CHOSEN, 12.0 dB: it fires on unity with 7.6 dB to spare, it does not
+        // fire until a station is two S-units down — weak on the air, not merely
+        // conservatively set — and it clears the measured noise (0.91 dB of
+        // burst variation, 0.80 dB of crest scatter) by an order of magnitude.
+        //
+        // WHAT WOULD MAKE THIS MEASURED RATHER THAN BOUNDED. d81b bounds the
+        // correct setting from ONE side only. There is no bracket: d81b's
+        // slider-100 legs run a DIFFERENT stimulus (sp-53.wav) from the unity
+        // legs (sp-38.wav, sp-50.wav), and the record's own op_leg_caveat says
+        // they are not comparable leg-to-leg, so their 8.68 dB of applied ALC
+        // reduction is not the other half of a bracket around unity. One
+        // further leg at slider ~74 — where 0.8 dB per step puts the peak on
+        // the target — would measure the healthy case directly and give this
+        // constant data on both sides.
+        constexpr double kQuietMarginBelowTargetDb = 12.0;
+        const double targetDbfs =
+            20.0 * std::log10(std::max(1e-9, m_alcTargetPeak));
+        const double quietBelowDbfs = targetDbfs - kQuietMarginBelowTargetDb;
+        // Not for client-leveled transmissions. The reason is no longer that the
+        // ALC is bypassed there — the mic and client paths are identical now
+        // that the ceiling is unity on both. It is that the ADVICE is wrong: a
+        // TCI/DAX client's transmit level is set in the client (WSJT-X's Pwr
+        // slider and the rest), and "raise mic gain" would send an operator to a
+        // control that is not the one holding their level down.
+        if (!m_txAudioClientLeveled && !m_txAudioEngineGenerated
+            && m_txMicPeakMaxDbfs > -139.0f
+            && m_txMicPeakMaxDbfs < static_cast<float>(quietBelowDbfs)) {
+            // WHETHER "RAISE MIC GAIN" IS EVEN THE RIGHT ADVICE depends on
+            // whether the slider can still close the gap. Speech near -32 dBFS
+            // against a target near -1.4 dBFS is a ~30 dB shortfall, and the
+            // slider spans +40 dB from 50, so at the top of its travel there
+            // may be nothing left to raise — that state is reachable for the
+            // first time under a unity ceiling, and telling such an operator to
+            // raise a control that is already at maximum is worse than saying
+            // nothing. Derived from the mapping rather than from a threshold:
+            // remaining travel versus the shortfall, so it stays true if either
+            // moves.
+            const double shortfallDb = targetDbfs - m_txMicPeakMaxDbfs;
+            const double travelLeftDb =
+                micSliderToGainDb(100) - micSliderToGainDb(m_micLevel);
+            if (travelLeftDb >= shortfallDb) {
+                qCInfo(lcHl2) << "HL2 TX: microphone peaked at" << m_txMicPeakMaxDbfs
+                              << "dBFS for the whole transmission, about"
+                              << shortfallDb
+                              << "dB under the ALC target of" << targetDbfs
+                              << "dBFS — the ALC only reduces, so that audio went"
+                                 " out quiet. Raise mic gain (currently"
+                              << m_micLevel << "of 100).";
+            } else {
+                qCInfo(lcHl2) << "HL2 TX: microphone peaked at" << m_txMicPeakMaxDbfs
+                              << "dBFS for the whole transmission, about"
+                              << shortfallDb
+                              << "dB under the ALC target of" << targetDbfs
+                              << "dBFS, and mic gain is at" << m_micLevel
+                              << "of 100 with only" << travelLeftDb
+                              << "dB of travel left — the slider cannot close"
+                                 " this. Raise the microphone's own level"
+                                 " (AetherVoice input gain, or the mic's own"
+                                 " control) instead.";
+            }
+        }
+    }
     if (key) {
         m_txMicPeakMaxDbfs = -140.0f;
         // A new transmission decides afresh whether it is client-leveled; the
         // first submitTxAudio() block of the over re-marks it.
         m_txAudioClientLeveled = false;
+        m_txAudioEngineGenerated = false;
         // Start each transmission's peak hold from nothing, rather than trusting
         // the unkeyed branch in publishTelemetry() to have already walked it
         // down. Telemetry is 10 Hz, so a key inside 100 ms of the previous unkey
@@ -3897,7 +3995,7 @@ void Hl2Backend::applyFreqCalPpb(int ppb, bool persist)
 }
 
 void Hl2Backend::submitTxAudio(const QByteArray& int16Stereo, int sampleRateHz,
-                               bool clientLeveled)
+                               TxAudioSource source)
 {
     // Only modulate while actually keyed. Feeding the modulator unkeyed would
     // fill the transmit queue with audio that goes out the instant MOX asserts —
@@ -3910,15 +4008,43 @@ void Hl2Backend::submitTxAudio(const QByteArray& int16Stereo, int sampleRateHz,
     // so the flag is carried rather than consumed here until #5647 gives it a
     // job as part of TxAudioSource — see Hl2Backend.h.
     //
-    // The sticky OR — and the per-block flag it forwards — lean on mic and
-    // client audio never interleaving inside one transmission: AudioEngine
-    // steps local mic capture aside while a TCI/DAX source is actively
-    // feeding (onTxAudioReady's tciAudioFresh() gate). If that mutual
+    // The sticky OR — and the per-block source it forwards — lean on two
+    // sources never interleaving inside one transmission. If that mutual
     // exclusion is ever relaxed, Hl2TxDsp would flip its ALC per block and
-    // process m_inBuffer residue under the newest block's flag — no crash,
-    // just a level that depends on block alignment. Whoever touches the
-    // mic-capture gate owns re-checking this.
-    m_txAudioClientLeveled = m_txAudioClientLeveled || clientLeveled;
+    // process m_inBuffer residue under the newest block's source — no crash,
+    // just a level that depends on block alignment. That cost nothing while
+    // the buckets differed only in a ceiling they now share; with
+    // EngineGenerated bypassing m_micGain it is worth the slider's full range.
+    //
+    // WHAT PROVIDES THE EXCLUSION, naming both halves, because an earlier
+    // version of this comment named only the half that faces the microphone.
+    //
+    // EngineGenerated has exactly one producer, AudioEngine::startWsprPump(),
+    // and it is fenced on both sides:
+    //   • against the MIC path — startWsprPump() calls setDaxTxMode(true), and
+    //     onTxAudioReady() returns early on m_daxTxMode;
+    //   • against the CLIENT path — feedDaxTxAudio() returns early while
+    //     m_wsprBeacon->isActive(), so TCI/DAX samples are dropped rather than
+    //     interleaved for the length of the frame.
+    //
+    // tciAudioFresh() is NOT either of those: feedDaxTxAudioInternal arms
+    // m_tciAudioTimer under markExternalSource alone, and the WSPR feed passes
+    // it false.
+    //
+    // Both of those are still fences in ANOTHER class, so they are no longer the
+    // only thing holding: Hl2TxDsp::processAudioBlock drops carried m_inBuffer
+    // residue when the source changes mid-transmission, which makes the property
+    // structural rather than argued. A second engine-generated feed that forgets
+    // the fences gets a warning and a dropped block instead of a silent 40 dB
+    // level flap. Whoever touches the mic-capture gate — or adds such a feed —
+    // still owns re-checking.
+    m_txAudioClientLeveled =
+        m_txAudioClientLeveled || (source == TxAudioSource::ClientLeveled);
+    // The unkey diagnostic must not tell a WSPR beacon to raise its mic gain.
+    // Engine-generated audio has no mic slider in its path at all now, so
+    // "raise mic gain" would point at a control that cannot move it.
+    m_txAudioEngineGenerated =
+        m_txAudioEngineGenerated || (source == TxAudioSource::EngineGenerated);
     if (sampleRateHz != 24000) {
         // Stated rather than silently resampled: the modulator's upsampler
         // assumes this rate, and a mismatch transmits at the wrong pitch.
@@ -3942,8 +4068,8 @@ void Hl2Backend::submitTxAudio(const QByteArray& int16Stereo, int sampleRateHz,
         mono[static_cast<std::size_t>(n)] = 0.5f * (l + r);
     }
     QMetaObject::invokeMethod(m_txDsp,
-                              [this, mono = std::move(mono), clientLeveled] {
-        m_txDsp->processAudioBlock(mono, clientLeveled);
+                              [this, mono = std::move(mono), source] {
+        m_txDsp->processAudioBlock(mono, source);
     }, Qt::QueuedConnection);
 }
 
@@ -4165,25 +4291,36 @@ void Hl2Backend::setTxFilter(int lowHz, int highHz)
 // thing the paragraph above forbids. So the two legs meet at 50 with different
 // slopes, and hl2_tx_level_policy_test pins the join.
 //
-// WHAT THIS BUYS is now the same on every path, and that is the change. The ALC
-// behind this only reduces — it has no makeup half left to give the gain back
-// with — so this slider is a straight proportional control on the air all the
-// way up to alcTargetPeak, for the microphone and for a TCI/DAX client alike.
-// TX gain 5 is a real -18 dB. Past the target the ALC limits rather than letting
-// the modulator's hard clamp flat-top the signal, so the last stretch of travel
-// buys reduced headroom rather than more power.
+// WHAT THIS BUYS IS THE SAME ON THE TWO PATHS IT REACHES, and that is the
+// change. The ALC behind this only reduces — it has no makeup half left to give
+// the gain back with — so this slider is a straight proportional control on the
+// air all the way up to alcTargetPeak, for the microphone (including the AX.25
+// modem, whose AFSK amplitude is a fixed constant this slider is the only way to
+// move) and for a TCI/DAX client alike. TX gain 5 is a real -18 dB. Past the
+// target the ALC limits rather than letting the modulator's hard clamp flat-top
+// the signal, so the last stretch of travel buys reduced headroom rather than
+// more power.
 //
-// NOTHING IS PATH-DEPENDENT HERE ANY MORE. The unkey "raise mic gain"
-// diagnostic was the last thing that distinguished the two paths, and it went
-// with the makeup half that motivated it — see setKeying(). #5647 reintroduces
-// it aimed at the audio's SOURCE rather than at the clientLeveled flag.
+// IT DOES NOT REACH TxAudioSource::EngineGenerated AUDIO AT ALL.
+// Hl2TxDsp::processAudioBlock substitutes 1.0 for this multiplier on the WSPR
+// pump, so a beacon goes out at the level its generator chose and this slider
+// does not move it — at 0 or anywhere else. Hl2TxLevelPolicy.h carries the full
+// argument; TxAudioSource.h carries which source is which.
 //
-// Level 0 mutes outright rather than resolving to -20 dB. A slider at the bottom
-// of its travel means off. That used to need arguing — a mic merely 20 dB down
-// would have been hauled back up by the ALC's makeup, so "0" would have sounded
-// much like "50" — and now it needs none: -20 dB is simply -20 dB on the air,
-// and the special case is there because the bottom of a travel should mean off
-// rather than very quiet.
+// The other path-dependent thing is setKeying()'s "raise mic gain" diagnostic,
+// gated off for client-leveled AND engine-generated transmissions — for the
+// client because the remedy for a quiet TCI/DAX client is that client's own
+// level control, and for a beacon because there is no mic slider in its path to
+// raise.
+//
+// LEVEL 0 MUTES THE MICROPHONE AND THE TCI/DAX PATH. IT DOES NOT SILENCE THE
+// TRANSMITTER. A slider at the bottom of its travel means off for the audio
+// this multiplier reaches, and -20 dB is simply -20 dB on the air, so the
+// special case is there because the bottom of a travel should mean off rather
+// than very quiet. But engine-generated audio never reaches this multiplier:
+// parking this control at 0 between voice sessions does not stop a WSPR beacon.
+// Stopping an unattended transmission is the generator's own control, not this
+// one.
 void Hl2Backend::setMicGain(int level)
 {
     level = std::clamp(level, 0, 100);
@@ -4890,9 +5027,39 @@ IRadioBackend::HealthSnapshot Hl2Backend::healthSnapshot() const
     // THE ROW THAT WOULD HAVE CAUGHT THE ORIGINAL BUG. Echoed by the modulator,
     // so it stays absent — "not reported" — if the push never arrived, however
     // confidently the row above claims a value.
+    //
+    // It is what the modulator HOLDS, which is not always what it APPLIES: on an
+    // engine-generated over processAudioBlock() substitutes 1.0 and this value
+    // sits unused. txAudioSource below is how a reader tells which happened.
     put("micGainAppliedLinear", QStringLiteral("Mic gain at the modulator (linear)"),
         std::isnan(m_appliedMicGainLinear) ? QVariant()
                                            : QVariant(m_appliedMicGainLinear));
+    // WHAT THIS TRANSMISSION CARRIED, because a mis-tag is otherwise silent.
+    //
+    // The whole point of TxAudioSource is that engine-generated audio bypasses
+    // the mic slider, and the failure mode is a beacon quietly going out 18.58 dB
+    // down with every unit test still green. This section's thesis is "report
+    // what the modulator is running", and this is the one row that says which
+    // levelling rule the last over actually took. Sticky per transmission, both
+    // flags cleared on each key edge in setKeying(), so a mixed over reports
+    // "mic+engine" rather than picking a winner — which is itself the signal
+    // that two producers fed one transmission.
+    put("txAudioSource", QStringLiteral("Audio source this over (mic slider applies?)"),
+        [this]() -> QVariant {
+            QStringList carried;
+            if (m_txAudioEngineGenerated)
+                carried << QStringLiteral("engine-generated (slider bypassed)");
+            if (m_txAudioClientLeveled)
+                carried << QStringLiteral("client-leveled (slider applies)");
+            // Neither sticky flag set, but audio did arrive: the mic path is the
+            // only remaining producer, so name it rather than reporting nothing.
+            if (carried.isEmpty() && m_txMicPeakMaxDbfs > -139.0f)
+                carried << QStringLiteral("microphone (slider applies)");
+            // Nothing at all this over — absent, not a guess.
+            if (carried.isEmpty())
+                return QVariant();
+            return carried.join(QStringLiteral(" + "));
+        }());
     // Peak mic level for the CURRENT transmission, reset at each key. Compared
     // against the ALC target below, these two rows are the whole "why did I go
     // out quiet" diagnosis: the ALC only reduces, so this peak IS the on-air

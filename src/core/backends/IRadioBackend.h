@@ -26,6 +26,7 @@
 #include "core/backends/SliceDelta.h"
 #include "core/backends/TransmitDelta.h"
 #include "core/backends/TunerDelta.h"
+#include "core/backends/TxAudioSource.h"
 
 namespace AetherSDR {
 
@@ -848,18 +849,23 @@ public:
     // the microphone and any future source all reach the air through ONE path,
     // so what the operator monitors is what gets transmitted.
     //
-    // `clientLeveled` is true when the audio came from an external TCI/DAX
-    // client rather than the mic chain or the engine's own generators. The
-    // sender of such audio has already applied its own level control, so a
-    // host-modulating backend must not run makeup gain (ALC) over it (#4796).
+    // `source` says WHERE THE AUDIO CAME FROM, which decides whose level it is.
+    // TxAudioSource.h carries the full contract for the three states and why it
+    // is not the bool it replaced; the short version is that the mic slider
+    // applies to Microphone and ClientLeveled and not to EngineGenerated.
+    //
+    // ORIGIN, NOT TREATMENT. What a backend does with the tag is the backend's
+    // business, and most do nothing: Hl2TxDsp is the only consumer in the tree,
+    // and a radio that modulates on its own side ignores it entirely.
+    //
     // No default argument — defaults on virtuals bind statically, and the
     // override a caller actually reaches would quietly diverge from it.
     virtual void submitTxAudio(const QByteArray& int16Stereo, int sampleRateHz,
-                               bool clientLeveled)
+                               TxAudioSource source)
     {
         Q_UNUSED(int16Stereo);
         Q_UNUSED(sampleRateHz);
-        Q_UNUSED(clientLeveled);
+        Q_UNUSED(source);
     }
 
     // Finish a finite processed-audio stream before its caller starts the PTT
