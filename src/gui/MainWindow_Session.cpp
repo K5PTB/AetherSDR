@@ -37,7 +37,7 @@
 #include "core/backends/sim/SimBackend.h"   // demo owns its audio — see wirePanStreamRxAudioSinks
 #include "core/CwSidetoneGenerator.h"
 #include "core/CwTrace.h"
-#include "gui/CwDecodeSettings.h"   // rxEnabled() gate for the RX-audio CW feed
+#include "models/CwDecodeSettings.h"   // rxEnabled() gate for the RX-audio CW feed
 #include "core/CwxLocalKeyer.h"
 #include "core/IambicKeyer.h"
 #include "core/PerfTelemetry.h"
@@ -2352,9 +2352,7 @@ void MainWindow::wireRxDemodAudioSinks()
     // CW decoder RX feed — gated live on the toggle (#2417).
     connect(&m_radioModel, &RadioModel::rxDemodAudioReady,
             &m_cwDecoder, [this](const PcmFrame& frame) {
-                const QByteArray pcm = frame.legacyStereo24();
-                if (!pcm.isEmpty() && CwDecodeSettings::rxEnabled())
-                    m_cwDecoder.feedAudio(pcm);
+                if (CwDecodeSettings::rxEnabled()) { m_cwDecoder.feed(frame); }
             });
 
     // RTTY decoder RX feed — gated on the decoder being running.
