@@ -1232,6 +1232,63 @@ add_test(NAME slice_model_squelch_memory_test COMMAND slice_model_squelch_memory
 # theme loads from Qt resources, scalar tokens resolve, missing tokens
 # don't crash, and the stylesheet template resolver substitutes correctly.
 qt_add_resources(THEME_TEST_RESOURCES resources/resources.qrc)
+add_executable(mode_filter_presets_test
+    tests/mode_filter_presets_test.cpp
+    src/gui/ModeFilterPresets.cpp
+)
+target_include_directories(mode_filter_presets_test PRIVATE src)
+target_link_libraries(mode_filter_presets_test PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+add_test(NAME mode_filter_presets_test COMMAND mode_filter_presets_test)
+
+add_executable(aether_rx_profiles_test
+    tests/aether_rx_profiles_test.cpp
+)
+target_include_directories(aether_rx_profiles_test PRIVATE src)
+target_link_libraries(aether_rx_profiles_test PRIVATE aethercore Qt6::Core Qt6::Test)
+add_test(NAME aether_rx_profiles_test COMMAND aether_rx_profiles_test)
+
+add_executable(rx_chain_runner_test
+    tests/rx_chain_runner_test.cpp
+)
+target_include_directories(rx_chain_runner_test PRIVATE src)
+target_link_libraries(rx_chain_runner_test PRIVATE aethercore Qt6::Core Qt6::Test)
+add_test(NAME rx_chain_runner_test COMMAND rx_chain_runner_test)
+
+add_executable(rx_stage_reorder_test
+    tests/rx_stage_reorder_test.cpp
+)
+target_include_directories(rx_stage_reorder_test PRIVATE src)
+target_link_libraries(rx_stage_reorder_test PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME rx_stage_reorder_test COMMAND rx_stage_reorder_test)
+
+add_executable(compact_metrics_test
+    tests/compact_metrics_test.cpp
+    src/gui/CompactMetrics.cpp
+)
+target_include_directories(compact_metrics_test PRIVATE src)
+target_link_libraries(compact_metrics_test PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+add_test(NAME compact_metrics_test COMMAND compact_metrics_test)
+set_tests_properties(compact_metrics_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# ModemChrome::colour() resolves a token through ThemeManager, so the test
+# needs the theming stack behind it — same set theme_manager_test links.
+add_executable(modem_chrome_test
+    tests/modem_chrome_test.cpp
+    src/gui/ModemChrome.cpp
+    src/core/ThemeManager.cpp
+    src/core/ThemeSeedGenerated.cpp
+    ${AETHER_SETTINGS_SOURCES}
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+    src/gui/DragValuePopup.cpp
+)
+target_include_directories(modem_chrome_test PRIVATE src)
+target_link_libraries(modem_chrome_test PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+add_test(NAME modem_chrome_test COMMAND modem_chrome_test)
+set_tests_properties(modem_chrome_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(theme_manager_test
     tests/theme_manager_test.cpp
     src/core/ThemeManager.cpp
@@ -5749,6 +5806,7 @@ add_executable(rx_applet_squelch_reconciliation_test
     tests/rx_applet_squelch_reconciliation_test.cpp
     src/gui/RxApplet.cpp
     src/gui/VfoWidget.cpp
+    src/gui/ModeFilterPresets.cpp
     src/gui/VfoDisplayDefaults.cpp
     src/gui/FrequencyEntryParser.cpp
     src/gui/DragValuePopup.cpp
@@ -5776,6 +5834,7 @@ add_executable(gui_nested_lifetime_test
     tests/gui_nested_lifetime_test.cpp
     src/gui/RxApplet.cpp
     src/gui/VfoWidget.cpp
+    src/gui/ModeFilterPresets.cpp
     src/gui/VfoDisplayDefaults.cpp
     src/gui/FrequencyEntryParser.cpp
     src/gui/DragValuePopup.cpp
@@ -6017,6 +6076,8 @@ set(AETHER_SETTINGS_CONSUMERS
     automation_bridge_start_outcome_test
     slice_label_test
     ulanzi_mapping_migration_test
+    modem_chrome_test
+    aether_rx_profiles_test
     theme_manager_test
     theme_seed_test
     panadapter_message_overlay_test
