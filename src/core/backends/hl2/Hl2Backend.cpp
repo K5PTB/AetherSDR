@@ -1,5 +1,6 @@
 #include "core/backends/hl2/Hl2Backend.h"
 #include "core/backends/hl2/Hl2Bands.h"
+#include "core/backends/hl2/Hl2ModeVocabulary.h"
 
 #include <QJsonObject>
 
@@ -203,22 +204,6 @@ WdspChannel::Mode modeFromString(const QString& mode) noexcept
     if (u == QLatin1String("DRM"))  return WdspChannel::Mode::Drm;
     if (u == QLatin1String("WBFM") || u == QLatin1String("WFM")) return WdspChannel::Mode::Wbfm;
     return WdspChannel::Mode::Usb;
-}
-
-// Is `mode` a name modeFromString() genuinely maps (rather than falling back
-// to USB)? The restore boundary uses this so a corrupt document's mode string
-// is dropped instead of reaching Receiver::mode, the UI, and — via capture —
-// re-persisting itself (PR #4619 review, Ozy311).
-bool isKnownModeString(const QString& mode) noexcept
-{
-    static const QStringList kKnown = {
-        QStringLiteral("LSB"), QStringLiteral("USB"), QStringLiteral("DSB"),
-        QStringLiteral("CWL"), QStringLiteral("CWU"), QStringLiteral("CW"),
-        QStringLiteral("FM"),  QStringLiteral("NFM"), QStringLiteral("AM"),
-        QStringLiteral("DIGU"), QStringLiteral("DIGL"), QStringLiteral("SAM"),
-        QStringLiteral("DRM"), QStringLiteral("WBFM"), QStringLiteral("WFM"),
-    };
-    return kKnown.contains(mode.toUpper());
 }
 
 // The same question for the AGC vocabulary, and it needs asking for the same
@@ -5917,10 +5902,28 @@ void Hl2Backend::applyRestoredState(const RestoredRadioState& state)
     RestoredRadioState valid;
     if (state.rfFrequencyHz >= 100'000.0 && state.rfFrequencyHz <= 38'400'000.0)
         valid.rfFrequencyHz = state.rfFrequencyHz;
+    // ACCEPTED, THEN RECONCILED — two steps, and the second one is #5755's
+    // review finding (jensenpat). isKnownModeString() answers "may the document
+    // say this"; canonicalOfferedMode() answers "which spelling does the menu
+    // carry for it". Doing only the first left a session saved in NFM restoring
+    // with the slice holding "NFM" while publishedModeStrings() no longer
+    // offers it, and both mode combos rebuild with findText(currentText) and
+    // move the selection only on a hit — so the operator was shown LSB with the
+    // receiver in FM. That is the fault #5580 exists to remove, arriving from
+    // the other direction.
+    //
+    // This drops nothing: NFM and FM are one WdspChannel mode (modeFromString
+    // branches on them together), so the operator keeps the mode they saved and
+    // only its spelling settles. It weakens no TX refusal either — every alias
+    // pair is on capabilities().receiveOnlyModes both ways or neither way, and
+    // hl2_mode_vocabulary_test pins that for every accepted spelling. It also
+    // does the uppercasing the old comment here was about: a "cw" from a
+    // hand-edited document must not round-trip into the UI.
+    //
+    // BEFORE the passband work below, which reads valid.mode through
+    // defaultPassbandForMode() and cwBfoOffsetHz().
     if (isKnownModeString(state.mode))
-        valid.mode = state.mode.toUpper();   // canonical casing — a "cw" from a
-                                             // hand-edited document must not
-                                             // round-trip into the UI
+        valid.mode = canonicalOfferedMode(state.mode);
     // A passband is kept only as a sane pair; mode+passband are applied
     // together in pushInitialState() (the #4484 reconciliation).
     if (state.filterLowHz < state.filterHighHz
@@ -7114,6 +7117,21 @@ void Hl2Backend::emitSliceState(int ddc)
 
     SliceDelta d;
     d.panId = ids->panId;
+    // WHAT THIS RADIO ACTUALLY DEMODULATES, published so the UI stops offering
+    // what it does not.
+    //
+    // modeFromString() FALLS BACK TO USB for anything it does not recognise, so
+    // selecting RTTY, DFM or DSTR on an HL2 put the receiver in USB while every
+    // readback agreed the mode was RTTY -- the slice keeps the string it was
+    // given. The operator sees a mode they chose and hears a mode they did not,
+    // and nothing in the path disagrees with them.
+    //
+    // publishedModeStrings(), not knownModeStrings(): a subset of the same
+    // source, so the menu can never offer a mode the restore boundary would
+    // REJECT, while the boundary stays free to accept spellings the menu has no
+    // business showing. See publishedModeStrings() for which three groups those
+    // are and why.
+    d.modeList = publishedModeStrings();
     d.frequency = r->sliceFreqHz / 1.0e6;   // MHz
     d.mode = r->mode;
     d.filterLow = r->filterLowHz;
