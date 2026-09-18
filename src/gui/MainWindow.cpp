@@ -7831,14 +7831,14 @@ void MainWindow::applyCapabilitiesToUi(bool connected, const RadioCapabilities& 
         m_multiFlexAction->setVisible(!connected || caps.hasMultiClientSessions);
     }
     updateToolsMenuState();
+    // Both entries open the SAME host serial knob (m_aetherControlAction is
+    // this app's name for it), so neither is a radio capability -- see #5778.
+    // Connecting to a non-Flex radio must also leave its window open.
     if (m_aetherControlAction) {
-        m_aetherControlAction->setVisible(!connected || caps.hasFlexControlIntegration);
+        m_aetherControlAction->setVisible(true);
     }
     if (m_flexControlKnobAction) {
-        m_flexControlKnobAction->setVisible(!connected || caps.hasFlexControlIntegration);
-    }
-    if (connected && !caps.hasFlexControlIntegration && m_flexControlDialog) {
-        m_flexControlDialog->close();
+        m_flexControlKnobAction->setVisible(true);
     }
 
     // Demo Noise tile: a sim-cluster applet, so applet-granularity hiding is
