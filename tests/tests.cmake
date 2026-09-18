@@ -687,6 +687,16 @@ add_executable(hl2_ep4_bandscope_test
 target_include_directories(hl2_ep4_bandscope_test PRIVATE src tests)
 add_test(NAME hl2_ep4_bandscope_test COMMAND hl2_ep4_bandscope_test)
 
+# HL2 bandscope headroom — the pure decisions built on the parser above: what a
+# block says about converter headroom, what the gate's duty cycle costs that
+# reading, and how it pairs with the continuous clip flag. Same shape again:
+# MetisProtocol.cpp for Ep4Stats::peakDbfs(), no Qt, no socket.
+add_executable(hl2_bandscope_headroom_test
+    tests/hl2_bandscope_headroom_test.cpp
+    src/core/backends/hl2/MetisProtocol.cpp)
+target_include_directories(hl2_bandscope_headroom_test PRIVATE src tests)
+add_test(NAME hl2_bandscope_headroom_test COMMAND hl2_bandscope_headroom_test)
+
 # HL2 IO-board push scheduling — pure policy, standalone (no Qt, no radio).
 add_executable(hl2_io_board_policy_test
     tests/hl2_io_board_policy_test.cpp
@@ -1023,6 +1033,30 @@ add_executable(hl2_rxdsp_async_rebuild_test tests/hl2_rxdsp_async_rebuild_test.c
 target_include_directories(hl2_rxdsp_async_rebuild_test PRIVATE src)
 target_link_libraries(hl2_rxdsp_async_rebuild_test PRIVATE aethercore Qt6::Core Qt6::Test)
 add_test(NAME hl2_rxdsp_async_rebuild_test COMMAND hl2_rxdsp_async_rebuild_test)
+
+# RFC #5535 approved the automatic RF-gain loop ON THE CONDITION that it is
+# visible -- the clipping AND the regulator's own action. This pins both, and
+# pins the rule that stops the second from making the radio unusable with a
+# screen reader. Pure functions of a struct: no widget, no socket, no clock.
+add_executable(front_end_overload_presentation_test
+    tests/front_end_overload_presentation_test.cpp)
+target_include_directories(front_end_overload_presentation_test PRIVATE src)
+target_link_libraries(front_end_overload_presentation_test PRIVATE Qt6::Core)
+add_test(NAME front_end_overload_presentation_test
+    COMMAND front_end_overload_presentation_test)
+
+# The latch is the only rule the indicator widget owns that the pure
+# presentation header cannot express, because it needs a clock.
+add_executable(front_end_overload_indicator_test
+    tests/front_end_overload_indicator_test.cpp
+    src/gui/FrontEndOverloadIndicator.cpp)
+target_include_directories(front_end_overload_indicator_test PRIVATE src)
+target_link_libraries(front_end_overload_indicator_test
+    PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME front_end_overload_indicator_test
+    COMMAND front_end_overload_indicator_test)
+set_tests_properties(front_end_overload_indicator_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # WHICH RATE IS ON THE WIRE, as against the rate a crossing is attempting. A
 # pan-bandwidth change moves the backend's own m_sampleRateHz optimistically and
@@ -5325,6 +5359,7 @@ set_tests_properties(spectrum_overlay_wheel_guard_test PROPERTIES
 add_executable(spectrum_overlay_band_highlight_test
     tests/spectrum_overlay_band_highlight_test.cpp
     src/gui/SpectrumOverlayMenu.cpp
+    src/gui/FrontEndOverloadIndicator.cpp
     src/gui/SpectrumOverlayWheelGuard.cpp
     src/gui/MemoryBrowsePanel.cpp
     src/gui/DragValuePopup.cpp
@@ -5631,6 +5666,23 @@ add_executable(hl2_telemetry_service_test
 target_include_directories(hl2_telemetry_service_test PRIVATE src)
 target_link_libraries(hl2_telemetry_service_test PRIVATE Qt6::Core Qt6::Network)
 add_test(NAME hl2_telemetry_service_test COMMAND hl2_telemetry_service_test)
+# The LNA baseline/effective split. Two halves in one binary: the pure
+# arithmetic (Hl2GainSplit.h, no link) and the backend behaviour that proves the
+# operator's persisted number does not move (needs aethercore + Qt, and the
+# TestSettingsProfile helper in tests/, exactly as hl2_gain_restore_test does).
+add_executable(hl2_gain_split_test
+    tests/hl2_gain_split_test.cpp
+)
+target_include_directories(hl2_gain_split_test PRIVATE src tests)
+target_link_libraries(hl2_gain_split_test PRIVATE aethercore Qt6::Core)
+add_test(NAME hl2_gain_split_test COMMAND hl2_gain_split_test)
+# The automatic-gain control law. Pure function, no link at all: no Qt, no
+# socket, no clock, and therefore nothing to link against.
+add_executable(hl2_auto_gain_policy_test
+    tests/hl2_auto_gain_policy_test.cpp
+)
+target_include_directories(hl2_auto_gain_policy_test PRIVATE src)
+add_test(NAME hl2_auto_gain_policy_test COMMAND hl2_auto_gain_policy_test)
 add_executable(slice_link_policy_test
     tests/slice_link_policy_test.cpp
 )
@@ -6066,6 +6118,7 @@ set(AETHER_SETTINGS_CONSUMERS
     hl2_tx_gate_test
     hl2_pan_limits_declaration_test
     hl2_mode_vocabulary_test
+    hl2_gain_split_test
     icom_identity_test
     icom_control_profile_test
     control_resource_service_test

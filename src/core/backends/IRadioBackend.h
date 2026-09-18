@@ -21,6 +21,7 @@
 #include "core/backends/MeterDef.h"
 #include "core/backends/NotchDelta.h"
 #include "core/backends/ProfileDelta.h"
+#include "core/backends/FrontEndOverload.h"
 #include "core/backends/RadioCapabilities.h"
 #include "core/backends/RestoredRadioState.h"
 #include "core/backends/RadioDelta.h"
@@ -30,6 +31,9 @@
 #include "core/backends/TxAudioSource.h"
 
 namespace AetherSDR {
+
+// Borrowed handle returned by autoRfGainControl(); see AutoRfGainControl.h.
+class IAutoRfGainControl;
 
 // Neutral, family-agnostic connect descriptor. Core fields cover the common
 // case; vendor-specific parameters (SmartLink token, Kiwi endpoint path, …)
@@ -356,6 +360,18 @@ public:
         Q_UNUSED(panId);
         Q_UNUSED(gainDb);
     }
+
+    // The backend's own automatic receive-gain control, or nullptr when it has
+    // none. See AutoRfGainControl.h for the vocabulary and for why this is a
+    // borrowed interface pointer rather than a capability bool and three verbs.
+    //
+    // BORROWED AND NOT TO BE CACHED: valid only for the duration of the call
+    // that obtained it.
+    //
+    // Default nullptr AND that default is the point: a family with no such
+    // control never learns the concept exists, and shared code does not have to
+    // know which families do.
+    virtual IAutoRfGainControl* autoRfGainControl() { return nullptr; }
 
     // The discrete front-end stages above. `step` indexes the label list the
     // backend published; a backend clamps rather than refuses, exactly as
@@ -1091,6 +1107,17 @@ signals:
     void sliceLifecycleFailed(const QString& operation, int sliceId,
                               const QString& reason);
     void meterUpdate(const QString& meterId, double value);
+
+    // WHAT THE RECEIVE FRONT END IS DOING, for families that can observe their
+    // own converter. A family that cannot never emits this, and the indicator
+    // above the seam never appears -- the same shape as autoRfGainControl()
+    // returning nullptr.
+    //
+    // RFC #5535 made this visibility a CONDITION of shipping an automatic
+    // gain loop, not a nicety: a regulator with 18 dB of room and a 3-5 dB
+    // knee will sometimes be wrong, and wrong-and-invisible is a radio that
+    // behaves strangely. See FrontEndOverload.h.
+    void frontEndOverloadChanged(const AetherSDR::FrontEndOverload& state);
 
     // Normalized transmit-status delta (aetherd RFC 2.3 — TransmitModel
     // touchpoint). Typed + compiler-checked; the backend populates only the
