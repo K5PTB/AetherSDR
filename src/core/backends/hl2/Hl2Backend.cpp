@@ -6458,6 +6458,11 @@ void Hl2Backend::applyRestoredState(const RestoredRadioState& state)
     // A radio swap ends the session, and an automatic control armed about radio
     // A's antenna has nothing to say about radio B's.
     m_autoRfGainEnabled = false;
+    // Nor does a refusal composed about radio A's baseline: the interface
+    // promises an empty reason from a backend that has not been asked, and
+    // radio B has not been. Left standing, any reader other than the toggle
+    // lambda would surface radio A's number as radio B's.
+    m_autoRfGainRefusal.clear();
     m_autoGainState = AetherSDR::hl2::AutoGainState{};
     m_autoGainConfig = AetherSDR::hl2::AutoGainConfig{};
     m_autoGainMode = QStringLiteral("ramp");
@@ -7006,16 +7011,38 @@ void Hl2Backend::setAutoRfGain(bool on)
             // so a radio that declined to arm keeps the operator's on
             // recorded"; without this line nothing had recorded it.
             m_autoRfGainWanted = true;
-            qWarning().noquote()
-                << QStringLiteral(
-                       "Hl2Backend: auto RF gain declined — the RF Gain baseline is "
-                       "%1 dB and this radio's gain axis is not trusted above %2 dB "
-                       "(#5354: +48 dB measures like +18 dB). Lower RF Gain to %2 dB "
-                       "or below and try again. Your setting has not been changed.")
+            // COMPOSED ONCE AND KEPT, because the operator needs it more than
+            // the log does. Reading isArmed() back tells the GUI THAT this
+            // declined; only this sentence says why, and it already names the
+            // baseline, the ceiling and the remedy. Storing it is what lets the
+            // checkbox explain itself instead of springing back in silence
+            // (#5817).
+            //
+            // tr(), AND WITHOUT THE ISSUE NUMBER, because this sentence stopped
+            // being a log line the moment it was kept: it is shown on the
+            // panadapter and read out by a screen reader. "#5354" is provenance
+            // for us and noise to an operator, so it stays on the qWarning --
+            // which is where the next person debugging this actually looks --
+            // and the operator gets the baseline, the ceiling and the remedy.
+            m_autoRfGainRefusal = tr(
+                       "Auto RF gain declined — the RF Gain baseline is "
+                       "%1 dB and this radio's gain axis is not trusted above "
+                       "%2 dB. Lower RF Gain to %2 dB or below and try again. "
+                       "Your setting has not been changed.")
                        .arg(m_lnaGainDb)
                        .arg(kAutoRfGainMaxBaselineDb);
+            qWarning().noquote()
+                << QStringLiteral("Hl2Backend: ") + m_autoRfGainRefusal
+                     + QStringLiteral(" (#5354: +48 dB measures like +18 dB)");
+            // SETTLED AS NOT ARMED, and said so. A refusal that only the
+            // caller's own readback could discover was invisible on the two
+            // routes that have no readback: the restore below and the bridge.
+            emit autoRfGainArmSettled(false);
             return;
         }
+        // CLEARED ON SUCCESS. A reason that outlived the refusal it describes
+        // would be shown against a later, unrelated failure.
+        m_autoRfGainRefusal.clear();
         m_autoGainState = AetherSDR::hl2::AutoGainState{};
         m_autoGainBandKey = m_currentBandKey;
         m_autoGainBaselineDb = m_lnaGainDb;
@@ -7031,6 +7058,7 @@ void Hl2Backend::setAutoRfGain(bool on)
         applyBandscopeForAutoGain();
         qCInfo(lcHl2) << "HL2 auto RF gain: ARMED at baseline" << m_lnaGainDb
                       << "dB, floor" << m_autoGainConfig.maxOffsetDb << "dB below";
+        emit autoRfGainArmSettled(true);
     } else {
         m_autoRfGainEnabled = false;
         // The operator turning it OFF is a preference, and is persisted as one.
@@ -7046,6 +7074,7 @@ void Hl2Backend::setAutoRfGain(bool on)
         setLnaAutoOffsetDb(0);
         qCInfo(lcHl2) << "HL2 auto RF gain: disarmed, baseline" << m_lnaGainDb
                       << "dB restored";
+        emit autoRfGainArmSettled(false);
     }
 }
 
