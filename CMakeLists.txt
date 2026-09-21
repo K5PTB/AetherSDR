@@ -1206,6 +1206,7 @@ set(GUI_SOURCES
     src/gui/AetherRxDialog.cpp
     src/gui/StagePage.cpp
     src/gui/StageTabBar.cpp
+    src/gui/RxPlaybackTransmitter.cpp
     src/gui/AetherRxSettingsDialog.cpp
     src/gui/AetherTxSettingsDialog.cpp
     src/gui/AetherDspWidget.cpp
