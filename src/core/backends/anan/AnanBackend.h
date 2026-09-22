@@ -59,6 +59,8 @@ public:
     RadioCapabilities capabilities() const override;
     bool ownsRxAudio() const override { return true; }
 
+    void applyRestoredState(const RestoredRadioState& state) override;
+    RestoredRadioState currentOperatingState() const override;
     void connectRadio(const RadioConnectRequest& request) override;
     void disconnectRadio() override;
     bool isConnected() const override { return m_connected; }
@@ -71,6 +73,9 @@ public:
     void setPanCenter(const QString& panId, double hz, PanCenterIntent intent) override;
     void setPanBandwidth(const QString& panId, double hz) override;
     void setPanFrameRate(const QString& panId, int fps) override;
+    // The G2's receive step attenuator, presented as RF gain: -31..0 dB,
+    // where -12 means 12 dB of attenuation. See the definition.
+    void setPanRfGain(const QString& panId, int gainDb) override;
     void setPanAverage(const QString& panId, int average) override;
     void setPanWeightedAverage(const QString& panId, bool on) override;
     void setCwPitch(int hz) override;
@@ -116,6 +121,7 @@ public:
     // seam.
     [[nodiscard]] int agcModeForTest() const noexcept { return m_agcMode; }
     [[nodiscard]] double agcCeilingDbForTest() const noexcept { return m_agcCeilingDb; }
+    [[nodiscard]] int attenuationDbForTest() const noexcept { return m_attenuationDb; }
     [[nodiscard]] bool noiseBlankerOnForTest() const noexcept { return m_nbOn; }
     [[nodiscard]] int noiseBlankerLevelForTest() const noexcept { return m_nbLevel; }
     // Drives the S-meter path as AnanRxDsp::meterUpdate would, so the
@@ -227,6 +233,9 @@ private:
     // object's own thread (the GUI thread), not m_ioThread.
     static constexpr int kTuneThrottleMs = 33;   // ~30 Hz ceiling on real DDC0 retunes
     QTimer* m_tuneThrottleTimer = nullptr;
+    // Active ADC attenuation, mirrored in m_pendingParams for session restarts.
+    // Captured/restored only through RadioStateMemory's rfGain extension.
+    int m_attenuationDb = 0;
     bool m_tunePendingApply = false;
 
     // setPanBandwidth() serialization: only one rate-change reconfigure runs
