@@ -26,6 +26,9 @@
 #include <QPushButton>
 #include <QGraphicsOpacityEffect>
 #include <QTextEdit>
+#include <QTextCharFormat>
+#include <QTextCursor>
+#include <QColor>
 #include <QWindow>
 #include <QGuiApplication>
 #include <QClipboard>
@@ -805,14 +808,21 @@ void PanadapterApplet::appendCwText(const QString& text, float cost)
     else if (cost < 0.60f) color = "#ff9020";
     else                   color = "#ff4040";
 
-    m_cwText->moveCursor(QTextCursor::End);
+    // Plain-text insert with a colour format, not insertHtml(): the HTML
+    // parser drops a fragment's leading whitespace (and a whitespace-only
+    // fragment entirely), which glued words together whenever a decode
+    // chunk began with its word space (measured, Qt 6.8.3).
+    QTextCursor cur = m_cwText->textCursor();
+    cur.movePosition(QTextCursor::End);
     // Switching back from TX → RX inserts a separator space so the [TX]
     // burst and the following RX text don't run together (#2417).
     if (m_lastCwTextSource == CwTextSource::Tx)
-        m_cwText->insertHtml(QStringLiteral(" "));
+        cur.insertText(QStringLiteral(" "));
     m_lastCwTextSource = CwTextSource::Rx;
-    m_cwText->insertHtml(QString("<span style=\"color:%1\">%2</span>")
-        .arg(color, clean.toHtmlEscaped()));
+    QTextCharFormat fmt;
+    fmt.setForeground(QColor(color));
+    cur.insertText(clean, fmt);
+    m_cwText->setTextCursor(cur);
     m_cwText->moveCursor(QTextCursor::End);
 
     emit cwRxTextDisplayed(clean);
