@@ -99,6 +99,18 @@ public:
     // radio. Used by non-Flex keyers after their connect-time readback.
     void adoptSpeed(int wpm);
     void setSpeedModifiersEnabled(bool enabled) { m_speedModifiersEnabled = enabled; }
+
+    // Smallest CWX hang time AetherSDR will leave the radio on. FlexRadio documents `cwx delay` as
+    // "Set the CWX hang time delay in ms" (smartsdr-api-docs, TCPIP-cwx), and
+    // the radio reports it back as break_in_delay in cwx status — so the unit
+    // here is milliseconds. FLEX firmware before v4.2.20 leaves
+    // receive audio digitally silent for ~70 s after a CWX send when the radio's
+    // break-in delay is small: reliably at 0, intermittently at 1-6, and not
+    // reproducible at 7 or above across two radios and two reporters (#5945).
+    // 10 keeps a margin over the highest value seen to fault while staying well
+    // under SmartSDR's own 41.
+    static constexpr int kMinBreakInDelayMs = 10;
+
     void setDelay(int ms);
     void setSpeedStep(int step);
     void setQsk(bool on);
@@ -167,6 +179,10 @@ private:
                             const TransmissionRoute& route = {});
     void dispatchCommand(const QString& command, int epoch, int nChars,
                          const TransmissionRoute& route);
+    // Ask the radio to move its CWX hang time up to kMinBreakInDelayMs. Called
+    // when the radio first reports a value below it, and again on the send path
+    // as a backstop if the radio has not adopted it. (#5945)
+    void raiseBreakInDelayFloor(const TransmissionRoute& route = {});
     SendAvailability m_sendAvailability;
     TransmissionAdmission m_transmissionAdmission;
     TextSender m_textSender;
@@ -175,6 +191,11 @@ private:
 
     int     m_speed{20};
     int     m_delay{5};
+    // True once the radio has actually reported a break_in_delay. Until then
+    // m_delay is only this client's default and says nothing about the radio,
+    // so the floor stays out: raising a delay we have not been told is low
+    // would clobber another client's larger value. (#5945, Principle II)
+    bool    m_delaySeenFromRadio{false};
     int     m_speedStep{3};
     // Count of self-originated transient `cwx wpm` commands (per-word speed
     // modifiers) whose radio echoes must be swallowed in applyStatus so they

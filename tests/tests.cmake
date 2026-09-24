@@ -4332,6 +4332,22 @@ target_include_directories(tnc_terminal_test PRIVATE src)
 target_link_libraries(tnc_terminal_test PRIVATE Qt6::Core)
 add_test(NAME tnc_terminal_test COMMAND tnc_terminal_test)
 
+# CWX break-in delay floor: the command-path raise that keeps a CWX send from
+# going out at a delay that mutes RX audio on FLEX firmware < 4.2.20. (#5945)
+add_executable(cwx_break_in_delay_floor_test
+    tests/cwx_break_in_delay_floor_test.cpp
+    src/models/CwxModel.cpp
+    src/models/CwxModel.h
+    # CwxModel logs via lcCw (qCWarning) — same logging deps as the sibling
+    # CwxModel tests below.
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+    ${AETHER_SETTINGS_SOURCES}
+)
+target_include_directories(cwx_break_in_delay_floor_test PRIVATE src)
+target_link_libraries(cwx_break_in_delay_floor_test PRIVATE Qt6::Core)
+add_test(NAME cwx_break_in_delay_floor_test COMMAND cwx_break_in_delay_floor_test)
+
 add_executable(cwx_speed_modifier_test
     tests/cwx_speed_modifier_test.cpp
     src/models/CwxModel.cpp
@@ -6542,6 +6558,7 @@ set(AETHER_SETTINGS_CONSUMERS
     pms_mailbox_test
     aprs_messenger_test
     tnc_terminal_test
+    cwx_break_in_delay_floor_test
     cwx_speed_modifier_test
     cwx_drain_watch_test
     cwx_panel_test

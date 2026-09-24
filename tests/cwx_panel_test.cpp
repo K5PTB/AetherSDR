@@ -490,6 +490,36 @@ void reproduceIssue4945MinimizedHeight()
     delete host;
 }
 
+// The Delay box must not be able to sit below the floor: a clamp that landed
+// on the model's existing value used to leave the box displaying the rejected
+// number while the radio held another (#5945).
+void testDelayBoxHoldsTheFloor()
+{
+    Fixture f;
+    auto* delay = f.panel.findChild<QSpinBox*>(QStringLiteral("cwxDelaySpin"));
+    if (!delay) {
+        report("Delay spin box is addressable", false);
+        return;
+    }
+
+    delay->setValue(4);                       // operator spins below the floor
+    report("Delay box snaps back to the floor",
+           delay->value() == CwxModel::kMinBreakInDelayMs,
+           std::to_string(delay->value()));
+    report("and the radio is asked for the floor, not the typed value",
+           f.commands.contains(QStringLiteral("cwx delay 10")),
+           f.commands.join(QStringLiteral(" | ")).toStdString());
+
+    // NOTE: no assertion here on the box being "wide enough for its arrows".
+    // Qt reports a minimumSizeHint of 65 for this box while the long-standing
+    // width is 52 and the arrows render fine, so that metric does not predict
+    // the failure and a test built on it would assert a falsehood. What broke
+    // the arrows in #5945 was adding a per-value " ms" suffix, which widened
+    // the box until its buttons sat under the QSK button beside it; the unit
+    // lives in the tooltip now. This harness renders the panel far wider than
+    // the ~250 px it gets in the app, so it cannot reproduce that crowding.
+}
+
 int main(int argc, char** argv)
 {
     TestSettingsProfile settingsProfile(QStringLiteral("aether-cwx-panel-test"));
@@ -511,6 +541,7 @@ int main(int argc, char** argv)
     testSetupPageUnaffectedAtNormalWindowHeight();
     testMacroEditAndFKeyClickStillWorkThroughScrollArea();
     reproduceIssue4945MinimizedHeight();
+    testDelayBoxHoldsTheFloor();
 
     std::printf("\n%s\n",
                 g_failed == 0

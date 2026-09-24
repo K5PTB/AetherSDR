@@ -530,10 +530,21 @@ void CwxPanel::buildSetupView()
 
     // Delay + QSK + Speed Step
     auto* topRow = new QHBoxLayout;
+    // Label and box width are BOTH load-bearing here, on a panel that is only
+    // ~250 px wide. A per-value " ms" suffix widened the box until its up/down
+    // buttons ended up under the QSK button next to it, and a longer
+    // "Delay (ms):" label then clipped its own closing bracket. The unit lives
+    // in the tooltip; the floor keeps a bad value from being set anyway. (#5945)
     topRow->addWidget(new QLabel("Delay:"));
     m_delaySpin = new QSpinBox;
+    m_delaySpin->setObjectName("cwxDelaySpin");  // addressable via automation bridge
     m_delaySpin->setRange(0, 2000);
     m_delaySpin->setValue(5);
+    m_delaySpin->setToolTip(
+        "CWX hang time in milliseconds: how long the radio holds TX after a send.\n"
+        "AetherSDR keeps this at 10 ms or above. FLEX firmware earlier than "
+        "v4.2.20 leaves receive audio silent for about 70 s after a send at "
+        "lower values.");
     m_delaySpin->setFixedWidth(52);
     AetherSDR::ThemeManager::instance().applyStyleSheet(m_delaySpin, "QSpinBox { background: {{color.background.1}}; color: {{color.text.primary}}; border: 1px solid {{color.background.2}}; "
         "border-radius: 2px; font-size: 11px; }");

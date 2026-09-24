@@ -138,6 +138,55 @@ CwxModel::TransmissionPermit CwxModel::admitTransmission(const TransmissionRoute
     };
 }
 
+void CwxModel::raiseBreakInDelayFloor(const TransmissionRoute& route)
+{
+    // ── A DELIBERATE, MAINTAINER-DIRECTED DEVIATION FROM PRINCIPLE II ──────
+    // Principle II says radio status updates the client and the client never
+    // writes its value back, precisely so the two cannot form a feedback loop.
+    // This function is called from applyStatus, so it IS status driving a
+    // command. Maintainer decision (K5PTB, 2026-09-24, #5945): a hang time
+    // below 10 ms makes CW unusable on firmware before v4.2.20 — the radio
+    // goes deaf for ~70 s after every send — and leaving the radio in that
+    // state because the protocol politely allows it is the worse failure. The
+    // operator cannot be expected to hover a tooltip to discover it.
+    //
+    // The reference client already does this. SmartSDR for Mac sends
+    // `cwx delay 41` at connect and exposes NO control for it anywhere in its
+    // UI (its manual documents the CWX panel as text field, Live, Send, Cancel
+    // and the speed arrows — nothing else), and the value is a constant, not
+    // speed-derived: the capture in #5945 shows break_in_delay=41 at both
+    // wpm=5 and wpm=30. So the client managing this setting silently is the
+    // established behaviour on this radio; AetherSDR was the outlier in never
+    // setting it, and unlike SmartSDR we still show the value in the panel.
+    //
+    // The loop is bounded by construction, not by hope: the caller in
+    // applyStatus only reaches here when the reported value CHANGED into a
+    // below-floor value. A radio that refuses this command keeps reporting the
+    // same value, which is not a change, so nothing re-fires. A radio that
+    // accepts it reports >= the floor, which does not qualify either.
+    //
+    // m_delay is still never written here: the radio's echo remains the truth,
+    // so the spin box shows what the radio actually holds, refusal included.
+    //
+    // The gate is m_delaySeenFromRadio, not m_delay alone: until the radio has
+    // reported a delay, m_delay is only this client's default and proves
+    // nothing about the radio. Raising on that could LOWER a larger value
+    // another client set — the Multi-Flex failure Principle II exists to stop.
+    if (!m_delaySeenFromRadio || m_delay >= kMinBreakInDelayMs) {
+        return;
+    }
+    // qCWarning, not qCInfo: aether.cw is a QtWarningMsg category, so Info
+    // would not reach a default support bundle — and a client value asserted
+    // over radio state is exactly the divergence Principle II wants logged.
+    qCWarning(lcCw) << "CwxModel: radio CWX hang time" << m_delay
+                    << "ms is below the" << kMinBreakInDelayMs
+                    << "ms floor; asking the radio to raise it — firmware before"
+                    << "FLEX v4.2.20 mutes RX audio for ~70 s after a CWX send"
+                    << "at low hang times (#5945)";
+    dispatchCommand(QString("cwx delay %1").arg(kMinBreakInDelayMs),
+                    m_drainEpoch, -1, route);
+}
+
 void CwxModel::dispatchCommand(const QString& command, int epoch, int nChars,
                                const TransmissionRoute& route)
 {
@@ -244,6 +293,7 @@ void CwxModel::send(const QString& text, const TransmissionRoute& route)
     if (!permit) {
         return;
     }
+    raiseBreakInDelayFloor(route);
     if (!m_speedModifiersEnabled) {
         notifyTransmission(text, m_speed, permit, route);
     } else {
@@ -270,6 +320,7 @@ void CwxModel::sendChar(const QString& ch, const TransmissionRoute& route)
     if (!permit) {
         return;
     }
+    raiseBreakInDelayFloor(route);
     QString encoded = ch;
     encoded.replace(' ', QChar(0x7f));
     // Live-mode chars go via the reply path (not fire-and-forget commandReady)
@@ -297,6 +348,7 @@ void CwxModel::sendMacro(int idx, const TransmissionRoute& route)
     if (!permit) {
         return;
     }
+    raiseBreakInDelayFloor(route);
     const QString text = m_macros[idx - 1];
     if (text.isEmpty()) {
         // Local copy not yet synced (the macroN= status is still pending in the
@@ -471,10 +523,22 @@ void CwxModel::setSpeedStep(int step)
 
 void CwxModel::setDelay(int ms)
 {
-    ms = qBound(0, ms, 2000);
+    // Clamped to the floor, not qBound(0, ...): by maintainer decision the UI
+    // cannot ask the radio for a hang time that makes CW unusable on firmware
+    // before v4.2.20. The spin box still RANGES from 0 so a radio reporting a
+    // lower value can be displayed honestly — we just never request one. (#5945)
+    const int requested = ms;
+    ms = qBound(kMinBreakInDelayMs, ms, 2000);
     if (ms != m_delay) {
         m_delay = ms;
         emit commandReady(QString("cwx delay %1").arg(m_delay));
+        emit delayChanged(m_delay);
+    } else if (requested != ms) {
+        // The clamp landed on the value we already hold, so nothing changed
+        // and no command is needed — but the widget that asked is still
+        // showing the out-of-range number the operator typed. Announce the
+        // model's value so it snaps back, or the box sits at 4 ms while the
+        // radio holds 10. (#5945)
         emit delayChanged(m_delay);
     }
 }
@@ -531,9 +595,15 @@ void CwxModel::applyStatus(const QMap<QString, QString>& kvs)
         } else if (key == "break_in_delay") {
             bool ok;
             int v = val.toInt(&ok);
+            if (ok) {
+                m_delaySeenFromRadio = true;   // now we know the radio's value (#5945)
+            }
             if (ok && v != m_delay) {
                 m_delay = v;
                 emit delayChanged(m_delay);
+                // Only on a CHANGE into a below-floor value, which is what
+                // bounds the status->command path above. (#5945)
+                raiseBreakInDelayFloor();
             }
         } else if (key == "qsk_enabled") {
             bool on = (val == "1");
