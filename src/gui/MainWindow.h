@@ -570,6 +570,7 @@ private:
     bool m_rxMutedForPlayback{false};
     void wirePanStreamTxSink();               // MainWindow_Session.cpp
     void wireTxAudioAuthority();              // MainWindow_Session.cpp
+    QMetaObject::Connection m_tciPcmConnection;
     void wirePanStreamTciSinks();             // MainWindow_Session.cpp
     void wirePanStreamDaxIqSink();            // MainWindow_Session.cpp
     void wirePooDooTiles();         // MainWindow_DspApplets.cpp

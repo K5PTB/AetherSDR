@@ -2187,8 +2187,11 @@ void MainWindow::wireCatPorts()
     }
 #ifdef HAVE_WEBSOCKETS
     // Owned by the session — no QObject parent (see RadioSession docs, #2385).
-    m_session->setTciServer(new TciServer(&m_radioModel, nullptr));
-    tciServer()->setAudioEngine(m_audio);
+    // The controller stays on this thread; its worker reaches AudioEngine
+    // through a context-bound queued connection carrying the TX permit.
+    auto* tci = new TciServer(&m_radioModel, nullptr);
+    tci->setAudioEngine(m_audio);
+    m_session->setTciServer(tci);
     m_appletPanel->tciApplet()->setRadioModel(&m_radioModel);
     m_appletPanel->tciApplet()->setTciServer(tciServer());
     // TCI RX row count follows the radio's slice capacity too (#4854 review).
@@ -2413,8 +2416,9 @@ void MainWindow::wirePanStreamTciSinks()
     auto* ps = m_radioModel.panStream();
     if (!ps || !tciServer())
         return;
-    connect(ps, &PanadapterStream::daxPcmReady,
-            tciServer(), &TciServer::onDaxPcmReady, Qt::UniqueConnection);
+    disconnect(m_tciPcmConnection);
+    m_tciPcmConnection = connect(ps, &PanadapterStream::daxPcmReady,
+            tciServer(), tciServer()->daxPcmSink(), Qt::DirectConnection);
     connect(ps, &PanadapterStream::iqDataReady,
             tciServer(), &TciServer::onIqDataReady);
     connect(ps, &PanadapterStream::waterfallRowReady,

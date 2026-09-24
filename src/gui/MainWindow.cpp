@@ -2833,6 +2833,18 @@ MainWindow::~MainWindow()
         m_ax25HfPacketDecodeDialog = nullptr;
     }
 
+#ifdef HAVE_WEBSOCKETS
+    // Stop TCI producers while both the model and audio consumer are alive.
+    // The controller joins its I/O worker before AudioEngine teardown.
+    if (m_appletPanel && m_appletPanel->tciApplet()) {
+        m_appletPanel->tciApplet()->setTciServer(nullptr);
+    }
+    {
+        ShutdownTrace trace("tci.server.destroy");
+        m_session->shutdownTciServer();
+    }
+#endif
+
     // Stop audio processing on the worker thread before destruction (#502).
     // Use BlockingQueuedConnection to ensure completion before we proceed.
     if (m_audio && m_audioThread && m_audioThread->isRunning()) {
@@ -2866,22 +2878,7 @@ MainWindow::~MainWindow()
     }
     m_audio = nullptr;
 
-#ifdef HAVE_WEBSOCKETS
-    // TciServer holds a raw RadioModel* and dereferences it in stop() →
-    // releaseDaxForTci(). Qt would delete it as a child of MainWindow during
-    // ~QWidget::deleteChildren(), which runs *after* MainWindow's value members
-    // (including m_radioModel) have already been destroyed — crash on quit
-    // (#2385). Tear it down explicitly here: audio is stopped (no more
-    // daxPcmReady cross-thread signals), m_radioModel is still alive (DAX
-    // stream-remove commands reach the radio), and we null out TciApplet's raw
-    // back-reference first so no dangling pointer remains in the widget tree.
-    if (m_appletPanel && m_appletPanel->tciApplet())
-        m_appletPanel->tciApplet()->setTciServer(nullptr);
-    {
-        ShutdownTrace trace("tci.server.destroy");
-        m_session->shutdownTciServer();
-    }
-#endif
+
 
     // Stop external controller thread (#502)
     if (m_extCtrlThread && m_extCtrlThread->isRunning()) {

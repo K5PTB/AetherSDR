@@ -4663,7 +4663,7 @@ if(Qt6WebSockets_FOUND)
 
     # Socket-owning test: our own TCI server is the subject, so this is inside
     # the AGENTS.md carve-out. It binds an EPHEMERAL TCP port (QWebSocketServer
-    # via TciServer::start(0)) on 127.0.0.1 and connects QWebSocket clients to
+    # via TciServer::start(0)) on QHostAddress::Any, with local 127.0.0.1 clients to
     # it in-process — no fixed port, no external peer, no fake radio firmware.
     # Each case that binds fails fast when it cannot, rather than consuming the
     # test timeout.
@@ -4673,6 +4673,7 @@ if(Qt6WebSockets_FOUND)
         aethercore Qt6::Core Qt6::Network Qt6::WebSockets
     )
     add_test(NAME tci_server_review_test COMMAND tci_server_review_test)
+    set_tests_properties(tci_server_review_test PROPERTIES TIMEOUT 45)
 endif()
 
 # aetherd RFC 2.3 — MeterModel touchpoint: meter-status wire decode.

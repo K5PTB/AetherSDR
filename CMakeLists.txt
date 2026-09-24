@@ -965,6 +965,8 @@ set(CORE_SOURCES
     src/core/AutomationBridgeSettings.cpp
     src/core/SpotCommandPolicy.cpp
     src/core/SpotModeResolver.cpp
+    src/core/TciIoWorker.cpp
+    src/core/TciClient.h
     src/core/TciServer.cpp
     src/core/TciRxConverter.cpp
     src/core/TciPeerProcess.cpp
