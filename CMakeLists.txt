@@ -753,6 +753,7 @@ set(CORE_SOURCES
     src/core/SpecbleachFilter.cpp
     src/core/CwDecoder.cpp
     src/core/DeepCwEngine.cpp    # neural CW decoder backend (ONNX; inert without HAVE_ONNX)
+    src/core/DeepCwCommitter.cpp # DeepCW sliding window + time-anchored commit
     src/core/CwCallsignSpotter.cpp
     src/core/CallsignInfo.cpp
     src/core/QrzClient.cpp
