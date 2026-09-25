@@ -2792,3 +2792,14 @@ else()
     )
 endif()
 
+
+# DeepCW offline replay harness (RFC #4817 regression take): not built by default.
+if(ORT_FOUND)
+    add_executable(deepcw_replay EXCLUDE_FROM_ALL
+        tools/deepcw_replay.cpp src/core/DeepCwEngine.cpp src/core/DeepCwCommitter.cpp
+        src/core/Resampler.cpp)
+    target_compile_definitions(deepcw_replay PRIVATE HAVE_ONNX)
+    target_include_directories(deepcw_replay PRIVATE src
+        ${CMAKE_SOURCE_DIR}/third_party/r8brain ${ORT_INCLUDE_DIRS})
+    target_link_libraries(deepcw_replay PRIVATE Qt6::Widgets ${ORT_LIBRARIES})
+endif()
