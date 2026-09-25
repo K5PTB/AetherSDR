@@ -3,6 +3,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QColor>
+#include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextEdit>
 #include <QVBoxLayout>
@@ -64,9 +66,15 @@ void CwNeuralApplet::appendText(const QString& text, float cost)
     else if (cost < 0.60f) color = "#ff9020";
     else                   color = "#ff4040";
 
-    m_text->moveCursor(QTextCursor::End);
-    m_text->insertHtml(QString("<span style=\"color:%1\">%2</span>")
-                           .arg(color, clean.toHtmlEscaped()));
+    // Plain-text insert with a colour format, not insertHtml(): the HTML
+    // parser drops a fragment's leading whitespace, so a suffix that began
+    // with its word space glued onto the previous word (measured, Qt 6.8.3).
+    QTextCursor cur = m_text->textCursor();
+    cur.movePosition(QTextCursor::End);
+    QTextCharFormat fmt;
+    fmt.setForeground(QColor(color));
+    cur.insertText(clean, fmt);
+    m_text->setTextCursor(cur);
     m_text->moveCursor(QTextCursor::End);
 }
 

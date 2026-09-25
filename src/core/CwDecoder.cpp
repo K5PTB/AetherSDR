@@ -1,5 +1,6 @@
 #include "CwDecoder.h"
 #include "LogManager.h"
+#include "DeepCwCommitter.h"
 #include "DeepCwEngine.h"
 #include "Resampler.h"
 #include "ggmorse/ggmorse.h"
@@ -268,37 +269,31 @@ void CwDecoder::decodeLoop()
     qCDebug(lcDsp) << "CwDecoder: decode loop exiting, total frames:" << feedCount;
 }
 
-// DeepCW (neural) worker loop. The model is a whole-window CTC decoder trained
-// on 5-20 s clips, so we accumulate a rolling audio segment and re-decode it as
-// it grows, emitting only the newly-decoded suffix (the decode of a longer clip
-// is normally a prefix-extension of the shorter one). Near the model's 20 s cap
-// we finalize the segment and start fresh so inference stays in-distribution.
-//
-// feedAudio() has downmixed the RX audio to mono float32 @24 kHz into m_ringBuf;
-// here we drain it, resample to the model's 3200 Hz with an anti-aliased r8brain
-// SRC (a 7.5x decimation — a naive drop/linear resample would fold energy into
-// the 400-1200 Hz analysis band), and grow a rolling 3200 Hz segment that we
-// re-decode as it lengthens. The SRC stays continuous across segment resets
-// (the audio stream is continuous even though the analysis window restarts).
-// Prototype heuristics — a later revision can add overlap-merge and silence
-// segmentation.
+// DeepCW (neural) worker loop. feedAudio() has downmixed the RX audio to mono
+// float32 @24 kHz into m_ringBuf; here we drain it, resample to the model's
+// 3200 Hz with an anti-aliased r8brain SRC (a 7.5x decimation — a naive
+// drop/linear resample would fold energy into the 400-1200 Hz analysis band),
+// and hand it to DeepCwCommitter: a sliding window re-decoded every 2 s whose
+// characters are shown only once they are holdSec behind the live edge, so the
+// model's full-context reading reaches the panel instead of its first guess at
+// the ragged end of a short window, and no hard reset cuts words at a seam.
+// holdSec defaults to 5 s; AETHER_DEEPCW_HOLD_S overrides it (local bench knob).
 void CwDecoder::decodeLoopDeep()
 {
-    constexpr int   kRate        = DeepCwEngine::kModelSampleRate;  // 3200 Hz (post-resample)
-    const size_t    kMinDecode   = kRate * 5;    // model floor: 5 s
-    const size_t    kHopSamples  = kRate * 2;    // re-decode every ~2 s of new audio
-    const size_t    kMaxSamples  = kRate * 15;   // finalize before the 20 s cap (headroom)
+    constexpr int kRate = DeepCwEngine::kModelSampleRate;  // 3200 Hz (post-resample)
 
     // Anti-aliased 24k -> 3200 Hz SRC (r8brain via the in-tree wrapper). Owned by
     // and used only on this worker thread, so its non-thread-safety is moot.
     Resampler resampler(24000.0, static_cast<double>(kRate));
 
-    std::vector<float> seg;               // accumulated audio at 3200 Hz
-    seg.reserve(kMaxSamples + kRate);
-    std::string emitted;                  // text already emitted for the current segment
-    size_t lastDecodeSamples = 0;
+    double holdSec = 5.0;
+    bool holdOk = false;
+    const double envHold = qEnvironmentVariable("AETHER_DEEPCW_HOLD_S").toDouble(&holdOk);
+    if (holdOk && envHold >= 1.0 && envHold <= 14.0) holdSec = envHold;
+    DeepCwCommitter committer(holdSec);
 
-    qCDebug(lcDsp) << "CwDecoder: DeepCW loop running, modelLoaded:" << m_deepLoaded.load();
+    qCDebug(lcDsp) << "CwDecoder: DeepCW loop running, modelLoaded:" << m_deepLoaded.load()
+                   << "hold" << committer.holdSec() << "s window" << committer.windowSec() << "s";
 
     while (m_running) {
         // Drain the handoff ring (mono float32 @24k) and resample to 3200 Hz.
@@ -312,53 +307,22 @@ void CwDecoder::decodeLoopDeep()
                 m_ringBuf.clear();
             }
         }
-        if (!in24k.empty()) {
+        if (!in24k.empty() && m_deepLoaded && m_deepcw) {
             const QByteArray out = resampler.process(in24k.data(), static_cast<int>(in24k.size()));
             const auto* r = reinterpret_cast<const float*>(out.constData());
-            const int m = out.size() / static_cast<int>(sizeof(float));
-            seg.insert(seg.end(), r, r + m);
-        }
-
-        const bool haveMin    = seg.size() >= kMinDecode;
-        const bool grewEnough = seg.size() >= lastDecodeSamples + kHopSamples;
-
-        if (m_deepLoaded && m_deepcw && haveMin && grewEnough) {
-            float conf = 1.0f;
-            float pitchHz = 0.0f;
-            const std::string text = m_deepcw->decode(seg, kRate, &conf, &pitchHz);
-            lastDecodeSamples = seg.size();
-            // Map mean CTC confidence to the panel's cost convention (lower =
-            // better) so the Sensitivity slider filters shaky neural decodes.
-            const float cost = 1.0f - conf;
+            const auto m = static_cast<std::size_t>(out.size() / static_cast<int>(sizeof(float)));
+            const DeepCwCommitter::Result res = committer.push(r, m, *m_deepcw);
 
             // Publish the dominant-tone pitch (no speed estimate for a CTC model)
             // so zero-beat and the pitch readout work in neural mode too.
-            if (pitchHz > 0.0f) {
-                m_pitch = pitchHz;
-                emit statsUpdated(pitchHz, 0.0f);
+            if (res.decoded && res.pitchHz > 0.0f) {
+                m_pitch = res.pitchHz;
+                emit statsUpdated(res.pitchHz, 0.0f);
             }
-
-            // Emit the suffix beyond what we've shown when the new decode extends
-            // the old as a prefix; on a divergent revision, silently adopt the new
-            // baseline (a rare correction may drop/duplicate a few chars — accepted
-            // for the prototype).
-            if (text.size() >= emitted.size()
-                && text.compare(0, emitted.size(), emitted) == 0) {
-                const std::string delta = text.substr(emitted.size());
-                if (!delta.empty()) {
-                    emit textDecoded(QString::fromStdString(delta), cost);
-                    emitted = text;
-                }
-            } else {
-                emitted = text;
-            }
-        }
-
-        // Finalize near the model's max window and start a fresh segment.
-        if (seg.size() >= kMaxSamples) {
-            seg.clear();
-            emitted.clear();
-            lastDecodeSamples = 0;
+            // Map mean CTC confidence to the panel's cost convention (lower =
+            // better) so the Sensitivity slider filters shaky neural decodes.
+            if (!res.text.empty())
+                emit textDecoded(QString::fromStdString(res.text), 1.0f - res.meanConf);
         }
 
         QThread::msleep(200);

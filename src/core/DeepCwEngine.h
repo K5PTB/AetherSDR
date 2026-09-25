@@ -8,6 +8,7 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
 #include <memory>
 
 #ifdef HAVE_ONNX
@@ -61,6 +62,28 @@ public:
     std::string decode(const std::vector<float>& audio, int sampleRateHz,
                        float* avgConfidence = nullptr, float* pitchHz = nullptr) const;
 
+    // Run the same spectrogram + inference as decode() on a 3200 Hz window and
+    // return the raw log_probs, row-major [*frames x kNumClasses]. Empty on error.
+    // Used by DeepCwCommitter, which needs per-character timing.
+    // pitchHz (optional) gets the same dominant-tone estimate decode() gives.
+    std::vector<float> inferLogProbs(const std::vector<float>& audio3200, int* frames,
+                                     float* pitchHz = nullptr) const;
+
+    // One greedy-CTC emission: the character, the frame it was emitted at
+    // (frame f ~ f * kHopLength / kModelSampleRate seconds into the window) and
+    // the softmax posterior of its class at that frame.
+    struct Emission { char ch; int frame; float conf; };
+    // Greedy CTC over log_probs [frames x kNumClasses], same rule as
+    // ctcDecode(), keeping per-character timing. blankFrame (optional) gets 1
+    // for every frame whose argmax is the CTC blank.
+    std::vector<Emission> greedyEmissions(const float* logProbs, int frames,
+                                          std::vector<uint8_t>* blankFrame = nullptr) const;
+
+    // Greedy CTC decode of log_probs [frames, kNumClasses] -> text. When
+    // avgConfidence is non-null, sets it to the mean softmax probability of the
+    // argmax class across the timesteps that emitted a character.
+    std::string ctcDecode(const float* logProbs, int frames, float* avgConfidence) const;
+
     // Model contract constants (from model.onnx.json).
     static constexpr int    kModelSampleRate = 3200;
     static constexpr int    kFftLength       = 256;
@@ -77,11 +100,6 @@ private:
     // Build the model spectrogram, flat row-major [frames * kFreqBins]
     // (time-major, freq inner), from 3200 Hz mono audio. *frames set on return.
     std::vector<float> spectrogram(const std::vector<float>& audio3200, int* frames) const;
-
-    // Greedy CTC decode of log_probs [frames, kNumClasses] -> text. When
-    // avgConfidence is non-null, sets it to the mean softmax probability of the
-    // argmax class across the timesteps that emitted a character.
-    std::string ctcDecode(const float* logProbs, int frames, float* avgConfidence) const;
 
     bool m_loaded{false};
 #ifdef HAVE_ONNX

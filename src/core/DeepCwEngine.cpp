@@ -189,6 +189,84 @@ std::string DeepCwEngine::ctcDecode(const float* logProbs, int frames, float* av
     return text;
 }
 
+std::vector<float> DeepCwEngine::inferLogProbs(const std::vector<float>& audio3200, int* frames,
+                                               float* pitchHz) const
+{
+    *frames = 0;
+    if (pitchHz) *pitchHz = 0.0f;
+#ifdef HAVE_ONNX
+    if (!m_loaded || !m_session) { return {}; }
+    int specFrames = 0;
+    const std::vector<float> spec = spectrogram(audio3200, &specFrames);
+    if (specFrames == 0 || spec.empty()) { return {}; }
+    if (pitchHz) {   // same peak-energy-bin estimate as decode()
+        const double binHz = static_cast<double>(kModelSampleRate) / kFftLength;
+        const int startBin = static_cast<int>(std::ceil(kMinFreqHz / binHz));
+        int peak = 0; double peakE = -1.0;
+        for (int k = 0; k < kFreqBins; ++k) {
+            double e = 0.0;
+            for (int f = 0; f < specFrames; ++f) e += spec[static_cast<size_t>(f) * kFreqBins + k];
+            if (e > peakE) { peakE = e; peak = k; }
+        }
+        *pitchHz = static_cast<float>((startBin + peak) * binHz);
+    }
+    try {
+        const std::array<int64_t, 4> shape{1, 1, specFrames, kFreqBins};
+        Ort::Value input = Ort::Value::CreateTensor<float>(
+            m_memInfo, const_cast<float*>(spec.data()), spec.size(),
+            shape.data(), shape.size());
+        const char* inputNames[]  = {"spectrogram"};
+        const char* outputNames[] = {"log_probs"};
+        auto outputs = m_session->Run(Ort::RunOptions{nullptr},
+                                      inputNames, &input, 1, outputNames, 1);
+        const float* lp = outputs[0].GetTensorData<float>();
+        const auto outShape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
+        const int outFrames = outShape.size() >= 2
+            ? static_cast<int>(outShape[outShape.size() - 2]) : specFrames;
+        *frames = outFrames;
+        return std::vector<float>(lp, lp + static_cast<size_t>(outFrames) * kNumClasses);
+    } catch (const Ort::Exception& ex) {
+        std::fprintf(stderr, "DeepCwEngine: inference error: %s\n", ex.what());
+        return {};
+    }
+#else
+    (void)audio3200;
+    return {};
+#endif
+}
+
+std::vector<DeepCwEngine::Emission> DeepCwEngine::greedyEmissions(
+    const float* logProbs, int frames, std::vector<uint8_t>* blankFrame) const
+{
+    // Same greedy rule as ctcDecode(): argmax per frame, blank resets, a new
+    // character on each change of non-blank argmax. Adds the frame index and
+    // the softmax posterior of the chosen class.
+    std::vector<Emission> out;
+    if (blankFrame) blankFrame->assign(static_cast<size_t>(std::max(frames, 0)), 0);
+    int previous = -1;
+    for (int t = 0; t < frames; ++t) {
+        const float* row = logProbs + static_cast<size_t>(t) * kNumClasses;
+        int best = 0;
+        float bestVal = row[0];
+        for (int c = 1; c < kNumClasses; ++c) {
+            if (row[c] > bestVal) { bestVal = row[c]; best = c; }
+        }
+        if (best == kBlankIndex) {
+            if (blankFrame) (*blankFrame)[static_cast<size_t>(t)] = 1;
+            previous = -1;
+            continue;
+        }
+        if (best != previous) {
+            double sumExp = 0.0;
+            for (int c = 0; c < kNumClasses; ++c)
+                sumExp += std::exp(static_cast<double>(row[c]) - bestVal);
+            out.push_back({kChars[best], t, static_cast<float>(1.0 / sumExp)});
+        }
+        previous = best;
+    }
+    return out;
+}
+
 std::string DeepCwEngine::decode(const std::vector<float>& audio, int sampleRateHz,
                                  float* avgConfidence, float* pitchHz) const
 {
