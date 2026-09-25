@@ -309,21 +309,23 @@ constexpr const char* kSuppressAudioDeviceNotificationsKey =
     "SuppressAudioDeviceNotifications";
 constexpr const char* kStatusBarCompactLabelObjectName = "statusBarCompactLabel";
 
-QString statusBarCompactLabelStyle(const QString& color)
+QString statusBarCompactLabelStyle(const QString& color, bool bold = false)
 {
     return QStringLiteral(
-        "QLabel#statusBarCompactLabel { color: %1; font-size: 12px; background: transparent; }")
-        .arg(color);
+        "QLabel#statusBarCompactLabel { color: %1; font-size: 12px; font-weight: %2; "
+        "background: transparent; }")
+        .arg(color, bold ? QStringLiteral("bold") : QStringLiteral("normal"));
 }
 
-void applyStatusBarCompactLabelStyle(QLabel* label, const QString& color)
+void applyStatusBarCompactLabelStyle(QLabel* label, const QString& color, bool bold = false)
 {
     if (!label) {
         return;
     }
 
     label->setObjectName(kStatusBarCompactLabelObjectName);
-    AetherSDR::ThemeManager::instance().applyStyleSheet(label, statusBarCompactLabelStyle(color));
+    AetherSDR::ThemeManager::instance().applyStyleSheet(
+        label, statusBarCompactLabelStyle(color, bold));
 }
 
 int statusBarCompactTextWidth(const QStringList& samples, int horizontalPadding)
@@ -1545,6 +1547,32 @@ MainWindow::MainWindow(QWidget* parent)
         FramelessMessageBox::warning(this, "Check for Updates",
             "Could not reach GitHub. Check your connection and try again.");
     });
+
+    // Firmware currency (status bar): ask FlexRadio once per launch which
+    // SmartSDR release is published, so the version row can say whether the
+    // connected radio is behind it.
+    //
+    // ONCE, AT STARTUP, AND NOT AGAIN. The same fetch already exists behind
+    // Radio Setup's "Check for Update" button, but nothing ever pressed it on
+    // most stations, which made the indication worthless. It runs here instead,
+    // before any radio is connected, because the answer is about what FlexRadio
+    // publishes and not about any particular radio.
+    //
+    // A failure is not an error state and raises no dialog: the published
+    // version simply stays empty, every verdict falls back to Unknown, and the
+    // version row draws exactly like the model row above it. An operator with
+    // no route to the internet sees the status bar they have always seen.
+    m_firmwareVersionCheck = new FirmwareStager(this);
+    connect(m_firmwareVersionCheck, &FirmwareStager::latestVersionKnown, this,
+            [this](const QString& latest) {
+        m_latestPublishedFirmware = latest;
+        refreshRadioIdentityLabels();
+    });
+    connect(m_firmwareVersionCheck, &FirmwareStager::latestVersionUnavailable, this,
+            [](const QString& reason) {
+        qCInfo(lcFirmware) << "MainWindow: firmware currency unknown —" << reason;
+    });
+    m_firmwareVersionCheck->fetchLatestVersion();
 
     buildMenuBar();
     buildUI();
@@ -5894,6 +5922,10 @@ void MainWindow::buildUI()
     m_radioVersionLabel = new QLabel("");
     applyStatusBarCompactLabelStyle(m_radioVersionLabel, QStringLiteral("{{color.text.secondary}}"));
     m_radioVersionLabel->setAlignment(Qt::AlignCenter);
+    // Only out-of-date firmware is clickable, but the filter is installed once
+    // here rather than added and removed as the verdict changes; the handler
+    // checks m_radioFirmwareCurrency and ignores the click otherwise.
+    m_radioVersionLabel->installEventFilter(this);
     radioVbox->addWidget(m_radioInfoLabel);
     radioVbox->addWidget(m_radioVersionLabel);
     hbox->addWidget(radioStack);
@@ -7686,7 +7718,65 @@ void MainWindow::refreshRadioIdentityLabels()
     m_radioMakeLabel->setVisible(showMake);
     m_radioInfoLabel->setVisible(!model.isEmpty());
     m_radioVersionLabel->setVisible(!m_radioVersionLabel->text().isEmpty());
+    applyFirmwareCurrencyToVersionLabel();
     updateStatusBarMinimumWidth();
+}
+
+// Colour the version row by how current the firmware is, and make it a link to
+// the release notes when it is not.
+//
+// Runs from refreshRadioIdentityLabels() — the single owner of this stack — so
+// it repaints on exactly the edges the text does: connect, the late-arriving
+// infoChanged, a capabilities update, and disconnect. It reads the LABEL's
+// text rather than the model's, which is what makes disconnect correct for
+// free: the label is cleared first, an empty string parses to nothing, and the
+// verdict falls back to Unknown instead of stranding the last radio's colour
+// on a blank row.
+//
+// Bold is applied through the stylesheet rather than QFont so the width
+// recalculation that follows sees the wider text; setting it after
+// updateStatusBarMinimumWidth() would clip the row on a narrow window.
+//
+// The verdict needs the backend's declared FirmwareUpdateSource and the
+// startup fetch's answer, and no test of which family it is — see
+// FirmwareCurrency.h. A radio whose backend declares no source, and any station
+// whose fetch failed, keep the plain secondary colour of the model row above.
+void MainWindow::applyFirmwareCurrencyToVersionLabel()
+{
+    using AetherSDR::FirmwareCurrency::Status;
+
+    // Two things have to be true before a verdict exists: the backend must have
+    // declared that its firmware versions are published somewhere, and that
+    // fetch must have answered. Either missing leaves Unknown.
+    const auto& source = m_radioModel.backendCapabilities().firmwareUpdateSource;
+    m_radioFirmwareCurrency =
+        source.has_value()
+            ? AetherSDR::FirmwareCurrency::evaluate(m_latestPublishedFirmware,
+                                                    m_radioVersionLabel->text())
+            : AetherSDR::FirmwareCurrency::Status::Unknown;
+
+    QString color = QStringLiteral("{{color.text.secondary}}");
+    bool bold = false;
+    switch (m_radioFirmwareCurrency) {
+    case Status::Current:
+        color = QStringLiteral("{{color.accent.success}}");
+        break;
+    case Status::Outdated:
+        color = QStringLiteral("{{color.accent.warning}}");
+        bold = true;
+        break;
+    case Status::Unknown:
+        // Deliberately identical to the model row directly above it: no verdict
+        // must look like no opinion, not like a third verdict of its own.
+        break;
+    }
+
+    applyStatusBarCompactLabelStyle(m_radioVersionLabel, color, bold);
+    m_radioVersionLabel->setToolTip(
+        AetherSDR::FirmwareCurrency::tooltip(m_radioFirmwareCurrency));
+    m_radioVersionLabel->setCursor(m_radioFirmwareCurrency == Status::Outdated
+                                       ? Qt::PointingHandCursor
+                                       : Qt::ArrowCursor);
 }
 
 void MainWindow::applyCapabilitiesToUi(bool connected, const RadioCapabilities& caps)

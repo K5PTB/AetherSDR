@@ -19,7 +19,9 @@
 #include "core/IambicKeyer.h"
 
 #include <QApplication>
+#include <QDesktopServices>
 #include <QKeyEvent>
+#include <QUrl>
 
 #include "MainWindowHelpers.h"
 #include "VoiceModeGate.h"   // isCwMode() — one CW-mode list, not thirteen
@@ -790,6 +792,26 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
     }
     if (obj == m_stationNickLabel && event->type() == QEvent::MouseButtonDblClick) {
         toggleConnectionDialog();
+        return true;
+    }
+    // The firmware version is a link to the release notes, but ONLY while it is
+    // showing an out-of-date version — that is the state the tooltip invites a
+    // click in. A current (green) version is plain text, so the press falls
+    // through and the status bar behaves as it always has.
+    if (obj == m_radioVersionLabel && event->type() == QEvent::MouseButtonPress) {
+        if (m_radioFirmwareCurrency != AetherSDR::FirmwareCurrency::Status::Outdated)
+            return false;
+        // The page is built from the backend's declared template and the
+        // release the operator is behind — the one the startup fetch found, not
+        // the one the radio is running.
+        const auto& source = m_radioModel.backendCapabilities().firmwareUpdateSource;
+        if (!source.has_value())
+            return false;
+        const QString url = AetherSDR::FirmwareCurrency::releaseNotesUrl(
+            source->releaseNotesUrlTemplate, m_latestPublishedFirmware);
+        if (url.isEmpty())
+            return false;
+        QDesktopServices::openUrl(QUrl(url));
         return true;
     }
 #ifdef AETHER_ASR_ENABLED
