@@ -1835,6 +1835,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     // ── AF gain from applet panel → radio per-slice audio_level ─────────
     connect(m_appletPanel->rxApplet(), &RxApplet::afGainChanged, this, [this](int v) {
+        AetherSDR::SplitAudioOperatorEdit op;  // #2242: operator-origin
         if (auto* s = activeSlice()) s->setAudioGain(v);
     });
 
@@ -4124,8 +4125,14 @@ void MainWindow::changeEvent(QEvent* event)
     // event filter — the flag would stay set and TX would stay keyed. Force the
     // whole family back to RX on deactivation. (Belt-and-suspenders for the
     // app-backgrounded case lives in eventFilter via ApplicationStateChange.)
-    if (event->type() == QEvent::ActivationChange && !isActiveWindow())
+    if (event->type() == QEvent::ActivationChange && !isActiveWindow()) {
         failSafeMomentaryKeyingToRx("window-deactivate");
+        // A held Monitor TX key loses its KeyRelease exactly the same way, and
+        // would leave the split's audio rearranged with nothing to release.
+        // (A FlexControl/HID toggle has no release to lose; it stays on.)
+        if (m_splitMonitorKeyHeld)
+            endSplitMonitor();
+    }
 
     // A DIALOG DOES NOT FOLLOW ITS PARENT INTO A FULL-SCREEN SPACE (#5788).
     //
@@ -9050,6 +9057,11 @@ void MainWindow::disableSplit()
 
     m_splitActive = false;
 
+    // Learn this split's audio arrangement and put the RX pan back, BEFORE the
+    // TX slice is destroyed below — once it is gone its values are unreadable
+    // (which is also why the mirror exists at all). (#2242)
+    recordSplitAudioMirror();
+
     // Move TX back to the RX slice
     if (auto* rxSlice = m_radioModel.slice(m_splitRxSliceId))
         rxSlice->setTxSlice(true);
@@ -9065,20 +9077,12 @@ void MainWindow::disableSplit()
     updateSplitState();
 }
 
-void MainWindow::updateSplitState()
+void MainWindow::resolveSplitPairs(QHash<QString, SliceModel*>& txByPan,
+                                   QHash<QString, SliceModel*>& rxByPan) const
 {
-    // Derive the split-pair visualization from model truth so the panadapter
-    // reflects split regardless of who initiated it — GUI button, rigctld, CAT,
-    // TCI, or front panel. A slice is "TX-in-split" when it is the TX slice and a
-    // distinct RX slice shares its panadapter; that RX slice is "RX-in-split".
-    // (#3726) This drops the rendering dependence on the GUI-only m_splitActive/
-    // m_splitTxSliceId/m_splitRxSliceId flags — those still drive the SWAP/teardown
-    // *actions*, which need the GUI-created TX slice id. Consistent with RFC #3715:
-    // consumers derive from the model, not per-consumer state.
-
     // Resolve, per pan, the TX slice and its RX partner.
-    QHash<QString, SliceModel*> txByPan;     // panId -> TX slice
-    QHash<QString, SliceModel*> rxByPan;     // panId -> chosen RX partner
+    txByPan.clear();
+    rxByPan.clear();
     for (auto* s : m_radioModel.slices())
         if (s && s->isTxSlice())
             txByPan.insert(s->panId(), s);
@@ -9106,6 +9110,22 @@ void MainWindow::updateSplitState()
         else if (s->sliceId() == m_splitRxSliceId) chosen = s;
         else if (s->sliceId() == m_activeSliceId)  chosen = s;
     }
+}
+
+void MainWindow::updateSplitState()
+{
+    // Derive the split-pair visualization from model truth so the panadapter
+    // reflects split regardless of who initiated it — GUI button, rigctld, CAT,
+    // TCI, or front panel. A slice is "TX-in-split" when it is the TX slice and a
+    // distinct RX slice shares its panadapter; that RX slice is "RX-in-split".
+    // (#3726) This drops the rendering dependence on the GUI-only m_splitActive/
+    // m_splitTxSliceId/m_splitRxSliceId flags — those still drive the SWAP/teardown
+    // *actions*, which need the GUI-created TX slice id. Consistent with RFC #3715:
+    // consumers derive from the model, not per-consumer state.
+
+    QHash<QString, SliceModel*> txByPan;     // panId -> TX slice
+    QHash<QString, SliceModel*> rxByPan;     // panId -> chosen RX partner
+    resolveSplitPairs(txByPan, rxByPan);
 
     auto applyToSpectrum = [&](SpectrumWidget* sw) {
         if (!sw) return;
