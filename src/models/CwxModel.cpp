@@ -138,7 +138,7 @@ CwxModel::TransmissionPermit CwxModel::admitTransmission(const TransmissionRoute
     };
 }
 
-void CwxModel::raiseBreakInDelayFloor(const TransmissionRoute& route)
+void CwxModel::raiseBreakInDelayFloor()
 {
     // ── A DELIBERATE, MAINTAINER-DIRECTED DEVIATION FROM PRINCIPLE II ──────
     // Principle II says radio status updates the client and the client never
@@ -168,11 +168,13 @@ void CwxModel::raiseBreakInDelayFloor(const TransmissionRoute& route)
     // m_delay is still never written here: the radio's echo remains the truth,
     // so the spin box shows what the radio actually holds, refusal included.
     //
-    // The gate is m_delaySeenFromRadio, not m_delay alone: until the radio has
-    // reported a delay, m_delay is only this client's default and proves
-    // nothing about the radio. Raising on that could LOWER a larger value
-    // another client set — the Multi-Flex failure Principle II exists to stop.
-    if (!m_delaySeenFromRadio || m_delay >= kMinBreakInDelayMs) {
+    // No guard needed for "have we been told a value yet" or "did we already
+    // ask": the ONLY caller is applyStatus, on a value the radio just reported
+    // that differs from the last one. That is what keeps this from acting on
+    // this client's own default (which could LOWER a larger value another
+    // client set — the Multi-Flex failure Principle II exists to stop) and
+    // from re-asking a radio that refuses, since a refusal produces no change.
+    if (m_delay >= kMinBreakInDelayMs) {
         return;
     }
     // qCWarning, not qCInfo: aether.cw is a QtWarningMsg category, so Info
@@ -183,8 +185,7 @@ void CwxModel::raiseBreakInDelayFloor(const TransmissionRoute& route)
                     << "ms floor; asking the radio to raise it — firmware before"
                     << "FLEX v4.2.20 mutes RX audio for ~70 s after a CWX send"
                     << "at low hang times (#5945)";
-    dispatchCommand(QString("cwx delay %1").arg(kMinBreakInDelayMs),
-                    m_drainEpoch, -1, route);
+    emit commandReady(QString("cwx delay %1").arg(kMinBreakInDelayMs));
 }
 
 void CwxModel::dispatchCommand(const QString& command, int epoch, int nChars,
@@ -293,7 +294,6 @@ void CwxModel::send(const QString& text, const TransmissionRoute& route)
     if (!permit) {
         return;
     }
-    raiseBreakInDelayFloor(route);
     if (!m_speedModifiersEnabled) {
         notifyTransmission(text, m_speed, permit, route);
     } else {
@@ -320,7 +320,6 @@ void CwxModel::sendChar(const QString& ch, const TransmissionRoute& route)
     if (!permit) {
         return;
     }
-    raiseBreakInDelayFloor(route);
     QString encoded = ch;
     encoded.replace(' ', QChar(0x7f));
     // Live-mode chars go via the reply path (not fire-and-forget commandReady)
@@ -348,7 +347,6 @@ void CwxModel::sendMacro(int idx, const TransmissionRoute& route)
     if (!permit) {
         return;
     }
-    raiseBreakInDelayFloor(route);
     const QString text = m_macros[idx - 1];
     if (text.isEmpty()) {
         // Local copy not yet synced (the macroN= status is still pending in the
@@ -595,9 +593,6 @@ void CwxModel::applyStatus(const QMap<QString, QString>& kvs)
         } else if (key == "break_in_delay") {
             bool ok;
             int v = val.toInt(&ok);
-            if (ok) {
-                m_delaySeenFromRadio = true;   // now we know the radio's value (#5945)
-            }
             if (ok && v != m_delay) {
                 m_delay = v;
                 emit delayChanged(m_delay);

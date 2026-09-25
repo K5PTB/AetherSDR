@@ -179,10 +179,11 @@ private:
                             const TransmissionRoute& route = {});
     void dispatchCommand(const QString& command, int epoch, int nChars,
                          const TransmissionRoute& route);
-    // Ask the radio to move its CWX hang time up to kMinBreakInDelayMs. Called
-    // when the radio first reports a value below it, and again on the send path
-    // as a backstop if the radio has not adopted it. (#5945)
-    void raiseBreakInDelayFloor(const TransmissionRoute& route = {});
+    // Ask the radio to move its CWX hang time up to kMinBreakInDelayMs, once
+    // per value it reports below that. Called only from applyStatus: a send
+    // can never be the first to notice, because the value is only ever learned
+    // from status in the first place. (#5945)
+    void raiseBreakInDelayFloor();
     SendAvailability m_sendAvailability;
     TransmissionAdmission m_transmissionAdmission;
     TextSender m_textSender;
@@ -191,11 +192,6 @@ private:
 
     int     m_speed{20};
     int     m_delay{5};
-    // True once the radio has actually reported a break_in_delay. Until then
-    // m_delay is only this client's default and says nothing about the radio,
-    // so the floor stays out: raising a delay we have not been told is low
-    // would clobber another client's larger value. (#5945, Principle II)
-    bool    m_delaySeenFromRadio{false};
     int     m_speedStep{3};
     // Count of self-originated transient `cwx wpm` commands (per-word speed
     // modifiers) whose radio echoes must be swallowed in applyStatus so they

@@ -100,21 +100,19 @@ int main(int argc, char** argv)
 
     const QString kRaise = QStringLiteral("cwx delay 10");
 
-    // ── The reported bug: a radio left at 0 is raised before the send ────────
+    // ── The reported bug: a radio left at 0 is raised as soon as it says so ──
     {
         CwxModel model;
-        radioReportsDelay(model, 0);
         Recorder rec(model);
-        model.send(QStringLiteral("K5PTB"));
+        radioReportsDelay(model, 0);
         const QStringList got = rec.relevant();
         report("delay 0 -> floor command is emitted",
-               got.contains(kRaise), joined(got));
-        // Ordering is the whole point: a raise that lands after the send does
-        // not protect that send.
-        report("floor command precedes the cwx send",
-               got.size() >= 2 && got.first() == kRaise
-                   && got.at(1).startsWith(QStringLiteral("cwx send")),
-               joined(got));
+               got == QStringList{kRaise}, joined(got));
+        // And it lands BEFORE any send can go out at the bad value.
+        rec.clear();
+        model.send(QStringLiteral("K5PTB"));
+        report("the send that follows carries no further delay command",
+               rec.count(QStringLiteral("cwx delay")) == 0, joined(rec.relevant()));
     }
 
     // ── Never act on the client's own default ───────────────────────────────
@@ -236,36 +234,36 @@ int main(int argc, char** argv)
                rec.count(QStringLiteral("cwx delay")) == 0, joined(rec.relevant()));
     }
 
-    // ── Every send path is covered, not just send() ──────────────────────────
+    // ── A fresh low value gets a fresh ask ───────────────────────────────────
     {
+        // The radio adopted the floor, then something (another client, a
+        // profile load) put it back down. That is a new value, so it earns one
+        // new ask rather than being ignored as already-handled.
         CwxModel model;
         radioReportsDelay(model, 0);
+        radioReportsDelay(model, CwxModel::kMinBreakInDelayMs);
         Recorder rec(model);
-        model.sendChar(QStringLiteral("K"));
-        report("live-typed characters raise the floor too",
-               rec.relevant().value(0) == kRaise, joined(rec.relevant()));
-    }
-    {
-        CwxModel model;
-        radioReportsDelay(model, 0);
-        model.saveMacro(0, QStringLiteral("CQ TEST K5PTB"));
-        Recorder rec(model);
-        model.sendMacro(1);
-        report("macro sends raise the floor too",
-               rec.relevant().value(0) == kRaise, joined(rec.relevant()));
+        radioReportsDelay(model, 3);
+        report("a new below-floor value is asked about again",
+               rec.count(QStringLiteral("cwx delay")) == 1, joined(rec.relevant()));
     }
 
-    // ── No repetition once the radio has adopted the floor ───────────────────
+    // ── A radio that refuses must not draw a command per keystroke ──────────
     {
+        // Live mode sends one `cwx send` per character. If the radio refuses
+        // the raise, m_delay stays low, and an unguarded backstop would append
+        // a `cwx delay` to every keystroke.
         CwxModel model;
-        radioReportsDelay(model, 0);
+        radioReportsDelay(model, 0);          // asks once, radio refuses
         Recorder rec(model);
-        model.send(QStringLiteral("K5PTB"));
-        radioReportsDelay(model, CwxModel::kMinBreakInDelayMs);   // radio echo
-        rec.clear();
-        model.send(QStringLiteral("K5PTB"));
-        report("second send after the echo does not re-send the floor",
-               rec.count(QStringLiteral("cwx delay")) == 0, joined(rec.relevant()));
+        for (const QString& ch : {QStringLiteral("K"), QStringLiteral("5"),
+                                  QStringLiteral("P"), QStringLiteral("T"),
+                                  QStringLiteral("B")}) {
+            model.sendChar(ch);
+        }
+        report("live typing does not re-ask the radio per character",
+               rec.count(QStringLiteral("cwx delay")) <= 1,
+               joined(rec.relevant()));
     }
 
     // ── The floor is the value two reporters found safe, with margin ─────────
