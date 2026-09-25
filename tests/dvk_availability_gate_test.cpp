@@ -81,6 +81,28 @@ int main()
            dvkIndicatorTooltip(B::None)
                == QStringLiteral("Digital Voice Keyer — click to toggle"));
 
+    // ── RFC #4214: the client-side keyer ignores the radio's entitlement ────
+    using VS = VoiceKeyerSource;
+    report("local keyer + unlicensed + voice -> None (no licence needed)",
+           voiceKeyerIndicatorBlocker(VS::Local, true, true, false) == B::None);
+    report("local keyer + unlicensed + non-voice -> TxModeNotVoice",
+           voiceKeyerIndicatorBlocker(VS::Local, false, true, false) == B::TxModeNotVoice);
+    report("radio keyer + unlicensed + voice -> NotLicensed (unchanged)",
+           voiceKeyerIndicatorBlocker(VS::Radio, true, true, false) == B::NotLicensed);
+    report("radio keyer + unseen entitlement + voice -> None (still fails open)",
+           voiceKeyerIndicatorBlocker(VS::Radio, true, false, false) == B::None);
+
+    // ── Keyer-source menu: the Radio DVK choice follows the same gate ───────
+    report("radio choice open when licensed",
+           radioVoiceKeyerUnavailableReason(true, true, true).isEmpty());
+    report("radio choice open while the entitlement is unreported (fails open)",
+           radioVoiceKeyerUnavailableReason(true, false, false).isEmpty());
+    report("radio choice closed when the radio reports no entitlement",
+           radioVoiceKeyerUnavailableReason(true, true, false).contains(QStringLiteral("SmartSDR+")));
+    report("radio choice closed on a radio with no DVK, whatever the licence says",
+           radioVoiceKeyerUnavailableReason(false, true, true)
+               == QStringLiteral("not available on this radio"));
+
     // ── The feature name is the FlexLib one ─────────────────────────────────
     report("license feature name matches FlexLib's digital_voice_keyer",
            QString(kDvkLicenseFeature) == QStringLiteral("digital_voice_keyer"));

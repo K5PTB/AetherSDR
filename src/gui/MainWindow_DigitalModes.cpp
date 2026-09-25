@@ -15,6 +15,20 @@
 // Pure code motion from MainWindow.cpp — same class, no header changes.
 
 #include "MainWindow.h"
+#include "DvkAvailabilityGate.h"
+#include "DvkPanel.h"
+#include "VoiceModeGate.h"
+#include "core/GeneratedAudioTransmitter.h"
+#include "core/LocalWavPlayer.h"
+#include "core/ThemeManager.h"
+#include "core/VoiceKeyerSettings.h"
+#include "models/LocalVoiceKeyer.h"
+
+#include <QActionGroup>
+#include <QDesktopServices>
+#include <QDir>
+#include <QMenu>
+#include <QUrl>
 #include "DStarAvailabilityGate.h"
 
 #include "AppletPanel.h"
@@ -1683,6 +1697,303 @@ void MainWindow::showPskReporterMapDialog()
     m_pskReporterMapDialog->show();
     m_pskReporterMapDialog->raise();
     m_pskReporterMapDialog->activateWindow();
+}
+
+
+// ── Client-side voice keyer (RFC #4214) ─────────────────────────────────────
+//
+// The DVK panel drives either the radio's DVK or LocalVoiceKeyer. Local
+// recordings come from the PC-mic tap (never keys TX), preview on this
+// computer's speakers, and go on the air through GeneratedAudioTransmitter.
+
+namespace {
+
+// The transmitter's view of the connected radio. Every per-family difference
+// is an answer read from RadioCapabilities, never a family name — the same
+// questions Ax25HfPacketDecodeDialog asks, so HL2 and Icom need no new code.
+class VoiceKeyerTxRoute : public QObject, public TxAudioRoute {
+public:
+    VoiceKeyerTxRoute(RadioModel& radio, AudioEngine* audio, QObject* parent)
+        : QObject(parent), m_radio(radio), m_audio(audio) {}
+
+    QString startRefusal() const override
+    {
+        if (!m_radio.isConnected() || !m_audio)
+            return QStringLiteral("Connect to a radio to transmit.");
+        if (!m_radio.backendCapabilities().canTransmit)
+            return QStringLiteral("This radio cannot transmit.");
+        SliceModel* s = m_radio.txSlice();
+        if (!s)
+            return QStringLiteral("No transmit slice is assigned.");
+        if (!isVoiceMode(s->mode()))
+            return QStringLiteral("The transmit slice is in %1 — voice keyer playback needs a "
+                                  "voice mode.").arg(s->mode());
+        if (m_radio.transmitModel().isTransmitting())
+            return QStringLiteral("The radio is already transmitting.");
+        // In a voice mode DAX TX mode is only on while another generated
+        // source (TCI, WSPR, AetherModem) owns the transmit audio.
+        if (m_audio->isDaxTxMode())
+            return QStringLiteral("Another application is already sending transmit audio.");
+        return {};
+    }
+
+    bool needsStream() const override
+    {
+        const RadioCapabilities caps = m_radio.backendCapabilities();
+        return !(caps.hostModulates || caps.takesTxAudioOverSeam);
+    }
+    bool streamReady() const override { return m_audio && m_audio->txStreamId() != 0; }
+    bool requestStream() override
+    {
+        return m_radio.ensureDaxTxStream(DaxTxRequestReason::ClientVoiceKeyerTx);
+    }
+
+    void claimAudioPath() override
+    {
+        // Local DAX TX mode keeps the mic off the wire on every family;
+        // `transmit dax` only means something to a radio with its own
+        // modulator input choice (see Ax25HfPacketDecodeDialog).
+        m_prevAudioDax = m_audio->isDaxTxMode();
+        m_audio->setDaxTxMode(true);
+        m_restoreTransmitDax = needsStream();
+        if (m_restoreTransmitDax) {
+            auto& tx = m_radio.transmitModel();
+            m_prevTransmitDax = tx.daxOn();
+            tx.setDax(true);
+        }
+    }
+    void releaseAudioPath() override
+    {
+        if (m_restoreTransmitDax)
+            m_radio.transmitModel().setDax(m_prevTransmitDax);
+        m_restoreTransmitDax = false;
+        if (m_audio)
+            m_audio->setDaxTxMode(m_prevAudioDax);
+    }
+
+    // Keying and audio both go through one TxCoordinator producer request, the
+    // path AX.25 and RADE already use (#5659). The request is what admits the
+    // operation; the media context captured from it is what licenses every
+    // block below to reach the transport. Keying through transmitModel()
+    // directly still keys the radio, but its audio then carries no admitted
+    // operation and AudioEngine::selectTxContext drops every block — a keyed,
+    // silent transmitter, which is why keyOn() reports refusal instead.
+    bool keyOn() override
+    {
+        if (!m_producer.valid())
+            m_producer = m_radio.registerTxProducer(this);
+        m_request = m_producer.request();
+        if (!m_request.valid())
+            return false;
+        if (!m_radio.requestProducerPttOn(m_request, TransmitModel::PttSource::Dax)) {
+            m_request = {};
+            return false;
+        }
+        // Captured while the operation this request admitted is live; a context
+        // taken before the key is not yet dispatchable.
+        m_context = m_radio.captureTxMedia(m_request);
+        if (!m_context.permitsDispatch(TxCoordinator::monotonicMs())) {
+            // Keyed with nothing licensed to send: unkey here rather than hold
+            // the transmitter up with a silent carrier.
+            m_radio.requestProducerPttOff(m_request, TransmitModel::PttSource::Dax);
+            m_request = {};
+            m_context = {};
+            return false;
+        }
+        return true;
+    }
+    void keyOff() override
+    {
+        if (m_request.valid())
+            m_radio.requestProducerPttOff(m_request, TransmitModel::PttSource::Dax);
+        // Blocks already queued hold their own copy of the context; clearing it
+        // only stops NEW audio being licensed after the key is released.
+        m_context = {};
+        m_request = {};
+    }
+    bool isKeyed() const override { return m_radio.transmitModel().isTransmitting(); }
+    bool waitsForRadioPtt() const override
+    {
+        return m_radio.backendCapabilities().hasRadioPttReadback;
+    }
+    bool isRadioKeyed() const override { return m_radio.isRadioTransmitting(); }
+
+    void sendAudio(const QByteArray& pcm) override
+    {
+        QPointer<AudioEngine> audio = m_audio;
+        QMetaObject::invokeMethod(m_audio, [audio, pcm, context = m_context] {
+            if (audio)
+                audio->sendModemTxAudio(pcm, context);
+        }, Qt::QueuedConnection);
+    }
+    bool finishAudio(quint64 token) override
+    {
+        QPointer<AudioEngine> audio = m_audio;
+        return QMetaObject::invokeMethod(m_audio, [audio, token, context = m_context] {
+            if (audio)
+                audio->finishModemTxAudio(token, context);
+        }, Qt::QueuedConnection);
+    }
+    void clearAudio() override
+    {
+        if (m_audio)
+            m_audio->clearTxAccumulators();   // self-marshals
+    }
+
+private:
+    RadioModel& m_radio;
+    QPointer<AudioEngine> m_audio;
+    // One producer for the life of the route; one request per transmission.
+    TxCoordinator::Producer m_producer;
+    TxCoordinator::Request m_request;
+    TxCoordinator::Context m_context;
+    bool m_prevAudioDax{false};
+    bool m_prevTransmitDax{false};
+    bool m_restoreTransmitDax{false};
+};
+
+} // namespace
+
+void MainWindow::wireLocalVoiceKeyer()
+{
+    m_localVoiceKeyer = new LocalVoiceKeyer(VoiceKeyerSettings::recordingsDir(), this);
+    m_voiceKeyerPlayer = new LocalWavPlayer(this);
+    m_outputRouter->addFollower(m_voiceKeyerPlayer);
+
+    m_localVoiceKeyer->setMicSourceProbe([this] {
+        return m_radioModel.transmitModel().micSelection();
+    });
+    m_localVoiceKeyer->setPreviewHandlers(
+        [this](const QString& path, QString& error) { return m_voiceKeyerPlayer->play(path, error); },
+        [this] { m_voiceKeyerPlayer->stop(); });
+    connect(m_voiceKeyerPlayer, &LocalWavPlayer::finished,
+            m_localVoiceKeyer, &LocalVoiceKeyer::onPreviewFinished);
+
+    // Preview is heard on its own: live RX leaves the sink for the duration,
+    // exactly as QSO-recorder and PooDoo playback do (see their handlers).
+    connect(m_voiceKeyerPlayer, &LocalWavPlayer::muteRxRequested, this, [this](bool mute) {
+        m_rxMutedForPlayback = mute;   // seam backends
+        if (mute) {
+            disconnect(m_radioModel.panStream(), &PanadapterStream::pcmFrameReady,
+                       m_audio, &AudioEngine::feedPcmFrame);
+        } else if (!backendFeedsEngineDirectly()) {
+            connect(m_radioModel.panStream(), &PanadapterStream::pcmFrameReady,
+                    m_audio, &AudioEngine::feedPcmFrame, Qt::UniqueConnection);
+        }
+    });
+
+    // The final TX monitor runs whenever the PC mic is captured, keyed or not.
+    // Emitted on the audio thread; queued onto the keyer's (GUI) thread.
+    connect(m_audio, &AudioEngine::txFinalMonitorPcmReady,
+            m_localVoiceKeyer, &LocalVoiceKeyer::onMicPcm);
+
+    // On-air playback. The route is parented to this window; the transmitter
+    // to the route, so it never outlives what it calls.
+    auto* route = new VoiceKeyerTxRoute(m_radioModel, m_audio, this);
+    m_voiceKeyerTx = new GeneratedAudioTransmitter(route, route);
+    auto* tx = m_voiceKeyerTx;
+    auto& txModel = m_radioModel.transmitModel();
+    connect(&m_radioModel, &RadioModel::txAudioStreamReady,
+            tx, [tx](quint32) { tx->onStreamReady(); });
+    connect(&m_radioModel, &RadioModel::txAudioFinished,
+            tx, &GeneratedAudioTransmitter::onAudioFinished);
+    connect(&m_radioModel, &RadioModel::radioTransmittingChanged,
+            tx, &GeneratedAudioTransmitter::onRadioKeyed);
+    connect(&m_radioModel, &RadioModel::radioTransmitConfirmed,
+            tx, &GeneratedAudioTransmitter::onRadioKeyed);
+    connect(&txModel, &TransmitModel::pttBlocked,
+            tx, &GeneratedAudioTransmitter::onPttBlocked);
+    connect(&txModel, &TransmitModel::moxChanged, tx, [tx](bool on) {
+        if (!on)
+            tx->onKeyReleased();
+    });
+    connect(&m_radioModel, &RadioModel::connectionStateChanged, tx, [tx](bool connected) {
+        if (!connected)
+            tx->abort(QStringLiteral("The radio disconnected."));
+    });
+    m_localVoiceKeyer->setTransmitter(tx);
+}
+
+VoiceKeyerSource MainWindow::voiceKeyerSource() const
+{
+    return resolveVoiceKeyerSource(
+        VoiceKeyerSettings::source(),
+        m_radioModel.licenseFeatureSeen(kDvkLicenseFeature),
+        m_radioModel.licenseFeatureEnabled(kDvkLicenseFeature));
+}
+
+void MainWindow::applyVoiceKeyerSource()
+{
+    if (!m_dvkPanel || !m_localVoiceKeyer)
+        return;
+    VoiceKeyer* wanted = voiceKeyerSource() == VoiceKeyerSource::Local
+                             ? static_cast<VoiceKeyer*>(m_localVoiceKeyer)
+                             : static_cast<VoiceKeyer*>(&m_radioModel.dvkModel());
+    VoiceKeyer* current = m_dvkPanel->keyer();
+    if (wanted == current)
+        return;
+    // Never pull the panel out from under a recording, preview or playback; the
+    // next availability update switches once the current keyer is idle.
+    const auto busy = current ? current->status() : VoiceKeyer::Idle;
+    if (busy == VoiceKeyer::Recording || busy == VoiceKeyer::Preview
+        || busy == VoiceKeyer::Playback)
+        return;
+    m_dvkPanel->setKeyer(wanted);
+}
+
+void MainWindow::showVoiceKeyerSourceMenu(const QPoint& globalPos)
+{
+    const VoiceKeyerSourceSetting setting = VoiceKeyerSettings::source();
+    const bool resolvedLocal = voiceKeyerSource() == VoiceKeyerSource::Local;
+
+    QMenu menu(this);
+    // The app-wide menu style sets one text colour for every item, which hides
+    // Qt's own greying of a disabled one — restate it so an unavailable choice
+    // reads as unavailable, not merely unresponsive.
+    AetherSDR::ThemeManager::instance().applyStyleSheet(&menu,
+        "QMenu::item:disabled, QMenu::item:disabled:checked "
+        "{ color: {{color.button.foreground.disabled}}; }");
+    auto* group = new QActionGroup(&menu);
+    auto addChoice = [&](const QString& text, VoiceKeyerSourceSetting value) {
+        QAction* a = menu.addAction(text);
+        a->setCheckable(true);
+        a->setChecked(setting == value);
+        a->setData(static_cast<int>(value));
+        group->addAction(a);
+        return a;
+    };
+    addChoice(QStringLiteral("Automatic by radio licence (now: %1)")
+                  .arg(resolvedLocal ? QStringLiteral("Local") : QStringLiteral("Radio")),
+              VoiceKeyerSourceSetting::Auto);
+    // The radio's own DVK can only be chosen when this radio has one and has
+    // not said the entitlement is off; a disabled action cannot be triggered.
+    const QString radioUnavailable = radioVoiceKeyerUnavailableReason(
+        m_radioModel.hasVoiceKeyer(),
+        m_radioModel.licenseFeatureSeen(kDvkLicenseFeature),
+        m_radioModel.licenseFeatureEnabled(kDvkLicenseFeature));
+    QAction* radioChoice = addChoice(
+        radioUnavailable.isEmpty()
+            ? QStringLiteral("Radio DVK — recordings on the radio")
+            : QStringLiteral("Radio DVK — %1").arg(radioUnavailable),
+        VoiceKeyerSourceSetting::Radio);
+    radioChoice->setEnabled(radioUnavailable.isEmpty());
+    addChoice(QStringLiteral("Local — recordings on this computer"), VoiceKeyerSourceSetting::Local);
+    menu.addSeparator();
+    QAction* openFolder = menu.addAction(QStringLiteral("Open Local Recordings Folder"));
+    openFolder->setToolTip(VoiceKeyerSettings::recordingsDir());
+
+    QAction* chosen = menu.exec(globalPos);
+    if (!chosen)
+        return;
+    if (chosen == openFolder) {
+        const QString dir = VoiceKeyerSettings::recordingsDir();
+        QDir().mkpath(dir);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+        return;
+    }
+    VoiceKeyerSettings::setSource(static_cast<VoiceKeyerSourceSetting>(chosen->data().toInt()));
+    m_localVoiceKeyer->reload();
+    updateKeyerAvailability();
 }
 
 } // namespace AetherSDR

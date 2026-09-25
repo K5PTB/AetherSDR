@@ -4390,6 +4390,106 @@ add_test(NAME cwx_panel_test COMMAND cwx_panel_test)
 set_tests_properties(cwx_panel_test PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# DvkModel behind the VoiceKeyer interface (RFC #4214 prototype): SmartSDR wire
+# text unchanged, radio status reaches listeners through the interface's
+# signals, WAV import/export goes out as requests gated by the busy probe.
+add_executable(voice_keyer_dvk_model_test
+    tests/voice_keyer_dvk_model_test.cpp
+    src/models/DvkModel.cpp
+    src/models/DvkModel.h
+    src/models/VoiceKeyer.cpp
+    src/models/VoiceKeyer.h
+)
+target_include_directories(voice_keyer_dvk_model_test PRIVATE src)
+target_link_libraries(voice_keyer_dvk_model_test PRIVATE Qt6::Core)
+add_test(NAME voice_keyer_dvk_model_test COMMAND voice_keyer_dvk_model_test)
+
+# DVK panel against a fake VoiceKeyer (RFC #4214 prototype): F-key playback only
+# on a recorded slot, a second press stops, REC acts on the selected slot, the
+# status / refusal / transfer text, and the F-key shortcuts.
+add_executable(dvk_panel_test
+    tests/dvk_panel_test.cpp
+    src/gui/DvkPanel.cpp
+    src/gui/DvkPanel.h
+    src/models/VoiceKeyer.cpp
+    src/models/VoiceKeyer.h
+    # DvkPanel.cpp applies theme stylesheets through ThemeManager; pull in the
+    # manager + its logging deps so the test links (as cwx_panel_test does).
+    src/core/ThemeManager.cpp
+    src/core/ThemeSeedGenerated.cpp
+    ${AETHER_SETTINGS_SOURCES}
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+)
+target_include_directories(dvk_panel_test PRIVATE src)
+target_link_libraries(dvk_panel_test PRIVATE
+    Qt6::Core Qt6::Widgets
+)
+add_test(NAME dvk_panel_test COMMAND dvk_panel_test)
+set_tests_properties(dvk_panel_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# dk4dj's #957 WAV decoder, carried into RFC #4214: the untrusted-input boundary
+# for imported and dropped-in voice keyer recordings (Principle VII).
+add_executable(voice_keyer_wav_decoder_test
+    tests/voice_keyer_wav_decoder_test.cpp
+    src/core/VoiceKeyerWavDecoder.cpp
+    src/core/Resampler.cpp
+)
+target_include_directories(voice_keyer_wav_decoder_test PRIVATE
+    src
+    ${CMAKE_SOURCE_DIR}/third_party/r8brain
+)
+target_link_libraries(voice_keyer_wav_decoder_test PRIVATE Qt6::Core)
+add_test(NAME voice_keyer_wav_decoder_test COMMAND voice_keyer_wav_decoder_test)
+
+# Radio vs Local voice keyer selection (RFC #4214). Header-only, pure logic.
+add_executable(voice_keyer_source_test
+    tests/voice_keyer_source_test.cpp
+)
+target_include_directories(voice_keyer_source_test PRIVATE src)
+target_link_libraries(voice_keyer_source_test PRIVATE Qt6::Core)
+add_test(NAME voice_keyer_source_test COMMAND voice_keyer_source_test)
+
+# Client-side voice keyer (RFC #4214): recording from the mic tap, preview,
+# slot management, WAV import/export, labels persisted in AppSettings.
+add_executable(local_voice_keyer_test
+    tests/local_voice_keyer_test.cpp
+    src/models/LocalVoiceKeyer.cpp
+    src/models/LocalVoiceKeyer.h
+    src/models/VoiceKeyer.cpp
+    src/models/VoiceKeyer.h
+    src/core/LocalVoiceKeyerStore.cpp
+    src/core/VoiceKeyerSettings.cpp
+    src/core/VoiceKeyerWavDecoder.cpp
+    src/core/Resampler.cpp
+    src/core/GeneratedAudioTransmitter.cpp
+    ${AETHER_SETTINGS_SOURCES}
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+)
+target_include_directories(local_voice_keyer_test PRIVATE
+    src
+    tests
+    ${CMAKE_SOURCE_DIR}/third_party/r8brain
+)
+target_link_libraries(local_voice_keyer_test PRIVATE Qt6::Core)
+add_test(NAME local_voice_keyer_test COMMAND local_voice_keyer_test)
+
+# Shared generated-audio transmitter (RFC #4214): key/send/drain/unkey
+# sequencing for Flex, HL2 and Icom route shapes, against a scripted route.
+add_executable(generated_audio_transmitter_test
+    tests/generated_audio_transmitter_test.cpp
+    tests/FakeTxAudioRoute.h
+    src/core/GeneratedAudioTransmitter.cpp
+    ${AETHER_SETTINGS_SOURCES}
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+)
+target_include_directories(generated_audio_transmitter_test PRIVATE src tests)
+target_link_libraries(generated_audio_transmitter_test PRIVATE Qt6::Core)
+add_test(NAME generated_audio_transmitter_test COMMAND generated_audio_transmitter_test)
+
 add_executable(meter_model_test
     tests/meter_model_test.cpp
     src/models/MeterModel.cpp
@@ -6561,6 +6661,9 @@ set(AETHER_SETTINGS_CONSUMERS
     cwx_speed_modifier_test
     cwx_drain_watch_test
     cwx_panel_test
+    dvk_panel_test
+    local_voice_keyer_test
+    generated_audio_transmitter_test
     meter_model_test
     health_applet_test
     meter_applet_capability_test

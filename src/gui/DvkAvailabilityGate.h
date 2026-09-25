@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/VoiceKeyerSource.h"
+
 #include <QLatin1String>
 #include <QString>
 
@@ -48,6 +50,39 @@ inline DvkIndicatorBlocker dvkIndicatorBlocker(bool txModeIsVoice,
         return DvkIndicatorBlocker::TxModeNotVoice;
     }
     return DvkIndicatorBlocker::None;
+}
+
+// The same gate once RFC #4214's client-side keyer exists. With the Local keyer
+// selected, recordings and playback never touch the radio's DVK, so the radio's
+// entitlement is irrelevant and only the TX-mode gate applies. With the Radio
+// keyer selected, nothing changes.
+inline DvkIndicatorBlocker voiceKeyerIndicatorBlocker(VoiceKeyerSource source,
+                                                      bool txModeIsVoice,
+                                                      bool licenseSeen,
+                                                      bool licenseEnabled)
+{
+    if (source == VoiceKeyerSource::Local) {
+        return txModeIsVoice ? DvkIndicatorBlocker::None
+                             : DvkIndicatorBlocker::TxModeNotVoice;
+    }
+    return dvkIndicatorBlocker(txModeIsVoice, licenseSeen, licenseEnabled);
+}
+
+// Why the "Radio DVK" choice in the keyer-source menu cannot be picked, or an
+// empty string when it can. Same radio-authoritative, fail-open rules as the
+// indicator: a radio with no DVK at all, or one that SAYS the entitlement is
+// off, disables the choice; an entitlement not yet reported leaves it open.
+inline QString radioVoiceKeyerUnavailableReason(bool hasVoiceKeyer,
+                                                bool licenseSeen,
+                                                bool licenseEnabled)
+{
+    if (!hasVoiceKeyer) {
+        return QStringLiteral("not available on this radio");
+    }
+    if (licenseSeen && !licenseEnabled) {
+        return QStringLiteral("requires an active SmartSDR+ subscription");
+    }
+    return QString();
 }
 
 // Tooltip for the DVK indicator, dimmed or not. The gated text names the

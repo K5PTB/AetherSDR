@@ -121,6 +121,7 @@
 #include "FlexControlDialog.h"
 #include "CwxPanel.h"
 #include "DvkAvailabilityGate.h"
+#include "core/GeneratedAudioTransmitter.h"
 #include "VoiceModeGate.h"
 #include "DvkPanel.h"
 #include "core/DvkWavTransfer.h"
@@ -1405,6 +1406,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_outputRouter->setCurrentDevice(m_audio->outputDevice());
     m_outputRouter->addFollower(m_finalMonitor);
     m_outputRouter->addFollower(m_qsoRecorder);
+    wireLocalVoiceKeyer();
 
     // Wire the Quindar tone coordinator (#2262).  TransmitModel needs
     // the DSP module (to drive intro/outro phases) and a TX-mode
@@ -5362,11 +5364,22 @@ void MainWindow::buildUI()
     splitter->addWidget(m_cwxPanel);
     m_cwxPanel->hide();
 
-    // DVK panel — left of spectrum, hidden by default (mutually exclusive with CWX)
-    m_dvkPanel = new DvkPanel(&m_radioModel.dvkModel(), splitter);
+    // DVK panel — left of spectrum, hidden by default (mutually exclusive with CWX).
+    // The panel drives a VoiceKeyer. The radio DVK asks for WAV import/export by
+    // signal; the Flex transfer that carries it is wired here, where that wire
+    // code is already in reach.
+    auto& dvkModel = m_radioModel.dvkModel();
     auto* dvkTransfer = new DvkWavTransfer(&m_radioModel, this);
-    m_dvkPanel->setWavTransfer(dvkTransfer);
+    connect(&dvkModel, &DvkModel::wavUploadRequested, dvkTransfer, &DvkWavTransfer::upload);
+    connect(&dvkModel, &DvkModel::wavDownloadRequested, dvkTransfer, &DvkWavTransfer::download);
+    connect(dvkTransfer, &DvkWavTransfer::statusChanged, &dvkModel, &VoiceKeyer::transferStatusChanged);
+    connect(dvkTransfer, &DvkWavTransfer::finished, &dvkModel, &VoiceKeyer::transferFinished);
+    dvkModel.setWavTransferBusyProbe([transfer = QPointer<DvkWavTransfer>(dvkTransfer)] {
+        return transfer && transfer->isTransferring();
+    });
+    m_dvkPanel = new DvkPanel(&dvkModel, splitter);
     splitter->addWidget(m_dvkPanel);
+    applyVoiceKeyerSource();  // Local may already be the saved choice
     m_dvkPanel->hide();
 
     // Centre — panadapter stack (one or more FFT + waterfall panes)
@@ -10505,7 +10518,16 @@ void MainWindow::updateKeyerAvailability()
     // evaluated once here and applied to the indicator, the panel and the
     // F1-F12 shortcuts alike — otherwise the keys stay armed and each keypress
     // is refused by the radio (the "silently does nothing" report).
-    const DvkIndicatorBlocker dvkBlocker = dvkIndicatorBlocker(
+    // Radio vs Local keyer (RFC #4214) follows the same licence statuses, so
+    // re-resolve it here; with Local selected the entitlement stops gating.
+    applyVoiceKeyerSource();
+    // Local playback is voice audio: if the TX slice leaves a voice mode
+    // mid-message, unkey rather than feed speech into CW or data (Principle VI).
+    if (m_voiceKeyerTx && m_voiceKeyerTx->isActive() && txSlice && !txIsSsb) {
+        m_voiceKeyerTx->abort(QStringLiteral("The transmit slice left voice mode."));
+    }
+    const DvkIndicatorBlocker dvkBlocker = voiceKeyerIndicatorBlocker(
+        voiceKeyerSource(),
         txIsSsb,
         m_radioModel.licenseFeatureSeen(kDvkLicenseFeature),
         m_radioModel.licenseFeatureEnabled(kDvkLicenseFeature));

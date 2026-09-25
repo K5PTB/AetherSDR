@@ -18,6 +18,7 @@
 #include "models/AntennaGeniusModel.h"
 #include "models/SliceLinkPolicy.h"
 #include "core/AppSettings.h"
+#include "core/VoiceKeyerSource.h"
 #include "core/AetherDspModePolicy.h"
 #include "core/KiwiSdrTxMutePolicy.h"  // optimistic-unkey Kiwi mute latch
 #include "core/RadioMessageTypes.h"   // MessageSeverity for onRadioMessage slot
@@ -193,6 +194,9 @@ class UlanziDialBackend;
 #endif
 class CwxPanel;
 class DvkPanel;
+class LocalVoiceKeyer;
+class LocalWavPlayer;
+class GeneratedAudioTransmitter;
 #ifdef HAVE_RADE
 class RADEEngine;
 #endif
@@ -984,6 +988,11 @@ private:
     void showFreeDvReporter();
 #endif
     void updateKeyerAvailability();
+    // Client-side voice keyer (MainWindow_DigitalModes.cpp).
+    void wireLocalVoiceKeyer();
+    VoiceKeyerSource voiceKeyerSource() const;
+    void applyVoiceKeyerSource();
+    void showVoiceKeyerSourceMenu(const QPoint& globalPos);
     void showNr2ParamPopup(const QPoint& globalPos);
     void showNr4ParamPopup(const QPoint& globalPos);
     void showDfnrParamPopup(const QPoint& globalPos);
@@ -1676,6 +1685,11 @@ private:
 #endif
     CwxPanel* m_cwxPanel{nullptr};
     DvkPanel* m_dvkPanel{nullptr};
+    // RFC #4214 client-side voice keyer: recordings on this computer, driven
+    // through the same DVK panel as the radio DVK. See wireLocalVoiceKeyer().
+    LocalVoiceKeyer* m_localVoiceKeyer{nullptr};
+    LocalWavPlayer* m_voiceKeyerPlayer{nullptr};
+    GeneratedAudioTransmitter* m_voiceKeyerTx{nullptr};   // local slots on the air
     QLabel* m_dvkIndicator{nullptr};
     QLabel* m_fdxIndicator{nullptr};
     QMetaObject::Connection m_tnfIndicatorConnection;
