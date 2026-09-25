@@ -222,6 +222,17 @@ RadioCapabilities FlexBackend::capabilities() const
     caps.twoToneGenerator = RadioCapabilities::TwoToneGenerator{
         QStringLiteral("transmit set tune_mode=two_tone")};
     caps.manufacturer = QStringLiteral("FlexRadio");
+    // A Flex reports a SmartSDR version, and SmartSDR versions are published on
+    // FlexRadio's software page — which FirmwareStager already reads. Declaring
+    // this is what lets the status bar say the firmware is behind without any
+    // part of the shared chrome knowing which family answered.
+    //
+    // Only the release-notes URL shape is family knowledge worth compiling in;
+    // the version itself is fetched, never hard-coded. The "%1" is the release
+    // with dots as dashes, verified against every release from 3.8.23 to 4.2.20.
+    caps.firmwareUpdateSource = FirmwareUpdateSource{
+        QStringLiteral(
+            "https://www.flexradio.com/documentation/smartsdr-v%1-release-notes/")};
     caps.model = m_modelProvider ? m_modelProvider() : QString();
     caps.fmTonePresentation = FmTonePresentation::Legacy;
     caps.fmDtcsCodes = {};

@@ -2609,6 +2609,15 @@ target_include_directories(waveform_upload_state_test PRIVATE src)
 target_link_libraries(waveform_upload_state_test PRIVATE Qt6::Core)
 add_test(NAME waveform_upload_state_test COMMAND waveform_upload_state_test)
 
+# Status-bar firmware-currency verdict: pure version comparison, no widgets.
+add_executable(firmware_currency_test
+    tests/firmware_currency_test.cpp
+)
+target_include_directories(firmware_currency_test PRIVATE src)
+target_link_libraries(firmware_currency_test PRIVATE aethercore Qt6::Core Qt6::Network)
+set_target_properties(firmware_currency_test PROPERTIES AUTOMOC ON)
+add_test(NAME firmware_currency_test COMMAND firmware_currency_test)
+
 # #5572 — socket-free firmware upload lifecycle. The injected writer exercises
 # production queue accounting and terminal handlers without a radio peer.
 add_executable(firmware_uploader_test
