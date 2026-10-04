@@ -11,6 +11,11 @@ class QThread;
 
 namespace AetherSDR {
 
+// Reads FlexRadio's published release list. Forward-declared rather than
+// included: this header is scanned above the radio seam, and the include
+// belongs in the .cpp with the rest of the family's wire knowledge.
+class FirmwareStager;
+
 class RadioConnection;
 class PanadapterStream;
 
@@ -229,6 +234,19 @@ private:
     // Cleared by clearExtensionHandles() on disconnect: a reconnect to a
     // DIFFERENT radio must announce again.
     QString m_announcedModel;
+
+    // The newest SmartSDR release FlexRadio publishes, asked for once when this
+    // backend is built and never again, and empty until it answers. Reported
+    // through capabilities() so the status bar can say whether the connected
+    // radio is behind without any code above the seam knowing where SmartSDR
+    // releases are listed.
+    //
+    // ASKED HERE, AND ONLY HERE. RadioModel builds a backend in its own
+    // constructor, so this runs at app startup, before any radio is connected —
+    // which is the point. Leaving it on Radio Setup's "Check for Update" button
+    // meant that on most stations nothing ever asked.
+    QString m_latestPublishedVersion;
+    FirmwareStager* m_firmwareVersions{nullptr};
 };
 
 }  // namespace AetherSDR

@@ -1,5 +1,6 @@
 #include "FirmwareStager.h"
 #include "CabExtractor.h"
+#include "FirmwareCurrency.h"   // compareReleases() — one definition of "newer"
 #include "LogManager.h"
 #include "OleCompoundFile.h"
 #include "models/ModelCapabilities.h"   // RadioPlatform for firmware-family routing
@@ -10,6 +11,7 @@
 #include <QFileInfo>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QVersionNumber>
 #include <QStandardPaths>
 #include <QUrl>
 
@@ -67,50 +69,110 @@ bool FirmwareStager::versionUsesMsi(const QString& version)
     return (major > 4) || (major == 4 && minor >= 2);
 }
 
+// ─── Step 0: What does FlexRadio publish? ───────────────────────────────────
+
+// The software page lists every SmartSDR release it has ever carried, so this
+// picks the highest rather than the first. NUMERICALLY: as text, "4.2.5" sorts
+// after "4.2.20" and "3.9.19" after "3.10.15", so a string maximum silently
+// picks an older release whenever a one-digit component meets a two-digit one.
+// The page happens not to contain such a pair today, which is exactly the kind
+// of luck an indicator should not be built on.
+//
+// Only major.minor.patch is published anywhere on the site; the fourth
+// component of a radio's reported version (the build, "4.2.20.41343") appears
+// only inside a downloaded installer, so nothing here can produce one.
+QString FirmwareStager::parseLatestVersion(const QString& html)
+{
+    // Both spellings the page uses: "SmartSDR v4.1.5" in headings and alt text,
+    // and "smartsdr-v4-1-5" in the per-release links. The hyphenated form is
+    // matched here for the first time — the previous pattern accepted only dots
+    // although its comment claimed both, so every release link on the page was
+    // silently skipped and only the prose spellings were ever read.
+    static const QRegularExpression re(
+        R"(SmartSDR[- _]v?(\d+\.\d+\.\d+|\d+-\d+-\d+))",
+        QRegularExpression::CaseInsensitiveOption);
+
+    QVersionNumber best;
+    QString bestText;
+    auto it = re.globalMatch(html);
+    while (it.hasNext()) {
+        const QString text =
+            it.next().captured(1).replace(QLatin1Char('-'), QLatin1Char('.'));
+        const QVersionNumber v = QVersionNumber::fromString(text);
+        // A component that overflows int parses to nothing (measured:
+        // "2147483648.0.0" is null), and the pattern above happily matches one
+        // from a page we do not control. Skipping it keeps this function's
+        // promise — a usable version or nothing — rather than handing the
+        // caller a string that only looks like one (Principle VII).
+        if (v.isNull())
+            continue;
+        if (best.isNull() || QVersionNumber::compare(v, best) > 0) {
+            best = v;
+            bestText = text;
+        }
+    }
+    return bestText;
+}
+
+void FirmwareStager::requestLatestVersion(
+    std::function<void(const QString&, const QString&)> done)
+{
+    auto* reply = m_nam.get(QNetworkRequest(QUrl(SOFTWARE_PAGE)));
+    connect(reply, &QNetworkReply::finished, this,
+            // `this` is the connect context (lifetime), not a capture: every
+            // member this lambda touches is static.
+            [reply, done = std::move(done)]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            done({}, "Cannot reach FlexRadio: " + reply->errorString());
+            return;
+        }
+
+        // Untrusted input, validated at the boundary (Principle VII): this is a
+        // public web page over which we have no control, so its size is bounded
+        // before it is turned into a QString and its content is only ever
+        // matched against a digits-and-dots pattern.
+        if (reply->bytesAvailable() > kMaxSoftwarePageBytes) {
+            done({}, "FlexRadio software page is implausibly large; ignoring it.");
+            return;
+        }
+
+        const QString latest = parseLatestVersion(QString::fromUtf8(reply->readAll()));
+        if (latest.isEmpty()) {
+            done({}, "Could not determine latest version from FlexRadio website.");
+            return;
+        }
+        done(latest, {});
+    });
+}
+
+void FirmwareStager::fetchLatestVersion()
+{
+    requestLatestVersion([this](const QString& latest, const QString& error) {
+        if (latest.isEmpty())
+            emit latestVersionUnavailable(error);
+        else
+            emit latestVersionKnown(latest);
+    });
+}
+
 // ─── Step 1: Check for update ────────────────────────────────────────────────
 
 void FirmwareStager::checkForUpdate(const QString& currentVersion)
 {
     emit stageProgress(0, "Checking for updates...");
 
-    auto* reply = m_nam.get(QNetworkRequest(QUrl(SOFTWARE_PAGE)));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, currentVersion]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            emit updateCheckFailed("Cannot reach FlexRadio: " + reply->errorString());
-            return;
-        }
-
-        const QString html = QString::fromUtf8(reply->readAll());
-
-        // Find latest version from the software page
-        // Pattern: SmartSDR v4.1.5 or smartsdr-v4-1-5
-        QRegularExpression re(R"(SmartSDR[- _]v?(\d+\.\d+\.\d+))",
-                              QRegularExpression::CaseInsensitiveOption);
-        QString latest;
-        auto it = re.globalMatch(html);
-        while (it.hasNext()) {
-            auto m = it.next();
-            const QString v = m.captured(1);
-            if (latest.isEmpty() || v > latest)
-                latest = v;
-        }
-
+    requestLatestVersion([this, currentVersion](const QString& latest,
+                                                const QString& error) {
         if (latest.isEmpty()) {
-            emit updateCheckFailed("Could not determine latest version from FlexRadio website.");
+            emit updateCheckFailed(error);
             return;
         }
 
-        // Compare major.minor.patch only (ignore build number like .39794)
-        auto normalize = [](const QString& v) {
-            const auto parts = v.split('.');
-            if (parts.size() >= 3)
-                return QString("%1.%2.%3").arg(parts[0], parts[1], parts[2]);
-            return v;
-        };
-        const QString normLatest  = normalize(latest);
-        const QString normCurrent = normalize(currentVersion);
-        const bool updateAvailable = (normLatest > normCurrent);
+        // Compare major.minor.patch only: the build number is not published, so
+        // the radio's fourth component has nothing on the other side to meet.
+        const bool updateAvailable =
+            FirmwareCurrency::compareReleases(latest, currentVersion) > 0;
         emit updateCheckComplete(latest, updateAvailable);
     });
 }

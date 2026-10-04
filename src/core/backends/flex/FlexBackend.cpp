@@ -5,7 +5,9 @@
 #include <limits>
 
 #include <QThread>
+#include <QTimer>
 
+#include "core/FirmwareStager.h"    // the published-release list, read once at startup
 #include "core/LogManager.h"
 #include "core/backends/flex/RadioConnection.h"
 #include "core/backends/flex/PanadapterStream.h"
@@ -56,6 +58,35 @@ FlexBackend::FlexBackend(QObject* parent)
     m_connection->moveToThread(m_connThread);
     connect(m_connThread, &QThread::started, m_connection, &RadioConnection::init);
     m_connThread->start();
+
+    // Ask FlexRadio once, now, which SmartSDR release is published. This runs at
+    // app startup: RadioModel builds a backend in its own constructor, well
+    // before any radio is connected, and the answer is about what the vendor
+    // publishes rather than about any particular radio.
+    //
+    // A failure is not an error state and raises nothing. m_latestPublishedVersion
+    // simply stays empty, which is the "no verdict" every consumer already
+    // handles, and an operator with no route to the internet sees the status bar
+    // they have always seen. There is no retry; the next launch asks again.
+    // POSTED TO THE EVENT LOOP, NOT DONE HERE. Constructing a backend must have
+    // no side effects of its own: several tests build and destroy one purely to
+    // exercise teardown, and reaching out to flexradio.com because somebody
+    // called `new FlexBackend` would be a surprise in all of them. Deferring it
+    // also means the ask costs the startup path nothing. A backend destroyed
+    // before the loop turns takes the pending call with it — `this` is the
+    // context object.
+    QTimer::singleShot(0, this, [this]() {
+        m_firmwareVersions = new FirmwareStager(this);
+        connect(m_firmwareVersions, &FirmwareStager::latestVersionKnown, this,
+                [this](const QString& latest) {
+            if (m_latestPublishedVersion == latest)
+                return;
+            m_latestPublishedVersion = latest;
+            // A real revision of the descriptor, announced like any other.
+            emit capabilitiesChanged();
+        });
+        m_firmwareVersions->fetchLatestVersion();
+    });
 
     // Observe wire lifecycle and re-emit as the interface's own signals. Queued
     // (auto) connections: the connection lives on its worker thread.
@@ -224,6 +255,18 @@ RadioCapabilities FlexBackend::capabilities() const
     caps.twoToneGenerator = RadioCapabilities::TwoToneGenerator{
         QStringLiteral("transmit set tune_mode=two_tone")};
     caps.manufacturer = QStringLiteral("FlexRadio");
+    // A Flex reports a SmartSDR version, and SmartSDR versions are published on
+    // FlexRadio's software page — which FirmwareStager already reads. Declaring
+    // this is what lets the status bar say the firmware is behind without any
+    // part of the shared chrome knowing which family answered.
+    //
+    // Only the release-notes URL shape is family knowledge worth compiling in;
+    // the version itself is fetched, never hard-coded. The "%1" is the release
+    // with dots as dashes, verified against every release from 3.8.23 to 4.2.20.
+    caps.firmwareUpdateSource = FirmwareUpdateSource{
+        QStringLiteral(
+            "https://www.flexradio.com/documentation/smartsdr-v%1-release-notes/"),
+        m_latestPublishedVersion};
     caps.model = m_modelProvider ? m_modelProvider() : QString();
     caps.fmTonePresentation = FmTonePresentation::Legacy;
     caps.fmDtcsCodes = {};

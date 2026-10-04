@@ -19,8 +19,23 @@ class FirmwareStager : public QObject {
 public:
     explicit FirmwareStager(QObject* parent = nullptr);
 
+    // Fetch the latest SmartSDR version FlexRadio publishes, and judge nothing.
+    // Answers `latestVersionKnown` or `latestVersionUnavailable` exactly once.
+    //
+    // Separate from checkForUpdate() because the two have different questions:
+    // this one asks "what is published?", which needs no radio and is safe to
+    // ask before one is connected. checkForUpdate() asks "is THIS radio behind?"
+    // and is built on top of it.
+    void fetchLatestVersion();
+
     // Check FlexRadio website for latest version
     void checkForUpdate(const QString& currentVersion);
+
+    // The highest SmartSDR version named on a FlexRadio software page, or empty
+    // when the page names none. Exposed for tests: the page is the untrusted
+    // input this class exists to read (Principle VII), and its parse is the part
+    // worth pinning without a network.
+    static QString parseLatestVersion(const QString& html);
 
     // Download installer, verify, extract .ssdr for the given model family
     // modelFamily: "6x00" or "9600"
@@ -47,6 +62,10 @@ public:
     static QString stagingDir();
 
 signals:
+    // Step 0: what does FlexRadio publish? (fetchLatestVersion)
+    void latestVersionKnown(const QString& latestVersion);
+    void latestVersionUnavailable(const QString& reason);
+
     // Step 1: version check
     void updateCheckComplete(const QString& latestVersion, bool updateAvailable);
     void updateCheckFailed(const QString& error);
@@ -69,6 +88,16 @@ private:
     // Returns true if the version uses the WiX MSI installer (v4.2+) instead
     // of the older InnoSetup .exe.
     static bool versionUsesMsi(const QString& version);
+
+    // One GET of the software page, one parse, one answer. Both public entry
+    // points wrap this so the page is read and validated in exactly one place.
+    // `done` receives the parsed version, or an empty string plus a reason.
+    void requestLatestVersion(std::function<void(const QString& version,
+                                                 const QString& error)> done);
+
+    // Refuse a software page larger than this rather than buffering whatever
+    // the far end decides to send. The real page is ~290 KB.
+    static constexpr qint64 kMaxSoftwarePageBytes = 8 * 1024 * 1024;
 
     QNetworkAccessManager m_nam;
     QNetworkReply*  m_downloadReply{nullptr};
