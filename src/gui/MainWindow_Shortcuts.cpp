@@ -870,14 +870,16 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
                     || static_cast<QKeyEvent*>(event)->key() == Qt::Key_Enter)))) {
         if (m_radioFirmwareCurrency != AetherSDR::FirmwareCurrency::Status::Outdated)
             return false;
-        // The page is built from the backend's declared template and the
-        // release the operator is behind — the one the startup fetch found, not
-        // the one the radio is running.
+        // The page is the newest release OF THE RADIO'S OWN LINE — never the
+        // newest overall. An operator on v3 must not be handed v4's notes for
+        // an upgrade that is not the one being recommended.
         const auto& source = m_radioModel.backendCapabilities().firmwareUpdateSource;
         if (!source.has_value())
             return false;
         const QString url = AetherSDR::FirmwareCurrency::releaseNotesUrl(
-            source->releaseNotesUrlTemplate, source->latestPublishedVersion);
+            source->releaseNotesUrlTemplate,
+            AetherSDR::FirmwareCurrency::upgradeTargetFor(
+                source->publishedReleases, m_radioVersionLabel->text()));
         if (url.isEmpty())
             return false;
         QDesktopServices::openUrl(QUrl(url));

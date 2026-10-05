@@ -2,6 +2,7 @@
 
 #include <QFlags>
 #include <QList>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -205,21 +206,35 @@ struct FirmwareUpdateSource {
     // operator is shown the verdict with nowhere to click.
     QString releaseNotesUrlTemplate;
 
-    // The newest release the vendor currently publishes, or empty when nobody
-    // has found out yet — nothing has asked, the ask failed, or the answer did
-    // not parse. Empty is the honest default and yields no verdict at all; it
-    // is NOT a claim that the connected radio is current.
+    // The newest release the vendor publishes FOR EACH MAJOR LINE, keyed by
+    // major: {2: "2.10.1", 3: "3.10.15", 4: "4.2.20"}. Empty when nobody has
+    // found out yet — nothing has asked, the ask failed, or the answer did not
+    // parse. Empty is the honest default and yields no verdict at all; it is
+    // NOT a claim that the connected radio is current.
     //
-    // A backend is expected to fill this only once it has reached a radio, and
-    // to cache what it learns rather than ask again on every connect.
+    // PER LINE, NOT ONE "LATEST", and this is the shape to keep. A vendor can
+    // offer several lines for download at once, and a radio belongs to exactly
+    // one of them: measuring it against the global maximum tells an operator on
+    // an older line to install a release from a line they are not on, and links
+    // release notes they cannot use. The consumer compares against the entry
+    // whose major matches the radio's own reported version, and shows nothing
+    // when the radio's line is not listed.
+    //
+    // DELIBERATELY NOT THE RADIO'S LICENSED VERSION. A radio's licence fields
+    // cannot carry this: measured on a FLEX-6500 running 4.2.20.41343, the
+    // discovery broadcast and the connected `license` status both reported a
+    // ceiling BELOW the firmware actually running, and disagreed with
+    // FlexRadio's own SmartLink record for the same radio. The line the radio
+    // is running is observable and self-consistent; what it is licensed for is
+    // not.
     //
     // FILLED IN BY THE BACKEND, not by whoever displays it. Finding out is
     // family work: it means knowing which page lists this vendor's releases and
     // how to read it, which is exactly the knowledge that must not climb above
     // the radio seam (docs/HERMES.md §"For coding agents"; the engine-boundary
-    // gate enforces it). A consumer above the seam reads this field and asks no
-    // further questions.
-    QString latestPublishedVersion;
+    // gate enforces it). A consumer above the seam reads this record and asks
+    // no further questions.
+    QMap<int, QString> publishedReleases;
 };
 
 // A stable, radio-owned receive-filter preset. `id` is the identity used on

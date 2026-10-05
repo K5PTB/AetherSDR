@@ -246,7 +246,7 @@ private:
     // the app. The answer is cached in AppSettings as one family-wide feature
     // document, so a disconnect and reconnect, a switch between radios, and a
     // later launch all reuse it until it ages out (PR #6177 review, M2).
-    QString m_latestPublishedVersion;
+    QMap<int, QString> m_publishedReleases;
     FirmwareStager* m_firmwareVersions{nullptr};
     bool m_firmwareLookupInFlight{false};
 
@@ -256,7 +256,7 @@ private:
 
     // The family-wide AppSettings feature document holding that cache.
     static constexpr const char* kPublishedFirmwareFeature = "publishedFirmware";
-    static constexpr int kPublishedFirmwareSchema = 1;
+    static constexpr int kPublishedFirmwareSchema = 2;
 };
 
 }  // namespace AetherSDR

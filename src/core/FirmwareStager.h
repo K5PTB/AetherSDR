@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMap>
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -31,11 +32,16 @@ public:
     // Check FlexRadio website for latest version
     void checkForUpdate(const QString& currentVersion);
 
-    // The highest SmartSDR version named on a FlexRadio software page, or empty
-    // when the page names none. Exposed for tests: the page is the untrusted
-    // input this class exists to read (Principle VII), and its parse is the part
-    // worth pinning without a network.
-    static QString parseLatestVersion(const QString& html);
+    // The newest SmartSDR release NAMED ON THE PAGE FOR EACH MAJOR LINE, keyed
+    // by major: {2: "2.10.1", 3: "3.10.15", 4: "4.2.20"} on today's page. Empty
+    // when the page names none.
+    //
+    // Grouped rather than reduced to one maximum because FlexRadio offers
+    // several lines for download at once, and a radio belongs to exactly one of
+    // them. Exposed for tests: the page is the untrusted input this class exists
+    // to read (Principle VII), and its parse is the part worth pinning without a
+    // network.
+    static QMap<int, QString> parsePublishedReleases(const QString& html);
 
     // Download installer, verify, extract .ssdr for the given model family
     // modelFamily: "6x00" or "9600"
@@ -63,7 +69,7 @@ public:
 
 signals:
     // Step 0: what does FlexRadio publish? (fetchLatestVersion)
-    void latestVersionKnown(const QString& latestVersion);
+    void publishedReleasesKnown(const QMap<int, QString>& newestByMajor);
     void latestVersionUnavailable(const QString& reason);
 
     // Step 1: version check
@@ -92,8 +98,9 @@ private:
     // One GET of the software page, one parse, one answer. Both public entry
     // points wrap this so the page is read and validated in exactly one place.
     // `done` receives the parsed version, or an empty string plus a reason.
-    void requestLatestVersion(std::function<void(const QString& version,
-                                                 const QString& error)> done);
+    void requestPublishedReleases(
+        std::function<void(const QMap<int, QString>& newestByMajor,
+                           const QString& error)> done);
 
     // Refuse a software page larger than this rather than buffering whatever
     // the far end decides to send. The real page is ~290 KB.

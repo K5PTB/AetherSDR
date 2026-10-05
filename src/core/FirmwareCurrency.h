@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QMap>
 #include <QString>
 #include <QVersionNumber>
 
@@ -41,18 +42,51 @@ enum class Status {
     Outdated,  // behind the newest published release
 };
 
-// A release NEWER than the published one is Current, not Outdated. A published
-// answer can be stale — it is a web page read at startup — and an operator on a
-// release the page has not caught up with must not be told to upgrade.
-inline Status evaluate(const QString& latestPublished, const QString& reported)
+// Judge a radio against the newest release OF ITS OWN LINE.
+//
+// `published` is newest-per-major (RadioCapabilities::FirmwareUpdateSource).
+// The entry whose major matches the radio's is the only one it is measured
+// against: a vendor can offer several lines at once, and telling an operator on
+// v3 that they are behind a v4 release points them at a line they are not on
+// and links notes they cannot use.
+//
+// A radio whose line is NOT published yields Unknown rather than a verdict —
+// no entry means nobody has said what the newest release of that line is, and
+// a radio must never be judged against a different line's.
+//
+// Within the line, a release NEWER than the published one is Current. The
+// published answer can be stale — it is a web page read at connect — and an
+// operator ahead of it must not be told to upgrade.
+inline Status evaluate(const QMap<int, QString>& published, const QString& reported)
 {
     const QVersionNumber theirs = releaseOf(reported);
-    const QVersionNumber ours = releaseOf(latestPublished);
-    if (theirs.isNull() || ours.isNull())
+    if (theirs.isNull())
+        return Status::Unknown;
+
+    const auto entry = published.constFind(theirs.majorVersion());
+    if (entry == published.constEnd())
+        return Status::Unknown;
+
+    const QVersionNumber ours = releaseOf(*entry);
+    if (ours.isNull())
         return Status::Unknown;
 
     return QVersionNumber::compare(theirs, ours) < 0 ? Status::Outdated
                                                      : Status::Current;
+}
+
+// The release a radio would be upgraded TO: the newest of its own line, or
+// empty when that line is not published. This is what the release-notes link
+// must be built from — never the newest release overall.
+inline QString upgradeTargetFor(const QMap<int, QString>& published,
+                                const QString& reported)
+{
+    const QVersionNumber theirs = releaseOf(reported);
+    if (theirs.isNull())
+        return {};
+
+    const auto entry = published.constFind(theirs.majorVersion());
+    return entry == published.constEnd() ? QString() : *entry;
 }
 
 // Which of two versions names the newer release: -1, 0 or 1, on the same

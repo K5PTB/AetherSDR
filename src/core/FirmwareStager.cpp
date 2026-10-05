@@ -81,7 +81,7 @@ bool FirmwareStager::versionUsesMsi(const QString& version)
 // Only major.minor.patch is published anywhere on the site; the fourth
 // component of a radio's reported version (the build, "4.2.20.41343") appears
 // only inside a downloaded installer, so nothing here can produce one.
-QString FirmwareStager::parseLatestVersion(const QString& html)
+QMap<int, QString> FirmwareStager::parsePublishedReleases(const QString& html)
 {
     // Both spellings the page uses: "SmartSDR v4.1.5" in headings and alt text,
     // and "smartsdr-v4-1-5" in the per-release links.
@@ -90,17 +90,19 @@ QString FirmwareStager::parseLatestVersion(const QString& html)
     // writing this as two alternatives rather than one character class. With it
     // optional, an asset named "SmartSDR-2025-03-12.png" parses as release
     // 2025.3.12 — newer than anything real, so every radio reads Outdated and
-    // the release-notes link 404s. A page we do not control deciding that every
-    // operator is behind is the wrong-verdict direction this whole feature is
-    // built to avoid. The dotted form keeps `v` optional because prose on the
-    // page genuinely writes both "SmartSDR v4.2.20" and "SmartSDR 4.2.20", and
-    // a dotted triple is not a date.
+    // the release-notes link 404s. The dotted form keeps `v` optional because
+    // prose on the page genuinely writes both "SmartSDR v4.2.20" and
+    // "SmartSDR 4.2.20", and a dotted triple is not a date.
     static const QRegularExpression re(
         R"(SmartSDR[- _]v?(\d+\.\d+\.\d+)|smartsdr-v(\d+-\d+-\d+))",
         QRegularExpression::CaseInsensitiveOption);
 
-    QVersionNumber best;
-    QString bestText;
+    // GROUPED BY MAJOR, not reduced to one maximum. The page offers several
+    // lines side by side — today 2.10.1, 3.10.15 and 4.1.5/4.2.18/4.2.20 — and
+    // a radio must be judged against the newest release of the line it is
+    // actually running. Taking a single maximum tells a v3 radio it is behind
+    // 4.2.20 and links release notes for a line it is not on.
+    QMap<int, QString> newestByMajor;
     auto it = re.globalMatch(html);
     while (it.hasNext()) {
         const QRegularExpressionMatch m = it.next();
@@ -108,23 +110,26 @@ QString FirmwareStager::parseLatestVersion(const QString& html)
         const QString text = (m.hasCaptured(1) ? m.captured(1) : m.captured(2))
                                  .replace(QLatin1Char('-'), QLatin1Char('.'));
         const QVersionNumber v = QVersionNumber::fromString(text);
-        // A component that overflows int parses to nothing (measured:
-        // "2147483648.0.0" is null), and the pattern above happily matches one
-        // from a page we do not control. Skipping it keeps this function's
-        // promise — a usable version or nothing — rather than handing the
-        // caller a string that only looks like one (Principle VII).
-        if (v.isNull())
+        // An int-overflowing component does not parse to nothing: fromString()
+        // stops at it and returns the PREFIX before it, so "99.2147483648.0"
+        // becomes QVersionNumber(99) — not null, and it outranks 4.2.20. The
+        // pattern guarantees three components, so anything shorter is an
+        // overflow and must be discarded, not merely a null (Principle VII).
+        if (v.isNull() || v.segmentCount() != 3)
             continue;
-        if (best.isNull() || QVersionNumber::compare(v, best) > 0) {
-            best = v;
-            bestText = text;
+
+        const int major = v.majorVersion();
+        const auto existing = newestByMajor.constFind(major);
+        if (existing == newestByMajor.constEnd()
+            || QVersionNumber::compare(v, QVersionNumber::fromString(*existing)) > 0) {
+            newestByMajor.insert(major, text);
         }
     }
-    return bestText;
+    return newestByMajor;
 }
 
-void FirmwareStager::requestLatestVersion(
-    std::function<void(const QString&, const QString&)> done)
+void FirmwareStager::requestPublishedReleases(
+    std::function<void(const QMap<int, QString>&, const QString&)> done)
 {
     auto* reply = m_nam.get(QNetworkRequest(QUrl(SOFTWARE_PAGE)));
     connect(reply, &QNetworkReply::finished, this,
@@ -146,22 +151,24 @@ void FirmwareStager::requestLatestVersion(
             return;
         }
 
-        const QString latest = parseLatestVersion(QString::fromUtf8(reply->readAll()));
-        if (latest.isEmpty()) {
-            done({}, "Could not determine latest version from FlexRadio website.");
+        const QMap<int, QString> releases =
+            parsePublishedReleases(QString::fromUtf8(reply->readAll()));
+        if (releases.isEmpty()) {
+            done({}, "Could not determine any SmartSDR release from FlexRadio's website.");
             return;
         }
-        done(latest, {});
+        done(releases, {});
     });
 }
 
 void FirmwareStager::fetchLatestVersion()
 {
-    requestLatestVersion([this](const QString& latest, const QString& error) {
-        if (latest.isEmpty())
+    requestPublishedReleases([this](const QMap<int, QString>& releases,
+                                    const QString& error) {
+        if (releases.isEmpty())
             emit latestVersionUnavailable(error);
         else
-            emit latestVersionKnown(latest);
+            emit publishedReleasesKnown(releases);
     });
 }
 
@@ -171,12 +178,21 @@ void FirmwareStager::checkForUpdate(const QString& currentVersion)
 {
     emit stageProgress(0, "Checking for updates...");
 
-    requestLatestVersion([this, currentVersion](const QString& latest,
-                                                const QString& error) {
-        if (latest.isEmpty()) {
+    requestPublishedReleases([this, currentVersion](const QMap<int, QString>& releases,
+                                                    const QString& error) {
+        if (releases.isEmpty()) {
             emit updateCheckFailed(error);
             return;
         }
+        // Radio Setup's button asks a DIFFERENT question from the status bar:
+        // "is there a newer SmartSDR I could stage and upload?", which is not
+        // line-scoped. So it keeps using the highest release across all lines.
+        const QString latest = std::max_element(
+            releases.constBegin(), releases.constEnd(),
+            [](const QString& a, const QString& b) {
+                return QVersionNumber::compare(QVersionNumber::fromString(a),
+                                               QVersionNumber::fromString(b)) < 0;
+            }).value();
 
         // Compare major.minor.patch only: the build number is not published, so
         // the radio's fourth component has nothing on the other side to meet.

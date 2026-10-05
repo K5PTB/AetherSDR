@@ -7934,7 +7934,7 @@ void MainWindow::applyFirmwareCurrencyToVersionLabel()
     const auto& source = m_radioModel.backendCapabilities().firmwareUpdateSource;
     m_radioFirmwareCurrency =
         source.has_value()
-            ? AetherSDR::FirmwareCurrency::evaluate(source->latestPublishedVersion,
+            ? AetherSDR::FirmwareCurrency::evaluate(source->publishedReleases,
                                                     m_radioVersionLabel->text())
             : AetherSDR::FirmwareCurrency::Status::Unknown;
 

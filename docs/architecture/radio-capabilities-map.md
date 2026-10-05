@@ -119,9 +119,23 @@ consumer never names a family.
 
 `firmwareUpdateSource` is the optional record for *"this radio's firmware version
 can be compared against a list its vendor publishes"*. It carries the
-release-notes URL template and the newest published release, which the backend
-fetches and caches itself — so the status bar can say a radio is behind without
-naming a family.
+release-notes URL template and **the newest published release for each major
+line**, which the backend fetches and caches itself — so the status bar can say a
+radio is behind without naming a family.
+
+**Per line, not one "latest".** A vendor can offer several lines for download at
+once — FlexRadio currently lists 2.10.1, 3.10.15 and three v4 releases — and a
+radio belongs to exactly one of them. A consumer compares against the entry whose
+major matches the radio's own reported version, and shows nothing when that line
+is absent. Reducing the list to a single maximum tells an operator on v3 they are
+behind a v4 release and links release notes for a line they are not on.
+
+**Not the radio's licensed version.** A radio's licence fields cannot stand in
+for this. Measured on a FLEX-6500 running 4.2.20.41343: the discovery broadcast
+reported `max_licensed_version=v1` and the connected `license` status
+`highest_major_version=v1`, both *below* the firmware actually running, while
+FlexRadio's own SmartLink record for the same radio said `v3`. The line a radio
+is running is observable and self-consistent; what it is licensed for is not.
 
 Presence currently also means *"compare me against the SmartSDR software page"*,
 because that is the only published list AetherSDR reads. A backend from another
@@ -130,7 +144,7 @@ record then needs a field naming which list it belongs to.
 
 | Backend | Declares | Why |
 |---|---|---|
-| Flex | ✅ always; `latestPublishedVersion` empty until the lookup answers | Reports a SmartSDR version, and SmartSDR releases are listed on flexradio.com/software. The lookup runs on connecting to a Flex and is cached for a day, so a station that never reaches a Flex never contacts the vendor |
+| Flex | ✅ always; `publishedReleases` empty until the lookup answers | Reports a SmartSDR version, and SmartSDR releases are listed on flexradio.com/software. The lookup runs on connecting to a Flex and is cached for a day, so a station that never reaches a Flex never contacts the vendor |
 | HL2 / ANAN | — | Reports a gateware number, which no published list covers. Measuring one against a SmartSDR version would read as catastrophically out of date |
 | Icom | — | Reports no firmware version to compare |
 | RTL / Sim | — | No published firmware list is read |
