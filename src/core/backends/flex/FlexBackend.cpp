@@ -78,11 +78,6 @@ FlexBackend::FlexBackend(QObject* parent)
     // (auto) connections: the connection lives on its worker thread.
     connect(m_connection, &RadioConnection::connected,
             this, &IRadioBackend::connected);
-    // Reaching a radio is the only thing that may contact flexradio.com, and
-    // even then only if the cached answer has aged out — see
-    // refreshPublishedFirmwareVersion().
-    connect(m_connection, &RadioConnection::connected,
-            this, &FlexBackend::refreshPublishedFirmwareVersion);
     connect(m_connection, &RadioConnection::disconnected,
             this, &IRadioBackend::disconnected);
     connect(m_connection, &RadioConnection::errorOccurred,
@@ -225,6 +220,17 @@ void FlexBackend::setRadioReportedCapacity(int maxSlices, int maxPanadapters)
 // Order matters: the cached answer is adopted first, so a station with no route
 // to the internet still shows a verdict from whatever it learned last, and the
 // status bar never blanks while a lookup is in flight.
+// Reaching a radio is the only thing that may contact flexradio.com, and even
+// then only if the cached answer has aged out. Hung off the seam's
+// session-established verb rather than this backend's own RadioConnection,
+// because a SmartLink session never dials that connection — RadioModel drives a
+// WanConnection the backend never sees, so the LAN-only hook left every WAN
+// operator without a verdict (PR #6177 review).
+void FlexBackend::onRadioSessionEstablished()
+{
+    refreshPublishedFirmwareVersion();
+}
+
 void FlexBackend::refreshPublishedFirmwareVersion()
 {
     // EXACT read, not the family-wide fallback: docs/agents/settings.md reserves

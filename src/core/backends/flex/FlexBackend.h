@@ -70,6 +70,7 @@ public:
 
     // ---- IRadioBackend ----
     RadioCapabilities capabilities() const override;
+    void onRadioSessionEstablished() override;
     void connectRadio(const RadioConnectRequest& request) override;
     void disconnectRadio() override;
     bool isConnected() const override;
@@ -250,8 +251,9 @@ private:
     FirmwareStager* m_firmwareVersions{nullptr};
     bool m_firmwareLookupInFlight{false};
 
-    // Loads the cached published release, and looks it up again only if that
-    // cache is missing or stale. Connected to the wire's `connected` signal.
+    // Loads the cached published releases, and looks them up again only if that
+    // cache is missing or stale. Driven by onRadioSessionEstablished(), so it
+    // covers a SmartLink session as well as a LAN one.
     void refreshPublishedFirmwareVersion();
 
     // The family-wide AppSettings feature document holding that cache.

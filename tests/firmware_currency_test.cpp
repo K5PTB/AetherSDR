@@ -7,11 +7,15 @@
 // that their firmware versions are published".
 
 #include "core/FirmwareCurrency.h"
+#include "TestSettingsProfile.h"
+
+#include "core/AppSettings.h"
 #include "core/FirmwareStager.h"
 #include "core/backends/flex/FlexBackend.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QJsonObject>
 #include <QMap>
 
 #include <cstdio>
@@ -215,6 +219,7 @@ void checkTheBackendDeclaresTheRecordAndAsksNobodyAtConstruction()
     // by the wire's `connected` signal, and no radio is connected here.
     check(backend->findChild<AetherSDR::FirmwareStager*>() == nullptr,
           "constructing a backend builds no FirmwareStager, so nothing has asked");
+
     check(evaluate(source->publishedReleases, QStringLiteral("3.9.18")) == Status::Unknown,
           "a backend that has not looked anything up judges nothing");
 
@@ -299,11 +304,59 @@ void checkThePageIsReadIntoLines()
           "a two-component version is not accepted as a release");
 }
 
+// THE SMARTLINK FIX (PR #6177 review nit). The lookup used to hang off the Flex
+// backend's own RadioConnection, which a SmartLink session never dials — so a
+// WAN operator got no verdict at all. It now hangs off the seam's
+// transport-neutral session verb.
+//
+// Driven through `onRadioSessionEstablished()` with a FRESH cache already in the
+// store, so the verb's wiring is proved without any network: a stale cache would
+// build a FirmwareStager and reach for flexradio.com, a fresh one must not.
+void checkTheSessionVerbAdoptsTheCacheWithoutAsking()
+{
+    QJsonObject releases;
+    releases.insert(QStringLiteral("3"), QStringLiteral("3.10.15"));
+    releases.insert(QStringLiteral("4"), QStringLiteral("4.2.20"));
+    QJsonObject doc;
+    doc.insert(QLatin1String("releases"), releases);
+    doc.insert(QLatin1String("checkedAt"),
+               QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    AetherSDR::AppSettings::instance().setRadioFeature(
+        QStringLiteral("flex"), QString(), QStringLiteral("publishedFirmware"), 2, doc);
+
+    auto backend = std::make_unique<AetherSDR::FlexBackend>();
+    backend->onRadioSessionEstablished();
+
+    const auto source = backend->capabilities().firmwareUpdateSource;
+    check(source.has_value(), "the record is still declared");
+    if (!source.has_value())
+        return;
+
+    check(source->publishedReleases.value(3) == QStringLiteral("3.10.15")
+              && source->publishedReleases.value(4) == QStringLiteral("4.2.20"),
+          "a session adopts the cached releases, whatever transport carried it");
+    check(backend->findChild<AetherSDR::FirmwareStager*>() == nullptr,
+          "a fresh cache means the session asks flexradio.com nothing");
+    // And the verdict that follows is the one the SmartLink radio needed.
+    check(evaluate(source->publishedReleases, QStringLiteral("3.9.18.36988"))
+              == Status::Outdated,
+          "a WAN-connected v3 radio now gets its verdict from the cache");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
+    // An isolated, writable settings store: the cache test below writes a radio
+    // feature document, and must not touch the operator's real settings.
+    // Constructed before QCoreApplication, as the fixture requires.
+    TestSettingsProfile profile(QStringLiteral("aether-firmware-currency"));
+    if (!profile.isValid()) {
+        std::fprintf(stderr, "FAIL: could not create an isolated settings profile\n");
+        return 1;
+    }
     QCoreApplication app(argc, argv);
+    AetherSDR::AppSettings::instance().load();
     checkTheVerdictIsScopedToTheRadiosOwnLine();
     checkTheUpgradeTargetIsTheOwnLineRelease();
     checkTheBuildNumberIsIgnored();
@@ -315,5 +368,6 @@ int main(int argc, char** argv)
     checkWhenTheCachedAnswerIsLookedUpAgain();
     checkTheBackendDeclaresTheRecordAndAsksNobodyAtConstruction();
     checkThePageIsReadIntoLines();
+    checkTheSessionVerbAdoptsTheCacheWithoutAsking();
     return g_failures == 0 ? 0 : 1;
 }

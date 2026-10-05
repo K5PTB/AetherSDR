@@ -3465,7 +3465,9 @@ add_test(NAME waveform_upload_state_test COMMAND waveform_upload_state_test)
 add_executable(firmware_currency_test
     tests/firmware_currency_test.cpp
 )
-target_include_directories(firmware_currency_test PRIVATE src)
+# PRIVATE src tests: the target needs tests/ for TestSettingsProfile.h, which
+# isolates the settings store the published-release cache test writes to.
+target_include_directories(firmware_currency_test PRIVATE src tests)
 target_link_libraries(firmware_currency_test PRIVATE aethercore Qt6::Core Qt6::Network)
 set_target_properties(firmware_currency_test PROPERTIES AUTOMOC ON)
 add_test(NAME firmware_currency_test COMMAND firmware_currency_test)
