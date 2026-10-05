@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QString>
 #include <QVersionNumber>
 
@@ -80,6 +81,32 @@ inline QString releaseNotesUrl(const QString& urlTemplate, const QString& versio
 
     return urlTemplate.arg(release.toString().replace(QLatin1Char('.'),
                                                       QLatin1Char('-')));
+}
+
+// How long a published-release answer is trusted before it is looked up again.
+//
+// A day, because that is the longest a wrong answer can matter and the shortest
+// that makes launches quiet. FlexRadio ships every few weeks, so a day-old
+// answer is essentially never wrong; and an operator who connects daily then
+// contacts flexradio.com once a day rather than once per launch.
+inline constexpr qint64 kPublishedVersionMaxAgeSecs = 24 * 60 * 60;
+
+// Should a cached answer be looked up again?
+//
+// Stale when there is nothing cached, when the stamp cannot be read, when it is
+// older than the window — and ALSO when it is in the FUTURE. A clock that was
+// wrong when the stamp was written, or a machine that has since been corrected
+// backwards, would otherwise leave a cache that never expires. Re-asking once
+// is cheap; never asking again is not.
+inline bool publishedVersionIsStale(const QString& cachedVersion,
+                                    const QDateTime& checkedAt,
+                                    const QDateTime& now)
+{
+    if (cachedVersion.isEmpty() || !checkedAt.isValid() || !now.isValid())
+        return true;
+
+    const qint64 age = checkedAt.secsTo(now);
+    return age < 0 || age >= kPublishedVersionMaxAgeSecs;
 }
 
 // Empty for Unknown, so the caller clears the tooltip rather than leaving a

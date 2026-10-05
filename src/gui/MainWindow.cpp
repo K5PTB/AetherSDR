@@ -7957,6 +7957,17 @@ void MainWindow::applyFirmwareCurrencyToVersionLabel()
     applyStatusBarCompactLabelStyle(m_radioVersionLabel, color, bold);
     m_radioVersionLabel->setToolTip(
         AetherSDR::FirmwareCurrency::tooltip(m_radioFirmwareCurrency));
+    // The verdict must not live only in colour and a hover. A screen reader
+    // otherwise hears "4.2.18.41174" and nothing about it being behind — the
+    // failure #4896 / #5262 M3a exist to prevent. Same string as the tooltip,
+    // on the accessible channel.
+    m_radioVersionLabel->setAccessibleDescription(
+        AetherSDR::FirmwareCurrency::tooltip(m_radioFirmwareCurrency));
+    // Reachable by keyboard only while it actually does something. A label that
+    // took focus in every state would add a dead tab stop to the status bar.
+    m_radioVersionLabel->setFocusPolicy(m_radioFirmwareCurrency == Status::Outdated
+                                            ? Qt::TabFocus
+                                            : Qt::NoFocus);
     m_radioVersionLabel->setCursor(m_radioFirmwareCurrency == Status::Outdated
                                        ? Qt::PointingHandCursor
                                        : Qt::ArrowCursor);

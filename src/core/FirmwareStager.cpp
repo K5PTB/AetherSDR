@@ -84,20 +84,29 @@ bool FirmwareStager::versionUsesMsi(const QString& version)
 QString FirmwareStager::parseLatestVersion(const QString& html)
 {
     // Both spellings the page uses: "SmartSDR v4.1.5" in headings and alt text,
-    // and "smartsdr-v4-1-5" in the per-release links. The hyphenated form is
-    // matched here for the first time — the previous pattern accepted only dots
-    // although its comment claimed both, so every release link on the page was
-    // silently skipped and only the prose spellings were ever read.
+    // and "smartsdr-v4-1-5" in the per-release links.
+    //
+    // THE `v` IS REQUIRED ON THE HYPHENATED FORM, and that is the whole point of
+    // writing this as two alternatives rather than one character class. With it
+    // optional, an asset named "SmartSDR-2025-03-12.png" parses as release
+    // 2025.3.12 — newer than anything real, so every radio reads Outdated and
+    // the release-notes link 404s. A page we do not control deciding that every
+    // operator is behind is the wrong-verdict direction this whole feature is
+    // built to avoid. The dotted form keeps `v` optional because prose on the
+    // page genuinely writes both "SmartSDR v4.2.20" and "SmartSDR 4.2.20", and
+    // a dotted triple is not a date.
     static const QRegularExpression re(
-        R"(SmartSDR[- _]v?(\d+\.\d+\.\d+|\d+-\d+-\d+))",
+        R"(SmartSDR[- _]v?(\d+\.\d+\.\d+)|smartsdr-v(\d+-\d+-\d+))",
         QRegularExpression::CaseInsensitiveOption);
 
     QVersionNumber best;
     QString bestText;
     auto it = re.globalMatch(html);
     while (it.hasNext()) {
-        const QString text =
-            it.next().captured(1).replace(QLatin1Char('-'), QLatin1Char('.'));
+        const QRegularExpressionMatch m = it.next();
+        // Capture 1 is the dotted spelling, capture 2 the hyphenated link.
+        const QString text = (m.hasCaptured(1) ? m.captured(1) : m.captured(2))
+                                 .replace(QLatin1Char('-'), QLatin1Char('.'));
         const QVersionNumber v = QVersionNumber::fromString(text);
         // A component that overflows int parses to nothing (measured:
         // "2147483648.0.0" is null), and the pattern above happily matches one

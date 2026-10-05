@@ -235,18 +235,28 @@ private:
     // DIFFERENT radio must announce again.
     QString m_announcedModel;
 
-    // The newest SmartSDR release FlexRadio publishes, asked for once when this
-    // backend is built and never again, and empty until it answers. Reported
-    // through capabilities() so the status bar can say whether the connected
-    // radio is behind without any code above the seam knowing where SmartSDR
-    // releases are listed.
+    // The newest SmartSDR release FlexRadio publishes, empty until known.
+    // Reported through capabilities() so the status bar can say whether the
+    // connected radio is behind without any code above the seam knowing where
+    // SmartSDR releases are listed.
     //
-    // ASKED HERE, AND ONLY HERE. RadioModel builds a backend in its own
-    // constructor, so this runs at app startup, before any radio is connected —
-    // which is the point. Leaving it on Radio Setup's "Check for Update" button
-    // meant that on most stations nothing ever asked.
+    // ASKED ONLY ON CONNECT TO A FLEX, AND AT MOST ONCE A DAY. flexradio.com is
+    // contacted when this backend reaches a radio — never at launch, never for
+    // a station that connects to something else, never for one that only opens
+    // the app. The answer is cached in AppSettings as one family-wide feature
+    // document, so a disconnect and reconnect, a switch between radios, and a
+    // later launch all reuse it until it ages out (PR #6177 review, M2).
     QString m_latestPublishedVersion;
     FirmwareStager* m_firmwareVersions{nullptr};
+    bool m_firmwareLookupInFlight{false};
+
+    // Loads the cached published release, and looks it up again only if that
+    // cache is missing or stale. Connected to the wire's `connected` signal.
+    void refreshPublishedFirmwareVersion();
+
+    // The family-wide AppSettings feature document holding that cache.
+    static constexpr const char* kPublishedFirmwareFeature = "publishedFirmware";
+    static constexpr int kPublishedFirmwareSchema = 1;
 };
 
 }  // namespace AetherSDR

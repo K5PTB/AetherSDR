@@ -210,6 +210,9 @@ struct FirmwareUpdateSource {
     // not parse. Empty is the honest default and yields no verdict at all; it
     // is NOT a claim that the connected radio is current.
     //
+    // A backend is expected to fill this only once it has reached a radio, and
+    // to cache what it learns rather than ask again on every connect.
+    //
     // FILLED IN BY THE BACKEND, not by whoever displays it. Finding out is
     // family work: it means knowing which page lists this vendor's releases and
     // how to read it, which is exactly the knowledge that must not climb above

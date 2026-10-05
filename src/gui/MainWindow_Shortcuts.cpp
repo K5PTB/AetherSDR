@@ -15,6 +15,7 @@
 #include <QApplication>
 #include <QDesktopServices>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QUrl>
 
 #include "MainWindowHelpers.h"
@@ -857,7 +858,16 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
     // showing an out-of-date version — that is the state the tooltip invites a
     // click in. A current (green) version is plain text, so the press falls
     // through and the status bar behaves as it always has.
-    if (obj == m_radioVersionLabel && event->type() == QEvent::MouseButtonPress) {
+    // Left click or Return/Enter — NOT Space, which is application-level
+    // PTT-hold and is consumed above before any widget sees it. Restricting the
+    // mouse to the left button also stops a right- or middle-click from opening
+    // a browser out from under a context menu.
+    if (obj == m_radioVersionLabel
+        && ((event->type() == QEvent::MouseButtonPress
+             && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+            || (event->type() == QEvent::KeyPress
+                && (static_cast<QKeyEvent*>(event)->key() == Qt::Key_Return
+                    || static_cast<QKeyEvent*>(event)->key() == Qt::Key_Enter)))) {
         if (m_radioFirmwareCurrency != AetherSDR::FirmwareCurrency::Status::Outdated)
             return false;
         // The page is built from the backend's declared template and the

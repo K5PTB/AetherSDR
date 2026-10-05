@@ -115,6 +115,30 @@ consumer never names a family.
 | Flex | — | Structural: the radio computes the panadapter and sends the result, so there is no raw converter stream on the host to build a wideband view from |
 | Icom / RTL / Sim | — | No such stream |
 
+### Firmware update source
+
+`firmwareUpdateSource` is the optional record for *"this radio's firmware version
+can be compared against a list its vendor publishes"*. It carries the
+release-notes URL template and the newest published release, which the backend
+fetches and caches itself — so the status bar can say a radio is behind without
+naming a family.
+
+Presence currently also means *"compare me against the SmartSDR software page"*,
+because that is the only published list AetherSDR reads. A backend from another
+vendor must not simply declare a template: it needs its own lookup, and this
+record then needs a field naming which list it belongs to.
+
+| Backend | Declares | Why |
+|---|---|---|
+| Flex | ✅ always; `latestPublishedVersion` empty until the lookup answers | Reports a SmartSDR version, and SmartSDR releases are listed on flexradio.com/software. The lookup runs on connecting to a Flex and is cached for a day, so a station that never reaches a Flex never contacts the vendor |
+| HL2 / ANAN | — | Reports a gateware number, which no published list covers. Measuring one against a SmartSDR version would read as catastrophically out of date |
+| Icom | — | Reports no firmware version to compare |
+| RTL / Sim | — | No published firmware list is read |
+
+Absence means **nobody has said**: it is not a claim that the radio's firmware is
+current, nor that it cannot be checked. A radio whose backend declares nothing
+draws its version row exactly as it always has.
+
 Read by `BandscopeDialog` (the Tools ▸ Wideband Bandscope window) and by nothing
 else. **The record is what gates the menu entry** — not `family == "hl2"`, which
 is the construct `docs/HERMES.md` §"For coding agents" forbids above the seam

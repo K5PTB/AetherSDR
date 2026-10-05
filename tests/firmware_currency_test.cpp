@@ -11,6 +11,7 @@
 #include "core/backends/flex/FlexBackend.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 
 #include <cstdio>
 #include <memory>
@@ -20,6 +21,8 @@ namespace {
 using AetherSDR::FirmwareStager;
 using AetherSDR::FirmwareCurrency::Status;
 using AetherSDR::FirmwareCurrency::compareReleases;
+using AetherSDR::FirmwareCurrency::kPublishedVersionMaxAgeSecs;
+using AetherSDR::FirmwareCurrency::publishedVersionIsStale;
 using AetherSDR::FirmwareCurrency::evaluate;
 using AetherSDR::FirmwareCurrency::releaseNotesUrl;
 using AetherSDR::FirmwareCurrency::tooltip;
@@ -138,10 +141,11 @@ void checkTooltipsMatchTheState()
 
 void checkTheReleaseNotesLinkIsBuiltFromTheTemplate()
 {
-    // No event loop is run anywhere in this file, so the backend's deferred
-    // lookup never fires and nothing here touches the network. That is also the
-    // assertion immediately below: a freshly built backend has asked nobody
-    // anything, and therefore publishes no version.
+    // Nothing here touches the network, and that is now structural rather than
+    // incidental: the lookup is driven by the wire's `connected` signal, and no
+    // radio is connected in this file. A backend that is merely built — which
+    // several teardown tests do, and which happens at app launch — contacts
+    // nobody (PR #6177 review, M2).
     auto backend = std::make_unique<AetherSDR::FlexBackend>();
     const auto source = backend->capabilities().firmwareUpdateSource;
     check(source.has_value(), "FlexBackend declares where its firmware is published");
@@ -150,6 +154,13 @@ void checkTheReleaseNotesLinkIsBuiltFromTheTemplate()
 
     check(source->latestPublishedVersion.isEmpty(),
           "constructing a backend performs no lookup and publishes no version");
+    // The assertion above cannot fail on its own: this file runs no event loop,
+    // so an empty version proves nothing about whether the constructor asked.
+    // This one does — the stager is parented to the backend, so its absence is
+    // direct evidence that nothing has been built to ask with. It fails if the
+    // lookup is ever moved back into the constructor (PR #6177 review, N1).
+    check(backend->findChild<AetherSDR::FirmwareStager*>() == nullptr,
+          "constructing a backend builds no FirmwareStager, so nothing has asked");
     // ...and with none, no radio is judged. This is the offline station, and
     // the first moments of every launch.
     check(evaluate(source->latestPublishedVersion,
@@ -230,6 +241,24 @@ void checkThePublishedVersionIsReadFromThePage()
     // The page is not ours and its digits are unbounded. A component past
     // INT_MAX parses to nothing (measured), so it must be skipped rather than
     // returned as a version the rest of the app cannot use.
+    // A DATE-SHAPED SLUG IS NOT A RELEASE. The hyphenated spelling made `v`
+    // optional, so an asset named SmartSDR-2025-03-12.png parsed as release
+    // 2025.3.12 — which marks every radio Outdated and links a 404, the exact
+    // wrong-verdict direction this feature claims to avoid. The `v` is now
+    // required on the hyphenated form (PR #6177 review, N2).
+    check(FirmwareStager::parseLatestVersion(
+              QStringLiteral("<img src=\"/uploads/SmartSDR-2025-03-12.png\">"
+                             " SmartSDR v4.2.20"))
+              == QStringLiteral("4.2.20"),
+          "a date-shaped asset name does not out-rank a real release");
+    check(FirmwareStager::parseLatestVersion(
+              QStringLiteral("SmartSDR-2025-03-12.png")).isEmpty(),
+          "a date-shaped asset name alone yields no version");
+    // The spelling that IS a release link must still be read.
+    check(FirmwareStager::parseLatestVersion(QStringLiteral("smartsdr-v4-2-20"))
+              == QStringLiteral("4.2.20"),
+          "the hyphenated release link still carries its v");
+
     check(FirmwareStager::parseLatestVersion(
               QStringLiteral("SmartSDR v2147483648.0.0")).isEmpty(),
           "a version component that overflows int yields no version at all");
@@ -237,6 +266,58 @@ void checkThePublishedVersionIsReadFromThePage()
               QStringLiteral("SmartSDR v99999999999.1.1 SmartSDR v4.2.20"))
               == QStringLiteral("4.2.20"),
           "an overflowing version does not crowd out a real one on the same page");
+}
+
+// When may the client contact flexradio.com again?
+//
+// PR #6177 review, M2: the lookup must happen only on connecting to a Flex, and
+// the answer must be cached so that a reconnect, a switch of radios, and a later
+// launch all reuse it. This is the rule that decides "again".
+void checkWhenTheCachedVersionIsLookedUpAgain()
+{
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QString cached = QStringLiteral("4.2.20");
+
+    // The quiet path: a cache written minutes ago is reused, so connecting a
+    // second time — or relaunching — contacts nobody.
+    check(!publishedVersionIsStale(cached, now.addSecs(-60), now),
+          "a minutes-old answer is reused");
+    check(!publishedVersionIsStale(cached, now.addSecs(-kPublishedVersionMaxAgeSecs + 60), now),
+          "an answer just inside the window is reused");
+
+    check(publishedVersionIsStale(cached, now.addSecs(-kPublishedVersionMaxAgeSecs), now),
+          "an answer exactly at the window is looked up again");
+
+    // The window is ONE DAY, pinned in absolute terms rather than against the
+    // constant. The checks above would all still pass if someone widened it, and
+    // the length is the maintainer's stated policy (PR #6177 review, M2), not an
+    // implementation detail to drift.
+    check(kPublishedVersionMaxAgeSecs == 24 * 60 * 60,
+          "the lookup window is 24 hours");
+    check(!publishedVersionIsStale(cached, now.addSecs(-23 * 60 * 60), now),
+          "23 hours old is still reused");
+    check(publishedVersionIsStale(cached, now.addSecs(-25 * 60 * 60), now),
+          "25 hours old is looked up again");
+    check(publishedVersionIsStale(cached, now.addSecs(-7 * 24 * 60 * 60), now),
+          "a week-old answer is looked up again");
+
+    // Nothing cached at all — the first connect on a fresh install.
+    check(publishedVersionIsStale(QString(), now.addSecs(-60), now),
+          "no cached version means look it up, however recent the stamp");
+    // A stamp that cannot be read must not be treated as fresh.
+    check(publishedVersionIsStale(cached, QDateTime(), now),
+          "an unreadable stamp means look it up");
+    check(publishedVersionIsStale(cached, QDateTime::fromString(
+              QStringLiteral("not a date"), Qt::ISODate), now),
+          "a malformed stamp means look it up");
+
+    // A stamp in the FUTURE — written while the clock was wrong, or on a
+    // machine since corrected backwards. Without this it would never expire,
+    // and the station would silently stop checking forever.
+    check(publishedVersionIsStale(cached, now.addSecs(60), now),
+          "a stamp in the future is looked up again rather than trusted forever");
+    check(publishedVersionIsStale(cached, now.addSecs(10 * 365 * 24 * 60 * 60LL), now),
+          "a wildly future stamp does not freeze the cache");
 }
 
 } // namespace
@@ -253,5 +334,6 @@ int main(int argc, char** argv)
     checkTooltipsMatchTheState();
     checkTheReleaseNotesLinkIsBuiltFromTheTemplate();
     checkThePublishedVersionIsReadFromThePage();
+    checkWhenTheCachedVersionIsLookedUpAgain();
     return g_failures == 0 ? 0 : 1;
 }
