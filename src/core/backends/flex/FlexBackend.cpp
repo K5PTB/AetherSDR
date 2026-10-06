@@ -231,15 +231,69 @@ void FlexBackend::onRadioSessionEstablished()
     refreshPublishedFirmwareVersion();
 }
 
+// Record a completed lookup: cache it, and publish it if it changed.
+//
+// Split out of the completion lambda so it can be driven directly in a test —
+// the schema re-read below is the whole point of the split, and pinning it
+// otherwise would need a live HTTP peer.
+void FlexBackend::applyPublishedReleases(const QMap<int, QString>& releases)
+{
+    m_firmwareLookupInFlight = false;
+
+    QJsonObject doc;
+    QJsonObject obj;
+    for (auto it = releases.constBegin(); it != releases.constEnd(); ++it)
+        obj.insert(QString::number(it.key()), it.value());
+    doc.insert(QLatin1String("releases"), obj);
+    doc.insert(QLatin1String("checkedAt"),
+               QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    // RE-READ THE SCHEMA HERE, not at the start of the lookup. This
+    // connection is made once, when the stager is first created, so a
+    // schema captured then would be frozen for the life of the backend:
+    // every later session would judge its write against the first
+    // session's answer. The document can also change while a request is
+    // in flight. The only value worth trusting is the one read
+    // immediately before the write.
+    int storedSchema = 0;
+    AppSettings::instance().radioFeatureExact(
+        QStringLiteral("flex"), QString(),
+        QLatin1String(kPublishedFirmwareFeature), &storedSchema);
+
+    // Never overwrite a document a NEWER client wrote: its shape is
+    // one this build does not know, and replacing it would silently
+    // downgrade that client's cache (docs/agents/settings.md).
+    if (storedSchema > kPublishedFirmwareSchema) {
+        qCWarning(lcFirmware).nospace()
+            << "FlexBackend: published-release cache left alone; stored "
+               "schema " << storedSchema << " is newer than this build's "
+            << kPublishedFirmwareSchema;
+    } else if (!AppSettings::instance().setRadioFeature(
+                   QStringLiteral("flex"), QString(),
+                   QLatin1String(kPublishedFirmwareFeature),
+                   kPublishedFirmwareSchema, doc)) {
+        // A refused write is the worst shape to swallow: the verdict
+        // would repaint from memory while nothing persisted, and the
+        // next launch would silently ask again.
+        qCWarning(lcFirmware)
+            << "FlexBackend: published-release cache did not persist";
+    }
+
+    if (m_publishedReleases == releases)
+        return;
+    m_publishedReleases = releases;
+    // A real revision of the descriptor, announced like any other.
+    emit capabilitiesChanged();
+}
+
 void FlexBackend::refreshPublishedFirmwareVersion()
 {
     // EXACT read, not the family-wide fallback: docs/agents/settings.md reserves
     // the fallback for consumers, and a writer must judge the row it is about to
-    // replace. The schema it reports is what the write below refuses to clobber.
-    int storedSchema = 0;
+    // replace. This read is for the cached RELEASES only — deliberately not for
+    // the schema, which is re-read at the write below. See there for why.
     const QJsonObject cache = AppSettings::instance().radioFeatureExact(
         QStringLiteral("flex"), QString(),
-        QLatin1String(kPublishedFirmwareFeature), &storedSchema);
+        QLatin1String(kPublishedFirmwareFeature));
     const QJsonObject cachedReleases =
         cache.value(QLatin1String("releases")).toObject();
     const QDateTime checkedAt = QDateTime::fromString(
@@ -271,40 +325,8 @@ void FlexBackend::refreshPublishedFirmwareVersion()
     if (!m_firmwareVersions) {
         m_firmwareVersions = new FirmwareStager(this);
         connect(m_firmwareVersions, &FirmwareStager::publishedReleasesKnown, this,
-                [this, storedSchema](const QMap<int, QString>& releases) {
-            m_firmwareLookupInFlight = false;
-
-            QJsonObject doc;
-            QJsonObject obj;
-            for (auto it = releases.constBegin(); it != releases.constEnd(); ++it)
-                obj.insert(QString::number(it.key()), it.value());
-            doc.insert(QLatin1String("releases"), obj);
-            doc.insert(QLatin1String("checkedAt"),
-                       QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
-            // Never overwrite a document a NEWER client wrote: its shape is
-            // one this build does not know, and replacing it would silently
-            // downgrade that client's cache (docs/agents/settings.md).
-            if (storedSchema > kPublishedFirmwareSchema) {
-                qCWarning(lcFirmware).nospace()
-                    << "FlexBackend: published-release cache left alone; stored "
-                       "schema " << storedSchema << " is newer than this build's "
-                    << kPublishedFirmwareSchema;
-            } else if (!AppSettings::instance().setRadioFeature(
-                           QStringLiteral("flex"), QString(),
-                           QLatin1String(kPublishedFirmwareFeature),
-                           kPublishedFirmwareSchema, doc)) {
-                // A refused write is the worst shape to swallow: the verdict
-                // would repaint from memory while nothing persisted, and the
-                // next launch would silently ask again.
-                qCWarning(lcFirmware)
-                    << "FlexBackend: published-release cache did not persist";
-            }
-
-            if (m_publishedReleases == releases)
-                return;
-            m_publishedReleases = releases;
-            // A real revision of the descriptor, announced like any other.
-            emit capabilitiesChanged();
+                [this](const QMap<int, QString>& releases) {
+            applyPublishedReleases(releases);
         });
         connect(m_firmwareVersions, &FirmwareStager::latestVersionUnavailable, this,
                 [this](const QString& reason) {

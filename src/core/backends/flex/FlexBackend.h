@@ -26,6 +26,8 @@ class PanadapterStream;
 // RadioModel holds non-owning pointers via connection()/panStream() and keeps
 // the command/WAN orchestration and sub-models. Core verbs build SmartSDR
 // command strings and emit them through the model-provided command sink.
+class FlexBackendTestAccess;
+
 class FlexBackend : public IRadioBackend {
     Q_OBJECT
 
@@ -236,6 +238,10 @@ private:
     // DIFFERENT radio must announce again.
     QString m_announcedModel;
 
+    // Lets a test drive a completed lookup without a network peer; the schema
+    // re-read in applyPublishedReleases() cannot be pinned any other way.
+    friend class FlexBackendTestAccess;
+
     // The newest SmartSDR release FlexRadio publishes, empty until known.
     // Reported through capabilities() so the status bar can say whether the
     // connected radio is behind without any code above the seam knowing where
@@ -250,6 +256,11 @@ private:
     QMap<int, QString> m_publishedReleases;
     FirmwareStager* m_firmwareVersions{nullptr};
     bool m_firmwareLookupInFlight{false};
+
+    // Records a completed lookup: caches it under the schema read at that
+    // moment, and publishes it if it changed. Split out of the completion
+    // lambda so a test can drive it without a live HTTP peer.
+    void applyPublishedReleases(const QMap<int, QString>& releases);
 
     // Loads the cached published releases, and looks them up again only if that
     // cache is missing or stale. Driven by onRadioSessionEstablished(), so it

@@ -21,9 +21,26 @@
 #include <cstdio>
 #include <memory>
 
+namespace AetherSDR {
+
+// Drives a completed lookup without a network peer. The schema re-read inside
+// applyPublishedReleases() is the defect this exists to pin, and it cannot be
+// reached from outside any other way.
+class FlexBackendTestAccess {
+public:
+    static void completeLookup(AetherSDR::FlexBackend& backend,
+                               const QMap<int, QString>& releases)
+    {
+        backend.applyPublishedReleases(releases);
+    }
+};
+
+}  // namespace AetherSDR
+
 namespace {
 
 using AetherSDR::FirmwareStager;
+
 using AetherSDR::FirmwareCurrency::Status;
 using AetherSDR::FirmwareCurrency::compareReleases;
 using AetherSDR::FirmwareCurrency::evaluate;
@@ -343,6 +360,49 @@ void checkTheSessionVerbAdoptsTheCacheWithoutAsking()
           "a WAN-connected v3 radio now gets its verdict from the cache");
 }
 
+// THE CACHE-SCHEMA BLOCKER (PR #6177, @ten9876's second review).
+//
+// The completion handler used to capture the schema read at the START of the
+// lookup, and that connection is made once, so every later session judged its
+// write against the FIRST session's answer. A newer document written in between
+// — by another client, or while a request was in flight — was silently replaced.
+//
+// Driven by injecting a completed lookup, so no HTTP peer is needed.
+void checkANewerCacheDocumentSurvivesARepeatLookup()
+{
+    const QString kFamily = QStringLiteral("flex");
+    const QString kFeature = QStringLiteral("publishedFirmware");
+    auto& settings = AetherSDR::AppSettings::instance();
+
+    const QMap<int, QString> releases = {{4, QStringLiteral("4.2.20")}};
+    auto backend = std::make_unique<AetherSDR::FlexBackend>();
+
+    // First lookup, nothing cached: this build's schema is written.
+    AetherSDR::FlexBackendTestAccess::completeLookup(*backend, releases);
+    int schema = 0;
+    settings.radioFeatureExact(kFamily, QString(), kFeature, &schema);
+    check(schema == 2, "a first lookup writes this build's schema");
+
+    // Now a NEWER client writes a document this build does not understand —
+    // between one lookup and the next, which is the window the old capture
+    // could not see.
+    QJsonObject future;
+    future.insert(QStringLiteral("futureField"), QStringLiteral("must survive"));
+    check(settings.setRadioFeature(kFamily, QString(), kFeature, 3, future),
+          "the newer-schema document was written for the attack");
+
+    // Second lookup on the SAME backend — the one that used to clobber it.
+    AetherSDR::FlexBackendTestAccess::completeLookup(*backend, releases);
+
+    int after = 0;
+    const QJsonObject doc = settings.radioFeatureExact(kFamily, QString(), kFeature, &after);
+    check(after == 3,
+          "a repeat lookup leaves the newer schema alone");
+    check(doc.value(QStringLiteral("futureField")).toString()
+              == QStringLiteral("must survive"),
+          "the newer client's document survives a repeat lookup intact");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -369,5 +429,6 @@ int main(int argc, char** argv)
     checkTheBackendDeclaresTheRecordAndAsksNobodyAtConstruction();
     checkThePageIsReadIntoLines();
     checkTheSessionVerbAdoptsTheCacheWithoutAsking();
+    checkANewerCacheDocumentSurvivesARepeatLookup();
     return g_failures == 0 ? 0 : 1;
 }
