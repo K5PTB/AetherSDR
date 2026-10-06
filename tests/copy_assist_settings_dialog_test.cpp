@@ -86,8 +86,10 @@ int main(int argc, char** argv)
                "setValue then value round-trips through the nested object");
     }
 
-    // ---- Tap point (the panel's NR button) survives a restart -------------
-    // Operator requirement: turning NR off must still be off after a restart.
+    // ---- Tap point survives a restart -------------------------------------
+    // Operator requirement: choosing the unprocessed tap point must still be
+    // chosen after a restart. The toggle moves where ASR listens; NR keeps
+    // running for the operator either way, so this is not an NR on/off switch.
     // AppSettings::load() drops every in-memory value and re-reads the settings
     // database, so a value that only lived in memory would read back as the
     // PostDsp default here — exactly the failure a restart would show.
@@ -95,7 +97,7 @@ int main(int argc, char** argv)
         expect(asrTapPointFromSetting(
                    CopyAssistSettings::value(QStringLiteral("AsrTapPoint")).toString())
                    == AsrTapPoint::PostDsp,
-               "a profile that never touched NR reads as PostDsp (NR on)");
+               "a profile that never set a tap point reads as PostDsp");
 
         CopyAssistSettings::setValue(QStringLiteral("AsrTapPoint"),
                                      asrTapPointToSetting(AsrTapPoint::PreDsp));
@@ -103,7 +105,7 @@ int main(int argc, char** argv)
         expect(asrTapPointFromSetting(
                    CopyAssistSettings::value(QStringLiteral("AsrTapPoint")).toString())
                    == AsrTapPoint::PreDsp,
-               "NR off (PreDsp) is still set after settings are reloaded from disk");
+               "PreDsp is still set after settings are reloaded from disk");
 
         CopyAssistSettings::setValue(QStringLiteral("AsrTapPoint"),
                                      asrTapPointToSetting(AsrTapPoint::PostDsp));
@@ -609,9 +611,9 @@ int main(int argc, char** argv)
     }
 
     // ---- Tap point: "unprocessed audio" checkbox (RFC #4861) --------------
-    // Replaces the header NR button: same stored setting, the name the RFC
-    // thread agreed on, and OFF by default so a fresh profile transcribes
-    // after NR exactly as every build before this did.
+    // The one control for the tap point: the name the RFC thread agreed on,
+    // and OFF by default so a fresh profile transcribes after NR exactly as
+    // every build before this did.
     {
         CopyAssistSettingsDialog fresh;
         expect(!fresh.isRawAudio(),

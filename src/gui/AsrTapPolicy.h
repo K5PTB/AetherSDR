@@ -51,12 +51,21 @@ inline constexpr float kRxBoostSmallSignalGain = 2.0f;
 // toggle").
 //
 // AsrSegmenter's default gate is an ABSOLUTE RMS threshold driven by the
-// Sensitivity slider. The post-DSP feed has the operator's output boost and
-// trim applied downstream of NR; the pre-DSP feed has neither, so it arrives
-// quieter by that gain — measured on the real engine at +0.00 dB with defaults,
-// +6.01 dB with boost on, +18.01 dB with boost and +12 dB trim. An operator who
-// tuned Sensitivity against their post-DSP level would have speech fall under
-// the gate the moment they switched to the unprocessed feed.
+// Sensitivity slider. The post-DSP feed carries gain the pre-DSP feed does not,
+// so it arrives quieter by that amount, and an operator who tuned Sensitivity
+// against their post-DSP level would have speech fall under the gate the moment
+// they switched to the unprocessed feed. Measured on the real engine with the
+// chain at defaults: +0.00 dB, +6.01 dB with boost on, +18.01 dB with boost and
+// +12 dB trim.
+//
+// `rxStaticChainMakeupDb` covers the rest of that gain: AudioEngine sums the RX
+// chain stages whose contribution is one number no matter what the audio does
+// (EQ master gain, compressor makeup, tube output gain). What NO scalar can
+// describe, and what this therefore does not correct for, is the
+// signal-dependent part of the chain — EQ band shaping, the gate, compressor
+// gain reduction, tube drive and pudu — along with each NR mode's own speech
+// attenuation, which already leaves Sensitivity unanchored across NR modes
+// (pre-existing, out of scope).
 //
 // So scale the THRESHOLD rather than the audio: the unprocessed feed stays
 // bit-exact (which is the point of the feature, and what the WER evidence was
@@ -68,16 +77,20 @@ inline constexpr float kRxBoostSmallSignalGain = 2.0f;
 // separates them. Silero VAD is the answer there, and the checkbox's tooltip
 // says so.
 inline float asrSpeechRmsForTapPoint(float baseRms, AsrTapPoint point,
-                                     bool rxBoostOn, float rxOutputTrimDb)
+                                     bool rxBoostOn, float rxOutputTrimDb,
+                                     float rxStaticChainMakeupDb = 0.0f)
 {
     if (point == AsrTapPoint::PostDsp) {
         return baseRms;   // the level the operator tuned against
     }
     const float boost = rxBoostOn ? kRxBoostSmallSignalGain : 1.0f;
     const float trim = std::pow(10.0f, rxOutputTrimDb / 20.0f);
-    const float makeup = boost * trim;
-    // A non-finite or non-positive gain can only come from a corrupt trim
-    // value; leaving the threshold alone is the safe reading.
+    const float chain = std::pow(10.0f, rxStaticChainMakeupDb / 20.0f);
+    const float makeup = boost * trim * chain;
+    // A non-finite or non-positive gain means a corrupt trim value, or an EQ
+    // master gain of zero (-inf dB) that silences the post-DSP feed entirely.
+    // Neither leaves a threshold worth deriving; the tuned value is the safe
+    // reading.
     if (!std::isfinite(makeup) || makeup <= 0.0f) {
         return baseRms;
     }

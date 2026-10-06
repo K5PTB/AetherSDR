@@ -14,6 +14,9 @@
 
 #include "TestSettingsProfile.h"
 #include "core/AudioEngine.h"
+#include "core/ClientComp.h"
+#include "core/ClientEq.h"
+#include "core/ClientTube.h"
 
 #include <QBuffer>
 #include <QByteArray>
@@ -178,6 +181,57 @@ int main(int argc, char** argv)
         Access::main(engine, input);
         expect(pre.count == preBefore && post.count == postBefore,
                "a closed sink silences both feeds together");
+    }
+
+    // ---- The static chain makeup the pre-DSP feed is missing --------------
+    // Copy Assist's threshold scaling divides by this, so it has to count the
+    // stages the operator actually has in the chain and nothing else. EQ master
+    // gain, compressor makeup and tube output gain are signal-independent; the
+    // gate and pudu are not, and contribute nothing here by design.
+    {
+        using Stage = AetherSDR::AudioEngine::RxChainStage;
+        engine.setRxChainStages({Stage::Eq, Stage::Gate, Stage::Comp, Stage::Tube,
+                                 Stage::Pudu});
+
+        expect(std::fabs(engine.rxStaticChainMakeupDb()) < 0.01f,
+               "a chain with every stage disabled contributes 0 dB");
+
+        engine.clientCompRx()->setEnabled(true);
+        engine.clientCompRx()->setMakeupDb(6.0f);
+        expect(std::fabs(engine.rxStaticChainMakeupDb() - 6.0f) < 0.01f,
+               "an enabled compressor contributes its makeup gain");
+
+        engine.clientTubeRx()->setEnabled(true);
+        engine.clientTubeRx()->setOutputGainDb(3.0f);
+        expect(std::fabs(engine.rxStaticChainMakeupDb() - 9.0f) < 0.01f,
+               "the tube's output gain adds to it");
+
+        engine.clientEqRx()->setEnabled(true);
+        engine.clientEqRx()->setMasterGain(2.0f);   // +6.02 dB
+        expect(std::fabs(engine.rxStaticChainMakeupDb() - 15.02f) < 0.02f,
+               "the EQ master gain adds as dB, converted from linear");
+
+        // Disabled stages drop out even with their values still set — the
+        // operator hears no makeup, so the threshold must not assume any.
+        engine.clientCompRx()->setEnabled(false);
+        expect(std::fabs(engine.rxStaticChainMakeupDb() - 9.02f) < 0.02f,
+               "a disabled stage stops contributing");
+        engine.clientCompRx()->setEnabled(true);
+
+        // The load-bearing one: a stage the operator removed from the chain
+        // order never runs, so its gain must not be counted even while the
+        // module is enabled and configured. Only the walk over the stored
+        // order makes this true.
+        engine.setRxChainStages({Stage::Eq, Stage::Tube});
+        expect(std::fabs(engine.rxStaticChainMakeupDb() - 9.02f) < 0.02f,
+               "a stage absent from the chain order contributes nothing");
+
+        // A master gain of zero silences the post-DSP feed: -inf dB, which the
+        // scaler turns into "leave the threshold alone".
+        engine.setRxChainStages({Stage::Eq});
+        engine.clientEqRx()->setMasterGain(0.0f);
+        expect(!std::isfinite(engine.rxStaticChainMakeupDb()),
+               "an EQ master gain of zero reports -inf, not a finite number");
     }
 
     Access::detach(engine);

@@ -239,7 +239,7 @@ static void testNoSamplesAreDropped()
 
 // The names are what operator profiles store under CopyAssist.AsrTapPoint, so
 // they are pinned literally: renaming one would silently move every operator
-// who turned Copy Assist's NR button off back to post-DSP on upgrade.
+// who chose the unprocessed tap point back to post-DSP on upgrade.
 static void testTapPointSettingNamesArePinned()
 {
     check(asrTapPointToSetting(AsrTapPoint::PostDsp) == QLatin1String("PostDsp"),
@@ -314,6 +314,48 @@ static void testSpeechRmsTracksTheTapPointGain()
           "a non-finite trim leaves the threshold alone");
     check(asrSpeechRmsForTapPoint(base, AsrTapPoint::PreDsp, false, -1000.0f) > 0.0f,
           "an absurd trim still yields a positive threshold");
+
+    // ---- The rest of the chain's static gain ------------------------------
+    // Boost and trim are not the only gain between the two taps: the EQ's
+    // master gain, the compressor's makeup and the tube's output gain are all
+    // signal-independent, and AudioEngine::rxStaticChainMakeupDb() sums them.
+    // Omitting them left a threshold wrong by exactly that amount for any
+    // operator running those stages.
+    check(std::fabs(asrSpeechRmsForTapPoint(base, AsrTapPoint::PreDsp, false, 0.0f, 0.0f)
+                    - base) < 1e-6f,
+          "a chain at unity gain leaves the threshold where the operator put it");
+
+    const float chained =
+        asrSpeechRmsForTapPoint(base, AsrTapPoint::PreDsp, false, 0.0f, 6.0206f);
+    check(std::fabs(chained - base / 2.0f) < 1e-4f,
+          "+6 dB of chain makeup halves the threshold");
+
+    // The three sources of gain are one product, not three cases.
+    const float all =
+        asrSpeechRmsForTapPoint(base, AsrTapPoint::PreDsp, true, 12.0f, 6.0206f);
+    check(std::fabs(all - base / (2.0f * 3.98107f * 2.0f)) < 1e-5f,
+          "boost, trim and chain makeup compound into one divisor");
+
+    // The chain can attenuate too (a negative makeup or a master gain below
+    // unity), which raises the threshold.
+    check(asrSpeechRmsForTapPoint(base, AsrTapPoint::PreDsp, false, 0.0f, -6.0206f) > base,
+          "negative chain makeup raises the threshold");
+
+    // PostDsp still ignores every one of them: that path is the level the
+    // operator tuned against, by definition.
+    check(asrSpeechRmsForTapPoint(base, AsrTapPoint::PostDsp, true, 12.0f, 6.0206f) == base,
+          "PostDsp ignores chain makeup as it ignores boost and trim");
+
+    // An EQ master gain of zero is -inf dB: the post-DSP feed is silent, and no
+    // threshold derived from it means anything. Fall back to the tuned value
+    // rather than emitting zero (gate admits everything) or inf (admits
+    // nothing).
+    // Boost is on here on purpose: without it this check passes even for an
+    // implementation that ignores chain makeup entirely, because the fallback
+    // and "no chain gain at all" give the same answer.
+    const float negInf = -std::numeric_limits<float>::infinity();
+    check(asrSpeechRmsForTapPoint(base, AsrTapPoint::PreDsp, true, 0.0f, negInf) == base,
+          "a silenced chain leaves the threshold alone, boost included");
 }
 
 }  // namespace AetherSDR

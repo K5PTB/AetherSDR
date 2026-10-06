@@ -6436,6 +6436,50 @@ QVector<AudioEngine::RxChainStage> AudioEngine::rxChainStages() const
     return unpackRxChain(m_rxChainPacked.load(std::memory_order_acquire));
 }
 
+float AudioEngine::rxStaticChainMakeupDb() const
+{
+    // Same walk as runRxChain(), over the same atomic, so a stage the operator
+    // removed from the chain is skipped here exactly as it is skipped there.
+    // Read the packed order directly rather than via rxChainStages(), which
+    // allocates.
+    const uint64_t packed = m_rxChainPacked.load(std::memory_order_acquire);
+    float db = 0.0f;
+    for (int slot = 0; slot < kMaxRxChainStages; ++slot) {
+        const auto stage = static_cast<RxChainStage>((packed >> (slot * 8)) & 0xFF);
+        switch (stage) {
+            case RxChainStage::None:
+                return db;                       // end-of-list marker
+            case RxChainStage::Eq:
+                if (m_clientEqRx && m_clientEqRx->isEnabled()) {
+                    // masterGain is linear and clamps to [0, 4.0]; zero is
+                    // -inf dB, which the caller's finite check turns into
+                    // "leave the threshold alone" rather than a divide by zero.
+                    const float linear = m_clientEqRx->masterGain();
+                    db += (linear > 0.0f)
+                              ? 20.0f * std::log10(linear)
+                              : -std::numeric_limits<float>::infinity();
+                }
+                break;
+            case RxChainStage::Comp:
+                if (m_clientCompRx && m_clientCompRx->isEnabled()) {
+                    db += m_clientCompRx->makeupDb();
+                }
+                break;
+            case RxChainStage::Tube:
+                if (m_clientTubeRx && m_clientTubeRx->isEnabled()) {
+                    db += m_clientTubeRx->outputGainDb();
+                }
+                break;
+            // Gain depends on the signal, so there is no number to add: the
+            // gate's attenuation, and pudu's drive/harmonics mix.
+            case RxChainStage::Gate:
+            case RxChainStage::Pudu:
+                break;
+        }
+    }
+    return db;
+}
+
 // Keys that were written by an earlier build and are read by nothing now.
 // Left in place they are harmless, but they accumulate: every operator's
 // settings file carries a de-esser that no longer exists and two attack values

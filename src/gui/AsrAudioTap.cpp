@@ -60,14 +60,18 @@ void AsrAudioTap::setTapPoint(AsrTapPoint point)
     // Start over rather than carry on. An utterance begun through one chain
     // and finished through the other is spliced across a level step and a
     // latency step (an NR stage delays its output), and the receiver lock was
-    // earned on the other signal. The engine reset drops the partial
-    // utterance, carried context and speaker clusters — a speaker's embedding
-    // shifts with NR anyway, so clusters would not survive the switch intact.
+    // earned on the other signal. restartSession() drops the partial
+    // utterance, carried context and speaker clusters, AND the audio already
+    // queued to the worker — all of which came from the other chain. A bare
+    // reset() would keep worker ordering correct but still let the old chain's
+    // backlog be transcribed, so with a long decode buffer the operator would
+    // read old-chain text well after the switch. Speaker clusters go either
+    // way: an embedding shifts with NR, so they would not survive intact.
     m_policy.reset();
     m_clock.restart();
     m_warnedUndecodable = false;
     if (m_asr != nullptr) {
-        m_asr->reset();
+        m_asr->restartSession();
     }
     // The two points arrive at different levels, so the gate's threshold has
     // to move with the switch or a saved Sensitivity silently means something
@@ -91,16 +95,24 @@ void AsrAudioTap::applySpeechRmsForTapPoint()
     }
     const bool boost = m_audio->rxBoost();
     const float trimDb = m_audio->rxOutputTrimDb();
-    const float rms = asrSpeechRmsForTapPoint(m_baseSpeechRms, m_tapPoint, boost, trimDb);
+    const float chainDb = m_audio->rxStaticChainMakeupDb();
+    const float rms =
+        asrSpeechRmsForTapPoint(m_baseSpeechRms, m_tapPoint, boost, trimDb, chainDb);
     // Change detection on the gain, not the rms, so float noise in the trim
     // does not re-push every block.
     const float gainDb = (m_tapPoint == AsrTapPoint::PostDsp)
                              ? 0.0f
-                             : (boost ? 6.0206f : 0.0f) + trimDb;
-    if (m_speechRmsApplied && std::fabs(gainDb - m_appliedGainDb) < 0.01f) {
+                             : (boost ? 6.0206f : 0.0f) + trimDb + chainDb;
+    // A non-finite total (an EQ master gain of zero is -inf dB) means the
+    // post-DSP feed is silenced, and the scaler above already fell back to the
+    // tuned value — the same rms 0 dB would give. Track it as 0 dB so the
+    // comparison stays finite; comparing infinities yields NaN, which is never
+    // < 0.01 and would re-push on every block.
+    const float trackedGainDb = std::isfinite(gainDb) ? gainDb : 0.0f;
+    if (m_speechRmsApplied && std::fabs(trackedGainDb - m_appliedGainDb) < 0.01f) {
         return;
     }
-    m_appliedGainDb = gainDb;
+    m_appliedGainDb = trackedGainDb;
     m_speechRmsApplied = true;
     m_asr->setSpeechRms(rms);
 }

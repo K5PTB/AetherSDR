@@ -4092,6 +4092,20 @@ if (ENABLE_ASR)
     set_target_properties(asr_engine_test PROPERTIES AUTOMOC ON)
     add_test(NAME asr_engine_test COMMAND asr_engine_test)
 
+    # Tap-point selection (RFC #4861): real AudioEngine -> real AsrAudioTap ->
+    # real AsrEngine, counting how much audio each point delivers. Needs both
+    # libraries because the tap sits between them; AsrAudioTap.cpp is compiled
+    # in directly because the GUI sources are not a library.
+    add_executable(asr_audio_tap_test
+        tests/asr_audio_tap_test.cpp
+        src/gui/AsrAudioTap.cpp
+    )
+    target_include_directories(asr_audio_tap_test PRIVATE src tests)
+    target_link_libraries(asr_audio_tap_test PRIVATE aethercore aetherasr Qt6::Core)
+    set_target_properties(asr_audio_tap_test PROPERTIES AUTOMOC ON)
+    add_test(NAME asr_audio_tap_test COMMAND asr_audio_tap_test)
+    set_tests_properties(asr_audio_tap_test PROPERTIES TIMEOUT 120)
+
     # Silero VAD (ONNX) smoke test — only when ONNX Runtime is available; env-gated
     # on a model + WAV at run time (see the test's header), so it SKIPs otherwise.
     if(ORT_FOUND)

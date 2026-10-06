@@ -37,8 +37,10 @@ public:
     void setEnabled(bool on);
     bool isEnabled() const { return m_enabled; }
 
-    // Applied live. Switching while enabled starts transcription over (see the
-    // .cpp); switching while disabled only takes effect at the next enable.
+    // Applied live. Switching while enabled starts transcription over —
+    // including the audio already queued to the ASR worker, which came from
+    // the other chain (see the .cpp); switching while disabled only takes
+    // effect at the next enable.
     void setTapPoint(AsrTapPoint point);
     AsrTapPoint tapPoint() const { return m_tapPoint; }
 
