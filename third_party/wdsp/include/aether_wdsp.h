@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "aether_wbfm_observation.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,13 @@ void OpenChannel(int channel, int inputSize, int dspSize, int inputSampleRate,
                  int dspSampleRate, int outputSampleRate, int type, int state,
                  double delayUp, double slewUp, double delayDown,
                  double slewDown, int blockForOutput);
+// Prepared ring depth, fixed for this channel lifetime and its rebuilds.
+// Returns 0 before touching the channel for an invalid channel/depth; otherwise
+// the ordinary OpenChannel parameter/lifetime contract applies. Depth is 2..8.
+int OpenChannelWithExchangeDepth(int channel, int inputSize, int dspSize,
+    int inputSampleRate, int dspSampleRate, int outputSampleRate, int type,
+    int state, double delayUp, double slewUp, double delayDown, double slewDown,
+    int blockForOutput, int exchangeDepth);
 void CloseChannel(int channel);
 // Channel run state. state 1 = running, 0 = stopped. dmode 1 makes a stop
 // BLOCK until the channel has flushed (bounded by WDSP's own 100 ms timeout),
@@ -44,6 +52,32 @@ void fexchange2(int channel, float* inputI, float* inputQ,
 // must pace a burst of input blocks against the worker.
 int GetChannelOutputReady(int channel);
 void SetRXAMode(int channel, int mode);
+// Broadcast decoder controls, WDSP Guide section 5.3.10. The local patch
+// applies deemphasis to both live filters; indicator readback is an atomic
+// latest-completed-block observation. The caller must own channel lifetime.
+// Opt-in 192 kHz phase-difference response correction and paired post-matrix
+// DC removal. Existing owners default off and keep legacy MPX DC placement.
+void SetRXAWBFMDiscriminatorCompensation(int channel, int enabled);
+void SetRXAWBFMdmph(int channel, int run, int continent);
+int GetRXAWBFMStereoIndicator(int channel);
+// Construction/control only; actual matrix output becomes paired L+R in mono.
+void SetRXAWBFMForceMono(int channel, int forceMono);
+// Fixed four-attempt atomic snapshot; 0 means retry later, never wait on DSP.
+int GetRXAWBFMReception(int channel, AetherWdspWbfmObservation* observation);
+
+// Host-owned WFM RF prefilter. WBFM intentionally disables RXA's internal
+// RF filters, so this existing overlap-save stage runs at the input rate
+// BEFORE the channel's decimator. Prepare/destroy/setFreqs only under the
+// planner/control fence. xbps allocates and locks nothing. Input is `size`
+// interleaved-double complex frames; output must hold 2*size complex frames,
+// of which the first size are valid. The host keeps a fixed unity gain.
+typedef struct _bps* AetherWdspBandpass;
+AetherWdspBandpass create_bps(int run, int position, int size, double* in,
+    double* out, double lowHz, double highHz, int sampleRate, int window, double gain);
+void destroy_bps(AetherWdspBandpass filter);
+void flush_bps(AetherWdspBandpass filter);
+void xbps(AetherWdspBandpass filter, int position);
+void setFreqs_bps(AetherWdspBandpass filter, double lowHz, double highHz);
 // Receive FM construction/control only: these take WDSP's DSP lock and the
 // limiter gain setter rebuilds its state. Never call from acquisition/audio.
 void SetRXAFMDeviation(int channel, double deviationHz);
@@ -479,6 +513,20 @@ uint64_t wdspPortOutstandingAllocations(void);
 // which is the window in which #5734's input overwrite happened. 0 (the
 // default) is a single relaxed load and no sleep. Process-global.
 void wdspPortSetHandoffPauseForTest(unsigned microseconds);
+// TEST ONLY: arm the next worker at that same handoff; only the claiming worker
+// waits. Poll the acknowledgement outside acquisition. Serialize fixtures and
+// release (enabled=0) before retiring/closing that worker or arming another.
+void wdspPortSetHandoffHoldForTest(int enabled);
+int wdspPortHandoffHeldForTest(void);
+// Same lifetime/serialization contract, but immediately BEFORE output memcpy.
+void wdspPortSetOutputCopyHoldForTest(int enabled);
+int wdspPortOutputCopyHeldForTest(void);
+// Locks existing exchange then ring-count sections. Test/control only; caller owns
+// an open channel and excludes destruction. Never an acquisition readiness API.
+int GetChannelOutputSamplesForTest(int channel);
+// After count readiness, wait for the previous handoff hook/DSP to finish.
+// Test/control only; never call with either worker hold armed or entered.
+void SynchronizeChannelWorkerForTest(int channel);
 
 #ifdef __cplusplus
 }

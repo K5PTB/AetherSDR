@@ -1733,6 +1733,7 @@ AetherSDR::WidebandConverterView widebandConverterViewRecord() noexcept
 RadioCapabilities Hl2Backend::capabilities() const
 {
     RadioCapabilities c;
+    c.broadcastFmReceive = std::nullopt;
     c.canReboot = false;
     c.hasRemoteOnControl = false;
     c.canUpgradeFirmware = false;

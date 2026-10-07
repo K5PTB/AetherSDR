@@ -294,7 +294,10 @@ std::unique_ptr<WdspChannel> WdspChannel::create(const Config& config,
         return nullptr;
     }
     --reservation.m_count;
-    channel->open();
+    if (!channel->open()) {
+        setError(error, "WDSP refused the prepared exchange depth");
+        return nullptr;
+    }
     return channel;
 }
 
@@ -347,6 +350,31 @@ void WdspChannel::Reservation::release() noexcept
         releaseChannelId(m_ids[--m_count]);
     }
 }
+
+struct WdspChannel::WbfmState
+{
+    explicit WbfmState(const Config& config)
+        : input(2 * config.inputBlockSize), output(4 * config.inputBlockSize),
+          i(config.inputBlockSize), q(config.inputBlockSize), gain(config.wbfmReceive->outputGain),
+          filter(create_bps(1, 0, static_cast<int>(config.inputBlockSize), input.data(),
+              output.data(), -config.filterHighHz, -config.filterLowHz,
+              config.inputSampleRate, 0, 1.0), destroy_bps)
+    {
+        // WDSP fir_bandpass uses the negative complex-frequency convention.
+        // Negate/swap edges so this prefilter follows mathematical RTL IQ.
+        // 2048-frame blocks give 2049 BH4 taps and a 4096-point overlap-save
+        // FFT. Unlike fircore, xbps has no control-update mutex on this path.
+        // PATIENT planning can overwrite its scratch input; begin with a
+        // defined overlap history after the plans have been constructed.
+        flush_bps(filter.get());
+    }
+    std::vector<double> input;
+    std::vector<double> output;
+    std::vector<float> i;
+    std::vector<float> q;
+    double gain;
+    std::unique_ptr<_bps, decltype(&destroy_bps)> filter;
+};
 
 WdspChannel::WdspChannel(int channelId, const Config& config) noexcept
     : m_channelId(channelId)
@@ -444,6 +472,20 @@ WdspChannel::ProcessResult WdspChannel::processIq(std::span<const float> inputI,
         }
     }
 
+    if (m_wbfm) {
+        for (std::size_t sample = 0; sample < inputI.size(); ++sample) {
+            m_wbfm->input[2 * sample] = channelI[sample];
+            m_wbfm->input[2 * sample + 1] = channelQ[sample];
+        }
+        xbps(m_wbfm->filter.get(), 0);
+        for (std::size_t sample = 0; sample < inputI.size(); ++sample) {
+            m_wbfm->i[sample] = static_cast<float>(m_wbfm->output[2 * sample]);
+            m_wbfm->q[sample] = static_cast<float>(m_wbfm->output[2 * sample + 1]);
+        }
+        channelI = m_wbfm->i.data();
+        channelQ = m_wbfm->q.data();
+    }
+
     if (!m_running.load(std::memory_order_relaxed)) {
         // Once the down-slew finishes, fexchange2 neither writes nor zeroes the
         // output, so making "stopped" mean silence is our job. (WDSP's downslew2
@@ -457,6 +499,29 @@ WdspChannel::ProcessResult WdspChannel::processIq(std::span<const float> inputI,
                const_cast<float*>(channelI),
                const_cast<float*>(channelQ),
                outputLeft.data(), outputRight.data(), &wdspError);
+    if (m_wbfm) {
+        if (wdspError == 0) {
+            for (std::size_t sample = 0; sample < outputLeft.size(); ++sample) {
+                outputLeft[sample] *= static_cast<float>(m_wbfm->gain);
+                outputRight[sample] *= static_cast<float>(m_wbfm->gain);
+            }
+        }
+        m_wbfmReception.reset();
+        AetherWdspWbfmObservation observation{};
+        if (wdspError == 0 && m_running.load(std::memory_order_relaxed)
+            && GetRXAWBFMReception(m_channelId, &observation) && observation.valid) {
+            m_wbfmReception = AetherSDR::WfmReceptionDiagnostics{
+                true, observation.pilotMagnitude, observation.pilotLocked != 0,
+                observation.lockDurationMs, observation.lockLossCount, observation.reacquisitionCount,
+                observation.observationDurationMs, observation.stableDurationMs,
+                observation.pilotEngageThreshold, observation.pilotReleaseThreshold,
+                observation.consecutiveHighBlocks, observation.consecutiveLowBlocks,
+                observation.engageBlocks, observation.releaseBlocks, observation.observationSequence};
+        }
+        const bool stereo = m_wbfmReception && m_wbfmReception->pilotLocked
+            && !m_config.wbfmReceive->forceMono;
+        m_wbfmStereo.store(stereo ? 1 : 0, std::memory_order_relaxed);
+    }
     const uint64_t allocationsAfter = wdspPortThreadAllocationSequence();
     m_callbacksInFlight.fetch_sub(1, std::memory_order_seq_cst);
 
@@ -503,6 +568,11 @@ bool WdspChannel::setRunning(bool running) noexcept
     // build; patch 8's Sleep(1) wait can't fire there because pre_main_build
     // clears flushflag before OpenChannel starts the channel (channel.c), an
     // invariant of vendored code.
+    if (m_wbfm) {
+        if (running) { flush_bps(m_wbfm->filter.get()); }
+        m_wbfmStereo.store(0, std::memory_order_relaxed);
+        m_wbfmReception.reset();
+    }
     SetChannelState(m_channelId, running ? 1 : 0, 0);
     m_running.store(running, std::memory_order_relaxed);
     endControlOperation();
@@ -522,7 +592,11 @@ bool WdspChannel::reconfigure(const Config& config, std::string* error) noexcept
     close();
     m_config = config;
     m_outputBlockSize = computeOutputBlockSize(m_config);
-    open();
+    if (!open()) {
+        setError(error, "WDSP refused the prepared exchange depth");
+        endControlOperation();
+        return false;
+    }
     if (!wasRunning) {
         // Restore the state found, like WDSP's own rebuilds (channel.c
         // SetDSPBuffsize); open() always starts, so a stopped channel must be stopped
@@ -539,7 +613,8 @@ bool WdspChannel::setMode(Mode mode) noexcept
 {
     // An opt-in FM channel changes family through a complete reconfiguration;
     // otherwise its panel normalization would leak into another demodulator.
-    if (m_config.fmReceive && mode != Mode::Fm) { return false; }
+    if ((m_config.fmReceive && mode != Mode::Fm)
+        || (m_config.wbfmReceive && mode != Mode::Wbfm)) { return false; }
     if (!beginControlOperation()) {
         return false;
     }
@@ -563,12 +638,16 @@ bool WdspChannel::setMode(Mode mode) noexcept
 bool WdspChannel::setFilter(double lowHz, double highHz) noexcept
 {
     if (!std::isfinite(lowHz) || !std::isfinite(highHz) || lowHz >= highHz ||
-        !beginControlOperation()) {
+        (m_config.wbfmReceive && (lowHz < -0.45 * m_config.inputSampleRate
+            || highHz > 0.45 * m_config.inputSampleRate)) || !beginControlOperation()) {
         return false;
     }
     {
         const std::scoped_lock setupLock(g_setupMutex);
-        if (m_config.direction == Direction::Receive) {
+        if (m_wbfm) {
+            setFreqs_bps(m_wbfm->filter.get(), -highHz, -lowHz);
+            flush_bps(m_wbfm->filter.get());
+        } else if (m_config.direction == Direction::Receive) {
             // RXASetPassband, not SetRXABandpassFreqs: the latter sets only the
             // bandpass and leaves the NBP stage — the filter actually in
             // circuit — untouched, so nothing selects a sideband. Both
@@ -583,6 +662,24 @@ bool WdspChannel::setFilter(double lowHz, double highHz) noexcept
     m_config.filterHighHz = highHz;
     endControlOperation();
     return true;
+}
+
+bool WdspChannel::setWbfmDeemphasis(WbfmReceive::Deemphasis deemphasis) noexcept
+{
+    if (!m_config.wbfmReceive
+        || (deemphasis != WbfmReceive::Deemphasis::Us75 && deemphasis != WbfmReceive::Deemphasis::Us50)
+        || !beginControlOperation()) { return false; }
+    SetRXAWBFMdmph(m_channelId, 1, deemphasis == WbfmReceive::Deemphasis::Us50 ? 1 : 0);
+    m_config.wbfmReceive->deemphasis = deemphasis;
+    endControlOperation();
+    return true;
+}
+
+std::optional<bool> WdspChannel::wbfmStereoDetected() const noexcept
+{
+    const int observed = m_wbfmStereo.load(std::memory_order_relaxed);
+    if (observed < 0) { return std::nullopt; }
+    return observed != 0;
 }
 
 bool WdspChannel::setFmDeviation(double deviationHz) noexcept
@@ -1064,6 +1161,36 @@ void WdspChannel::setWorkerHandoffPauseForTest(unsigned microseconds) noexcept
     wdspPortSetHandoffPauseForTest(microseconds);
 }
 
+void WdspChannel::setWorkerHandoffHoldForTest(bool enabled) noexcept
+{
+    wdspPortSetHandoffHoldForTest(enabled ? 1 : 0);
+}
+
+bool WdspChannel::workerHandoffHeldForTest() noexcept
+{
+    return wdspPortHandoffHeldForTest() != 0;
+}
+
+void WdspChannel::setWorkerOutputCopyHoldForTest(bool enabled) noexcept
+{
+    wdspPortSetOutputCopyHoldForTest(enabled ? 1 : 0);
+}
+
+bool WdspChannel::workerOutputCopyHeldForTest() noexcept
+{
+    return wdspPortOutputCopyHeldForTest() != 0;
+}
+
+int WdspChannel::outputSamplesReadyForTest() const noexcept
+{
+    return GetChannelOutputSamplesForTest(m_channelId);
+}
+
+void WdspChannel::synchronizeWorkerForTest() const noexcept
+{
+    SynchronizeChannelWorkerForTest(m_channelId);
+}
+
 std::unique_lock<std::mutex> WdspChannel::fftwSetupLock()
 {
     // Forwards, and keeps its name so Hl2Spectrum, AnanPanAnalyzer and
@@ -1104,6 +1231,19 @@ bool WdspChannel::validateConfig(const Config& config, std::string* error) noexc
         || !std::isfinite(config.fmDeviationHz) || config.fmDeviationHz <= 0.0
         || config.fmDeviationHz >= config.dspSampleRate / 2.0)) {
         setError(error, "WDSP receive FM deviation is invalid for this channel");
+        return false;
+    }
+    if (config.wbfmReceive && (config.fmReceive || config.direction != Direction::Receive
+        || config.mode != Mode::Wbfm || config.inputSampleRate != 384000
+        || config.dspSampleRate != 192000 || config.outputSampleRate != 48000
+        || config.inputBlockSize != 2048 || config.dspBlockSize != 1024
+        || config.filterLowHz < -0.45 * config.inputSampleRate
+        || config.filterHighHz > 0.45 * config.inputSampleRate
+        || !std::isfinite(config.wbfmReceive->outputGain)
+        || config.wbfmReceive->outputGain < 0.0 || config.wbfmReceive->outputGain > 1.0
+        || (config.wbfmReceive->deemphasis != WbfmReceive::Deemphasis::Us75
+            && config.wbfmReceive->deemphasis != WbfmReceive::Deemphasis::Us50))) {
+        setError(error, "Invalid WDSP broadcast receive profile");
         return false;
     }
     if (config.direction == Direction::Transmit && config.mode == Mode::Wbfm) {
@@ -1279,11 +1419,21 @@ void WdspChannel::setNoiseBlankerHold(bool hold) noexcept
     m_nbHold.store(hold, std::memory_order_relaxed);
 }
 
-void WdspChannel::open() noexcept
+bool WdspChannel::open() noexcept
 {
     const std::scoped_lock setupLock(g_setupMutex);
     loadWisdomOnce();   // import cached FFTW wisdom so PATIENT plans don't re-measure
-    OpenChannel(m_channelId,
+    // Seven exchanges can emerge from one approved 8192-sample RTL callback.
+    // Depth 8 prepares seven output credits plus the existing worker stage:
+    // 2048 frames / 42.667 ms exchange-stage delay, 32 ms more than depth 2.
+    // It does not cover arbitrary starvation; every non-OK still withdraws.
+    const bool preparedWbfm = m_config.wbfmReceive && !m_config.blockForOutput;
+    const auto openChannel = [preparedWbfm](auto... args) {
+        if (preparedWbfm) { return OpenChannelWithExchangeDepth(args..., 8) != 0; }
+        OpenChannel(args...); // Explicit legacy depth 2, including reused slots.
+        return true;
+    };
+    if (!openChannel(m_channelId,
                 static_cast<int>(m_config.inputBlockSize),
                 static_cast<int>(m_config.dspBlockSize),
                 m_config.inputSampleRate,
@@ -1298,7 +1448,9 @@ void WdspChannel::open() noexcept
                 0,
                 m_config.muteDelayUpSec, m_config.muteSlewUpSec,
                 m_config.muteDelayDownSec, m_config.muteSlewDownSec,
-                m_config.blockForOutput ? 1 : 0);
+                m_config.blockForOutput ? 1 : 0)) {
+        return false;
+    }
     if (m_config.direction == Direction::Receive) {
         SetRXAMode(m_channelId, wdspMode(m_config.mode));
         if (m_config.fmReceive) {
@@ -1310,8 +1462,18 @@ void WdspChannel::open() noexcept
             SetRXAFMLimGain(m_channelId, 0.0);
             SetRXAFMLimRun(m_channelId, 1);
         }
-        SetRXABandpassFreqs(m_channelId, m_config.filterLowHz, m_config.filterHighHz);
-        RXANBPSetFreqs(m_channelId, m_config.filterLowHz, m_config.filterHighHz);
+        if (m_config.wbfmReceive) {
+            m_wbfm = std::make_unique<WbfmState>(m_config);
+            SetRXAWBFMDiscriminatorCompensation(m_channelId, 1);
+            SetRXAWBFMForceMono(m_channelId, m_config.wbfmReceive->forceMono ? 1 : 0);
+            SetRXAWBFMdmph(m_channelId, 1,
+                m_config.wbfmReceive->deemphasis == WbfmReceive::Deemphasis::Us50 ? 1 : 0);
+            m_wbfmStereo.store(0, std::memory_order_relaxed);
+            m_wbfmReception.reset();
+        } else {
+            SetRXABandpassFreqs(m_channelId, m_config.filterLowHz, m_config.filterHighHz);
+            RXANBPSetFreqs(m_channelId, m_config.filterLowHz, m_config.filterHighHz);
+        }
         applyRxAgc(m_channelId, m_config.agcMode, m_config.maximumAgcGainDb,
                    m_config.agcSlopeDb, m_config.agcFixedGainDb);
         // Filter length / phase mode. RXASetNC internally stops and restarts
@@ -1356,6 +1518,7 @@ void WdspChannel::open() noexcept
     SetChannelState(m_channelId, 1, 0);
     m_running.store(true, std::memory_order_relaxed);
     m_open = true;
+    return true;
 }
 
 void WdspChannel::close() noexcept
@@ -1381,6 +1544,9 @@ void WdspChannel::close() noexcept
         // a callback can be inside processIq(), and destroying the stage under
         // one frees the delay line out from under xanb().
         closeNoiseBlanker();
+        m_wbfm.reset();
+        m_wbfmStereo.store(-1, std::memory_order_relaxed);
+        m_wbfmReception.reset();
     }
     m_open = false;
 }
