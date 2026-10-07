@@ -1294,6 +1294,7 @@ private:
     void cwRxModelAction();
     void refreshCwRxStatus();
     void appendUnscoredCwText(const QString& text);
+    void appendColoredCwText(const QString& text, float cost);
     void refreshCwRxBackend();
 #endif
     CwRxModel         m_cwDecoder;
