@@ -2255,6 +2255,8 @@ void Hl2Backend::connectRadio(const RadioConnectRequest& request)
     MetisClient::Params mp;
     mp.host = host;
     mp.port = request.port ? request.port : kMetisPort;
+    if (request.localBindAddress.protocol() == QAbstractSocket::IPv4Protocol)
+        mp.localAddress = request.localBindAddress;
     mp.sampleRate = sampleRateEnum(m_sampleRateHz);
     // The connect handshake IS the first commit: this rate goes into
     // MetisClient's initial command bank, so from here the radio is running at
@@ -2274,11 +2276,23 @@ void Hl2Backend::connectRadio(const RadioConnectRequest& request)
     mp.numRx = rateLimited;
     m_boardMaxRx = request.params.value(QStringLiteral("boardMaxRx")).toInt();
     if (m_boardMaxRx <= 0) {
-        // Connecting by IP skips the broadcast sweep, so ask with a unicast
-        // discovery for byte 0x13. A count the gateware does not have makes it
-        // stream all-zero IQ slots. Short timeout; no answer keeps the default.
-        QMetaObject::invokeMethod(m_metis, [this, &host] {
+        // ASK THE RADIO. Connecting by IP skips the broadcast sweep, so nothing
+        // has read discovery byte 0x13 and the board's receiver count is
+        // unknown — which left the ceiling at whatever the register can encode
+        // (7) on a board that has 4. Sending a count the gateware does not have
+        // makes it stream slots with no DDC behind them: correctly framed,
+        // correctly paced, all-zero IQ on the receivers that do not exist.
+        //
+        // A UNICAST discovery to the host we are about to connect to answers it
+        // in one round trip, using the same parser the broadcast sweep uses.
+        // Short timeout: this is on the connect path, and a board that does not
+        // answer just leaves us with the conservative default below.
+        QMetaObject::invokeMethod(m_metis, [this, &host, &mp] {
             for (const auto& d : m_metis->discover(400, host, kMetisPort)) {
+                // Keep the interface even when an older/short discovery reply
+                // omits byte 20; it is still the route that reached the radio.
+                if (mp.localAddress.isNull())
+                    mp.localAddress = d.localAddress;
                 if (d.reply.numRx > 0) {
                     m_boardMaxRx = d.reply.numRx;
                     break;
