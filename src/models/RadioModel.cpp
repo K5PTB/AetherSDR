@@ -4,6 +4,8 @@
 #include "models/AprsDigipeaterModel.h"
 #include <QPointer>
 #include <QScopeGuard>
+#include "core/AudioCompressionPolicy.h"
+#include "core/TailnetAddress.h"
 #include "core/GuiClientIdentityPolicy.h"
 #include "AntennaAliasStore.h"
 #include "BandDefs.h"
@@ -2580,7 +2582,9 @@ RadioModel::RadioModel(QObject* parent)
         });
     });
     connect(&m_flexWaveformModel, &FlexWaveformModel::commandReady, this, [this](const QString& cmd){
-        sendCmd(cmd);
+        sendCmd(cmd, [this, cmd](int code, const QString& body) {
+            m_flexWaveformModel.handleCommandReply(cmd, code, body);
+        });
     });
     connect(&m_navtexModel, &NavtexModel::commandReady, this, [this](const QString& cmd){
         sendCmd(cmd);
@@ -5192,11 +5196,11 @@ void RadioModel::syncDigitalVoiceTxSelection(bool force)
 
 QString RadioModel::audioCompressionParam() const
 {
-    QString setting = AppSettings::instance().value("AudioCompression", "None").toString();
-    if (setting == "Opus") return "opus";
-    if (setting == "None") return "none";
-    // Auto: use Opus on WAN, uncompressed on LAN
-    return isWan() ? "opus" : "none";
+    auto& settings = AppSettings::instance();
+    const QString saved = settings.contains(QStringLiteral("AudioCompression"))
+        ? settings.value(QStringLiteral("AudioCompression"), QStringLiteral("None")).toString()
+        : QString();
+    return audioCompressionFor(saved, isWan(), !isWan() && isTailnetAddress(radioAddress()));
 }
 
 void RadioModel::sendCwKey(bool down, const QString& debugSource,
