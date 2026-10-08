@@ -92,10 +92,17 @@ launch** button appear under **Compute** (see *GPU acceleration*).
     master gain, compressor makeup and tube output gain), so the gate's
     threshold is rescaled by exactly that much when you tick the box — a saved
     Sensitivity stays calibrated instead of silently meaning something else.
-  - **On a noisy band, pair it with Silero VAD.** The unprocessed feed has
-    little level difference between speech and the noise floor, so the
-    energy-based gate admits nearly everything regardless of where the
-    threshold sits; Silero decides by content rather than loudness.
+  - **On a noisy band, leave Sensitivity high.** The unprocessed feed has
+    little level difference between speech and the noise floor (0.2 dB
+    measured), so the energy gate admits nearly everything wherever the
+    threshold sits — and closing it down removes speech rather than noise.
+    Measured on an off-air 40 m SSB ragchew, the raw feed scored 28.3% WER with
+    the gate wide open and 30.0% at Sensitivity 63. **Silero VAD does not help
+    here** and makes it much worse (87.6% at its default threshold, admitting
+    44 s of speech out of 402): it is a learned detector trained on clean
+    speech, and an HF signal with a high noise floor is outside what it expects.
+    The same model handles clean speech correctly, so this is a property of the
+    signal, not a defect.
   - Switching while enabled **starts transcription over** — the partial
     utterance, the carried context, the speaker clusters and any audio already
     queued for decoding are dropped, rather than splicing one over across two

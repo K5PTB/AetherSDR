@@ -118,6 +118,17 @@ CopyAssistSettingsDialog::CopyAssistSettingsDialog(QWidget* parent)
     // historical behaviour and the default: the recogniser hears what the
     // speaker plays. The operator's audio is unaffected either way.
     //
+    // The tooltip used to send the operator to Silero VAD for the noisy-band
+    // case. That was reasoning from how Silero works, not from measurement, and
+    // measurement says the opposite: on an off-air 40 m SSB ragchew the raw feed
+    // scored 28.3% WER with the energy gate wide open and 87.6% with Silero at
+    // its default threshold, which admitted 44 s of speech out of 402. The same
+    // model on clean speech admits 27.5 s of 34 s and segments on sentence
+    // boundaries, so this is Silero being out of distribution for a signal with
+    // an S7 noise floor, not a wiring fault. Silero also admits 2.7x more audio
+    // from the NR-processed feed than the raw one -- it wants the front-end that
+    // whisper does not.
+    //
     // Added ABOVE Silero deliberately: every option in this dialog is followed
     // by its own detail row (Save transcript -> File, Use Silero -> VAD model,
     // Label speakers -> Speaker model), so dropping this one between Silero and
@@ -132,10 +143,10 @@ CopyAssistSettingsDialog::CopyAssistSettingsDialog(QWidget* parent)
         "artifacts can confuse the speech model more than the noise does. What you "
         "hear is unchanged, and processing done by the radio itself still applies.\n\n"
         "On a noisy band the unprocessed feed has little level difference between "
-        "speech and the noise floor, so the energy-based Sensitivity gate will admit "
-        "almost everything. Enable Silero VAD below if that matters \u2014 it decides "
-        "speech by content rather than by loudness. Switching starts the "
-        "transcription over."));
+        "speech and the noise floor, so the energy-based Sensitivity gate admits "
+        "almost everything \u2014 and closing it down costs speech, not noise. Leave "
+        "Sensitivity high here. Silero VAD is not a substitute: on a noisy HF signal "
+        "it rejects most real speech. Switching starts the transcription over."));
     connect(m_rawAudio, &QCheckBox::toggled, this, &CopyAssistSettingsDialog::rawAudioToggled);
     form->addRow(m_rawAudio);
 

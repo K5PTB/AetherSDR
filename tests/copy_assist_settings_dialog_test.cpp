@@ -630,10 +630,18 @@ int main(int argc, char** argv)
             // The tooltip must address the gate, because on a noisy band the
             // unprocessed feed has almost no speech-vs-noise level contrast
             // (measured 0.2 dB) and the energy gate admits nearly everything.
-            // Silero decides by content, so it is the right pointer here.
-            expect(box->toolTip().contains(QStringLiteral("Sensitivity"))
-                       && box->toolTip().contains(QStringLiteral("Silero")),
-                   "the tooltip explains the gate and points at Silero VAD");
+            //
+            // It must NOT send the operator to Silero for that case. An earlier
+            // revision did, reasoning that a content VAD beats a level one on a
+            // feed with no level contrast. Measured on an off-air 40 m SSB
+            // ragchew the opposite holds: 28.3% WER with the energy gate wide
+            // open against 87.6% with Silero at its default threshold, which
+            // admitted 44 s of 402. The second check pins that regression, since
+            // the advice reads as plausible and would be easy to reinstate.
+            expect(box->toolTip().contains(QStringLiteral("Sensitivity")),
+                   "the tooltip explains the Sensitivity gate");
+            expect(!box->toolTip().contains(QStringLiteral("Enable Silero")),
+                   "the tooltip does not recommend Silero for the noisy-band case");
 
             // Placement, not just presence. Every option in this dialog is
             // followed by its own detail row, so this checkbox must sit ABOVE
