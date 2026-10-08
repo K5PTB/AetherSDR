@@ -16,6 +16,8 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QFormLayout>
+#include <QLabel>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QComboBox>
@@ -632,6 +634,46 @@ int main(int argc, char** argv)
             expect(box->toolTip().contains(QStringLiteral("Sensitivity"))
                        && box->toolTip().contains(QStringLiteral("Silero")),
                    "the tooltip explains the gate and points at Silero VAD");
+
+            // Placement, not just presence. Every option in this dialog is
+            // followed by its own detail row, so this checkbox must sit ABOVE
+            // "Use Silero VAD" rather than between Silero and its VAD model
+            // row — which is also what makes the tooltip's "Silero VAD below"
+            // true. Found in a running build, so pin it here.
+            auto* form = dlg.findChild<QFormLayout*>();
+            expect(form != nullptr, "the dialog lays its options out in a form");
+            if (form != nullptr) {
+                int rawRow = -1;
+                QFormLayout::ItemRole rawRole = QFormLayout::SpanningRole;
+                form->getWidgetPosition(box, &rawRow, &rawRole);
+                int sileroRow = -1;
+                int vadModelRow = -1;
+                for (int r = 0; r < form->rowCount(); ++r) {
+                    auto* field = form->itemAt(r, QFormLayout::FieldRole);
+                    auto* spanning = form->itemAt(r, QFormLayout::SpanningRole);
+                    if (spanning != nullptr && spanning->widget() != nullptr) {
+                        auto* cb = qobject_cast<QCheckBox*>(spanning->widget());
+                        if (cb != nullptr && cb->text().contains(QStringLiteral("Silero"))) {
+                            sileroRow = r;
+                        }
+                    }
+                    auto* label = form->itemAt(r, QFormLayout::LabelRole);
+                    if (label != nullptr && label->widget() != nullptr) {
+                        auto* text = qobject_cast<QLabel*>(label->widget());
+                        if (text != nullptr
+                            && text->text().contains(QStringLiteral("VAD model"))) {
+                            vadModelRow = r;
+                        }
+                    }
+                    Q_UNUSED(field);
+                }
+                expect(rawRow >= 0 && sileroRow >= 0 && vadModelRow >= 0,
+                       "the unprocessed-audio, Silero and VAD-model rows are all found");
+                expect(rawRow >= 0 && sileroRow >= 0 && rawRow < sileroRow,
+                       "unprocessed-audio sits above Use Silero VAD");
+                expect(sileroRow >= 0 && vadModelRow == sileroRow + 1,
+                       "Silero keeps its VAD model row directly beneath it");
+            }
 
             QSignalSpy rawSpy(&dlg, &CopyAssistSettingsDialog::rawAudioToggled);
             dlg.setRawAudio(true);

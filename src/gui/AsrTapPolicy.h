@@ -67,6 +67,15 @@ inline constexpr float kRxBoostSmallSignalGain = 2.0f;
 // attenuation, which already leaves Sensitivity unanchored across NR modes
 // (pre-existing, out of scope).
 //
+// One scalar is left out on purpose: the output pan. It runs before the post-DSP
+// emit, and because toMono() averages L+R a hard-panned source reads ~6 dB
+// quieter there, so a PreDsp threshold is ~6 dB lower than ideal. It is excluded
+// because it applies ONLY to external Kiwi sources (applyKiwiOutputPan), its per-
+// source value lives behind an m_dspMutex-guarded lookup, and this function is
+// called per audio block — taking the DSP lock at that rate to chase it would put
+// GUI-thread contention on the audio path. The error direction is permissive:
+// a lower threshold admits more, so no speech is lost to it.
+//
 // So scale the THRESHOLD rather than the audio: the unprocessed feed stays
 // bit-exact (which is the point of the feature, and what the WER evidence was
 // gathered on), nothing can clip, and the adjustment is one observable number.

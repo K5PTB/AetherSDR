@@ -114,20 +114,15 @@ CopyAssistSettingsDialog::CopyAssistSettingsDialog(QWidget* parent)
     logHint->setEnabled(false); // dimmed, informational
     form->addRow(QString(), logHint);
 
-    // Learned Silero VAD (ONNX) vs. the built-in energy VAD.
-    m_useSilero = new QCheckBox(tr("Use Silero VAD (ONNX)"), this);
-    m_useSilero->setToolTip(tr("Neural voice-activity detection — more robust in HF noise "
-                               "than the energy threshold"));
-    connect(m_useSilero, &QCheckBox::toggled, this, [this](bool on) {
-        m_vadPath->setEnabled(on);
-        m_vadBrowse->setEnabled(on);
-        emit useSileroVadToggled(on);
-    });
-    form->addRow(m_useSilero);
-
     // Where in the RX chain Copy Assist listens (RFC #4861). Unchecked is the
     // historical behaviour and the default: the recogniser hears what the
     // speaker plays. The operator's audio is unaffected either way.
+    //
+    // Added ABOVE Silero deliberately: every option in this dialog is followed
+    // by its own detail row (Save transcript -> File, Use Silero -> VAD model,
+    // Label speakers -> Speaker model), so dropping this one between Silero and
+    // its VAD model row would break that pairing, and the tooltip below points
+    // the operator at Silero as the next control down.
     m_rawAudio = new QCheckBox(
         tr("Transcribe from unprocessed audio (bypasses NR and RX effects)"), this);
     m_rawAudio->setObjectName(QStringLiteral("CopyAssistRawAudio"));
@@ -143,6 +138,17 @@ CopyAssistSettingsDialog::CopyAssistSettingsDialog(QWidget* parent)
         "transcription over."));
     connect(m_rawAudio, &QCheckBox::toggled, this, &CopyAssistSettingsDialog::rawAudioToggled);
     form->addRow(m_rawAudio);
+
+    // Learned Silero VAD (ONNX) vs. the built-in energy VAD.
+    m_useSilero = new QCheckBox(tr("Use Silero VAD (ONNX)"), this);
+    m_useSilero->setToolTip(tr("Neural voice-activity detection — more robust in HF noise "
+                               "than the energy threshold"));
+    connect(m_useSilero, &QCheckBox::toggled, this, [this](bool on) {
+        m_vadPath->setEnabled(on);
+        m_vadBrowse->setEnabled(on);
+        emit useSileroVadToggled(on);
+    });
+    form->addRow(m_useSilero);
 
     auto* vadRow = new QHBoxLayout;
     m_vadPath = new QLineEdit(this);

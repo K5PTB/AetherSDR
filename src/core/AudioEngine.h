@@ -176,9 +176,13 @@ public:
     //
     // Deliberately EXCLUDES everything signal-dependent — EQ band shaping, the
     // gate, compressor gain reduction, tube drive, pudu — because no single
-    // number describes those. Copy Assist's pre-DSP tap uses this to keep a
-    // saved Sensitivity calibrated across the tap-point toggle (RFC #4861);
-    // see asrSpeechRmsForTapPoint(), which states the same boundary.
+    // number describes those. Also excludes the output pan, which IS a scalar
+    // but applies only to external Kiwi sources and is held per source behind
+    // the DSP lock, so reading it at this function's call rate (per audio
+    // block) would contend with the audio thread; asrSpeechRmsForTapPoint()
+    // records why that is safe to leave. Copy Assist's pre-DSP tap uses this to
+    // keep a saved Sensitivity calibrated across the tap-point toggle
+    // (RFC #4861); see asrSpeechRmsForTapPoint(), which states the boundary.
     float rxStaticChainMakeupDb() const;
 
     // Client-side RX pan (0=full-left, 50=centre, 100=full-right).
