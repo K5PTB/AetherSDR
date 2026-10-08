@@ -133,6 +133,7 @@
 #include "DvkAvailabilityGate.h"
 #include "VoiceModeGate.h"
 #include "DvkPanel.h"
+#include "StatusIndicator.h"
 #include "core/DvkWavTransfer.h"
 #include "AmpApplet.h"
 #include "MeterApplet.h"
@@ -5656,6 +5657,15 @@ void MainWindow::buildUI()
     const QString redInd    = "QLabel { color: #e04040; font-weight: bold; font-size: 21px; }";
     const QString greyIndLg = "QLabel { color: #404858; font-weight: bold; font-size: 24px; }";
     const QString greenIndLg= "QLabel { color: #00e060; font-weight: bold; font-size: 24px; }";
+    // Tab, Return/Enter and the accessible Press action reach the same action
+    // as a click (#6257, docs/a11y.md interactive-QLabel rule). On/off
+    // indicators are checkable, so their state is not colour alone.
+    const auto keyboardOperable = [this](QWidget* indicator, bool onOff = false) {
+        StatusIndicator* helper = StatusIndicator::attach(indicator);
+        helper->setCheckable(onOff);
+        connect(helper, &StatusIndicator::activated, this,
+                [this, indicator] { activateStatusIndicator(indicator); });
+    };
 
     // Use a container with HBoxLayout for 3-section layout:
     // [left items] → stretch → [STATION centered] → stretch → [right items]
@@ -5733,7 +5743,9 @@ void MainWindow::buildUI()
             m_bandStackIndicator->setPixmap(buildBandStackIndicatorPixmap(false));
             m_bandStackIndicator->setCursor(Qt::PointingHandCursor);
             m_bandStackIndicator->setToolTip("Open band stack panel");
+            m_bandStackIndicator->setAccessibleName(QStringLiteral("Band stack panel"));
             m_bandStackIndicator->installEventFilter(this);
+            keyboardOperable(m_bandStackIndicator, true);
             hbox->addWidget(m_bandStackIndicator);
         }
 
@@ -5746,6 +5758,7 @@ void MainWindow::buildUI()
         addPanBtn->setCursor(Qt::PointingHandCursor);
         addPanBtn->setToolTip("Add Panadapter");
         addPanBtn->installEventFilter(this);
+        keyboardOperable(addPanBtn);
         hbox->addWidget(addPanBtn);
         m_addPanLabel = addPanBtn;
     }
@@ -5756,7 +5769,9 @@ void MainWindow::buildUI()
     m_tnfIndicator->setStyleSheet(greyIndLg);
     m_tnfIndicator->setCursor(Qt::PointingHandCursor);
     m_tnfIndicator->setToolTip(buildTnfTooltip(m_radioModel.tnfModel()));
+    m_tnfIndicator->setAccessibleName(QStringLiteral("Tracking notch filters"));
     m_tnfIndicator->installEventFilter(this);
+    keyboardOperable(m_tnfIndicator, true);
     hbox->addWidget(m_tnfIndicator);
     auto updateTnfTooltip = [this]() {
         if (m_tnfIndicator) {
@@ -5772,7 +5787,9 @@ void MainWindow::buildUI()
     m_cwxIndicator->setStyleSheet(greyIndLg);
     m_cwxIndicator->setCursor(Qt::PointingHandCursor);
     m_cwxIndicator->setToolTip("CW Keyer — click to toggle");
+    m_cwxIndicator->setAccessibleName(QStringLiteral("CW keyer"));
     m_cwxIndicator->installEventFilter(this);
+    keyboardOperable(m_cwxIndicator, true);
     hbox->addWidget(m_cwxIndicator);
 
 #ifdef AETHER_ASR_ENABLED
@@ -5780,7 +5797,9 @@ void MainWindow::buildUI()
     m_asrIndicator->setStyleSheet(greyIndLg);
     m_asrIndicator->setCursor(Qt::PointingHandCursor);
     m_asrIndicator->setToolTip("Speech-to-text (Copy Assist) — click to toggle");
+    m_asrIndicator->setAccessibleName(QStringLiteral("Speech-to-text (Copy Assist)"));
     m_asrIndicator->installEventFilter(this);
+    keyboardOperable(m_asrIndicator, true);
     hbox->addWidget(m_asrIndicator);
 #endif
 
@@ -5792,13 +5811,16 @@ void MainWindow::buildUI()
     m_dvkIndicator->setToolTip(dvkIndicatorTooltip(DvkIndicatorBlocker::None));
     m_dvkIndicator->setAccessibleDescription(dvkIndicatorTooltip(DvkIndicatorBlocker::None));
     m_dvkIndicator->installEventFilter(this);
+    keyboardOperable(m_dvkIndicator, true);
     hbox->addWidget(m_dvkIndicator);
 
     m_fdxIndicator = new QLabel("FDX");
     m_fdxIndicator->setStyleSheet(greyIndLg);
     m_fdxIndicator->setCursor(Qt::PointingHandCursor);
     m_fdxIndicator->setToolTip("Full Duplex — RX stays active during TX (click to toggle)");
+    m_fdxIndicator->setAccessibleName(QStringLiteral("Full duplex"));
     m_fdxIndicator->installEventFilter(this);
+    keyboardOperable(m_fdxIndicator, true);
     hbox->addWidget(m_fdxIndicator);
 
     addSep();
@@ -6111,7 +6133,10 @@ void MainWindow::buildUI()
     m_tgxlContainer->setToolTip("Tuner Genius XL\nClick to cycle OPERATE / BYPASS / STANDBY");
     m_tgxlContainer->setAccessibleName("Tuner Genius XL status");
     m_tgxlContainer->setAccessibleDescription("Click to cycle between OPERATE, BYPASS, and STANDBY");
+    m_tgxlContainer->setProperty("aetherStateCycle",
+        QStringLiteral("Press to cycle between OPERATE, BYPASS, and STANDBY"));
     m_tgxlContainer->installEventFilter(this);
+    keyboardOperable(m_tgxlContainer);
     m_tgxlContainer->setVisible(false);
     {
         auto* vbox = new QVBoxLayout(m_tgxlContainer);
@@ -6148,7 +6173,10 @@ void MainWindow::buildUI()
     m_pgxlContainer->setToolTip("Power Genius XL\nClick to cycle OPERATE / STANDBY");
     m_pgxlContainer->setAccessibleName("Power Genius XL status");
     m_pgxlContainer->setAccessibleDescription("Click to cycle between OPERATE and STANDBY");
+    m_pgxlContainer->setProperty("aetherStateCycle",
+        QStringLiteral("Press to cycle between OPERATE and STANDBY"));
     m_pgxlContainer->installEventFilter(this);
+    keyboardOperable(m_pgxlContainer);
     m_pgxlContainer->setVisible(false);
     {
         auto* vbox = new QVBoxLayout(m_pgxlContainer);
@@ -6183,6 +6211,7 @@ void MainWindow::buildUI()
     m_txIndicator->setAccessibleName("Cancel transmit");
     m_txIndicator->setAccessibleDescription("Click to send key up, PTT off, Tune off, and MOX off.");
     m_txIndicator->installEventFilter(this);
+    keyboardOperable(m_txIndicator);
     m_txIndicator->setStyleSheet("QLabel { color: rgba(255,255,255,128); font-weight: bold; font-size: 21px; }");
     hbox->addWidget(m_txIndicator);
 
@@ -7356,6 +7385,7 @@ void MainWindow::updateBandStackIndicator()
     m_bandStackIndicator->setPixmap(buildBandStackIndicatorPixmap(visible));
     m_bandStackIndicator->setToolTip(visible ? "Close band stack panel"
                                              : "Open band stack panel");
+    StatusIndicator::setCheckedFor(m_bandStackIndicator, visible);
 }
 
 bool MainWindow::activateMemorySpot(int memoryIndex, const QString& preferredPanId)
@@ -10461,6 +10491,7 @@ void MainWindow::updateKeyerAvailability()
         setIndicatorStyle(m_cwxIndicator, txIsCw ? kAvail : kDisabled);
     }
     m_cwxIndicator->setCursor(txIsCw ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    StatusIndicator::setCheckedFor(m_cwxIndicator, m_cwxPanel->isVisible());
 
     // DVK: available in voice modes (SSB, AM, FM — not DIGU/DIGL), and only on
     // a radio that reports the DVK entitlement (see dvkIndicatorBlocker).
@@ -10478,6 +10509,7 @@ void MainWindow::updateKeyerAvailability()
     }
     m_dvkIndicator->setCursor(dvkAvailable ? Qt::PointingHandCursor
                                            : Qt::ArrowCursor);
+    StatusIndicator::setCheckedFor(m_dvkIndicator, m_dvkPanel->isVisible());
     // An unlicensed radio gets a tooltip naming the missing subscription; the
     // mode gate keeps the normal one, since the panel's own title and the F-key
     // rows already make "wrong mode" obvious once it opens.
@@ -10541,6 +10573,7 @@ void MainWindow::updateKeyerAvailability()
         setIndicatorStyle(m_asrIndicator,
                           asrVisible ? kActive
                                      : (asrIsVoice ? kAvail : kDisabled));
+        StatusIndicator::setCheckedFor(m_asrIndicator, asrVisible);
         // Cursor tracks the ENABLED state, not the mode, so the hand appears on
         // exactly the clicks that do something — including the close-an-open-
         // panel case where the mode gate says no.
