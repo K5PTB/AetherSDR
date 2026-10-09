@@ -9,8 +9,8 @@
 AppName=AetherSDR
 AppVersion={#APP_VERSION}
 AppPublisher=AetherSDR Project
-AppPublisherURL=https://github.com/ten9876/AetherSDR
-AppSupportURL=https://github.com/ten9876/AetherSDR/issues
+AppPublisherURL=https://www.aethersdr.com/
+AppSupportURL=https://github.com/aethersdr/AetherSDR/issues
 AppCopyright=Copyright (C) AetherSDR contributors
 LicenseFile=..\..\LICENSE
 DefaultDirName={autopf}\AetherSDR
@@ -30,6 +30,17 @@ DisableWelcomePage=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+#ifdef SIGN
+; Authenticode (#6288). CI passes /DSIGN plus /Saethersign=<signtool command>.
+; The directive signs the setup exe and, via SignedUninstaller, unins000.exe,
+; which Inno generates from an embedded stub that no post-build pass can reach.
+SignTool=aethersign
+SignedUninstaller=yes
+; Match the payload step's tolerance for a timestamp-server blip: three
+; retries 30 s apart, not Inno's default two retries half a second apart.
+SignToolRetryCount=3
+SignToolRetryDelay=30000
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
