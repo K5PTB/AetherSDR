@@ -29,6 +29,14 @@ var discoveryPorts = []int{9007, 9008, 9010}
 // deviceStale is how long a device stays listed after its last announcement.
 const deviceStale = 2 * time.Minute
 
+// maxDevices bounds the discovered set, and so the routes discovery can add:
+// a station has a handful of accessories, and every one becomes a subnet
+// route offered to the tailnet. Devices are admitted first come and stay
+// while they keep announcing, so the LAN can still crowd out a real device
+// (D3: the station LAN is trusted); the operator can list it under Other
+// devices, which this cap doesn't count.
+const maxDevices = 16
+
 // Device is one discovered station accessory.
 type Device struct {
 	Kind     string    `json:"kind"` // "Antenna Genius", "Power Genius XL", "Tuner Genius XL"
@@ -38,10 +46,17 @@ type Device struct {
 	Serial   string    `json:"serial"`
 	Version  string    `json:"version"`
 	LastSeen time.Time `json:"last_seen"`
+
+	announced netip.Addr // an ip= that differs from the sender, logged once
 }
 
-// parseAnnouncement turns a 4O3A discovery datagram into a Device. The
-// announced ip= wins over the packet source; either must be private LAN.
+// parseAnnouncement turns a 4O3A discovery datagram into a Device at the
+// packet's source address, which must be private LAN. The announced ip= is
+// not used: taking it would let any LAN host have any private address
+// shared just by naming it. The source address is better evidence, though
+// not proof: a LAN host that forges its UDP source can still name another
+// address (D3: the station LAN is trusted), but not the radio's own, which
+// subnetTCP refuses.
 func parseAnnouncement(b []byte, src netip.Addr, port int) (Device, bool) {
 	text := strings.TrimSpace(strings.TrimRight(string(b), "\x00"))
 	fields := strings.Fields(text)
@@ -65,12 +80,12 @@ func parseAnnouncement(b []byte, src netip.Addr, port int) (Device, bool) {
 	default:
 		return Device{}, false
 	}
-	ip := src
-	if a, err := netip.ParseAddr(kv["ip"]); err == nil {
-		ip = a
-	}
+	ip := src.Unmap()
 	if !ip.Is4() || !ip.IsPrivate() || containerNet.Contains(ip) {
 		return Device{}, false
+	}
+	if a, err := netip.ParseAddr(kv["ip"]); err == nil && a != ip {
+		d.announced = a // logged by note when the device is first listed
 	}
 	d.IP = ip.String()
 	d.Port = port
@@ -174,11 +189,19 @@ func (d *Discovery) note(dev Device) {
 		d.devices = map[string]Device{}
 	}
 	prev, existed := d.devices[dev.IP]
+	if !existed && len(d.devices) >= maxDevices {
+		d.mu.Unlock()
+		log.Printf("discovery: ignoring %s at %s: already %d devices", dev.Kind, dev.IP, maxDevices)
+		return
+	}
 	d.devices[dev.IP] = dev
 	changed := !existed || prev.Kind != dev.Kind
 	d.mu.Unlock()
 	if changed {
 		log.Printf("discovery: %s %q at %s", dev.Kind, dev.Name, dev.IP)
+		if dev.announced.IsValid() {
+			log.Printf("discovery: %s at %s announces ip=%s; using the sender's address", dev.Kind, dev.IP, dev.announced)
+		}
 		if d.OnChange != nil {
 			d.OnChange()
 		}

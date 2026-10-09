@@ -17,27 +17,48 @@ const (
 )
 
 func TestParseAnnouncement(t *testing.T) {
-	src := netip.MustParseAddr("192.168.50.250")
-	ag, ok := parseAnnouncement([]byte(agAnnouncement), src, 9007)
+	ag, ok := parseAnnouncement([]byte(agAnnouncement), netip.MustParseAddr("192.168.50.103"), 9007)
 	if !ok || ag.Kind != "Antenna Genius" || ag.IP != "192.168.50.103" || ag.Port != 9007 ||
 		ag.Name != "Antenna_Genius" || ag.Serial != "74-32-B6" {
 		t.Fatalf("AG parsed as %+v (ok=%v)", ag, ok)
 	}
-	tg, ok := parseAnnouncement([]byte(tgxlAnnouncement+"\x00\x00"), src, 9010)
+	tg, ok := parseAnnouncement([]byte(tgxlAnnouncement+"\x00\x00"), netip.MustParseAddr("192.168.50.101"), 9010)
 	if !ok || tg.Kind != "Tuner Genius XL" || tg.IP != "192.168.50.101" || tg.Port != 9010 ||
 		tg.Name != "KK7GWY_-_TGXL" {
 		t.Fatalf("TGXL parsed as %+v (ok=%v)", tg, ok)
 	}
-	for _, bad := range []string{
-		"",
-		"Hello world",
-		"AG ip=8.8.8.8 port=9007",      // public address
-		"AG ip=172.30.1.5 port=9007",   // container network
-		"Unknown ip=192.168.1.5 v=1.0", // not a 4O3A device
+	// A LAN host can't have another address shared by naming it in ip=:
+	// the device is where the announcement came from.
+	forged, ok := parseAnnouncement([]byte(agAnnouncement), netip.MustParseAddr("192.168.50.250"), 9007)
+	if !ok || forged.IP != "192.168.50.250" {
+		t.Fatalf("an announcement's ip= overrode its sender: %+v (ok=%v)", forged, ok)
+	}
+	for _, bad := range []struct{ text, src string }{
+		{"", "192.168.1.5"},
+		{"Hello world", "192.168.1.5"},
+		{"AG ip=192.168.1.5 port=9007", "8.8.4.4"},      // public sender, private ip=
+		{"AG ip=192.168.1.5 port=9007", "172.30.1.5"},   // container network
+		{"Unknown ip=192.168.1.5 v=1.0", "192.168.1.5"}, // not a 4O3A device
 	} {
-		if d, ok := parseAnnouncement([]byte(bad), netip.MustParseAddr("8.8.4.4"), 9007); ok {
-			t.Errorf("%q accepted as %+v", bad, d)
+		if d, ok := parseAnnouncement([]byte(bad.text), netip.MustParseAddr(bad.src), 9007); ok {
+			t.Errorf("%q from %s accepted as %+v", bad.text, bad.src, d)
 		}
+	}
+}
+
+// Announcements can't grow the advertised routes without bound.
+func TestDiscoveredDevicesAreCapped(t *testing.T) {
+	d := &Discovery{}
+	for i := 0; i < maxDevices+10; i++ {
+		d.note(Device{Kind: "Antenna Genius", IP: fmt.Sprintf("192.168.7.%d", i+1), LastSeen: time.Now()})
+	}
+	if got := len(d.Devices()); got != maxDevices {
+		t.Fatalf("%d devices listed, want at most %d", got, maxDevices)
+	}
+	// A device already listed still refreshes.
+	d.note(Device{Kind: "Antenna Genius", IP: "192.168.7.1", Name: "renamed", LastSeen: time.Now()})
+	if d.Devices()[0].Name != "renamed" {
+		t.Fatal("a listed device's announcement was ignored at the cap")
 	}
 }
 
@@ -83,7 +104,7 @@ func TestMTUClampInjectedAndReplySwallowed(t *testing.T) {
 	relay := &Relay{
 		RadioAddr: "127.0.0.1",
 		DialRadio: func() (net.Conn, error) { return net.Dial("tcp", fr.api.Addr().String()) },
-		HostUDP: func() (*net.UDPConn, error) {
+		HostUDP: func(netip.Addr) (*net.UDPConn, error) {
 			return net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 		},
 		ClientTX: loopUDP(t), ClientPrime: loopUDP(t), ClientOut: loopUDP(t),
@@ -144,6 +165,8 @@ func TestSubnetFlowsAreForwardedAndMarkRoutesInUse(t *testing.T) {
 	devAP := netip.MustParseAddrPort(dev.Addr().String())
 	route := netip.PrefixFrom(devAP.Addr(), 32)
 	n := &Node{advertised: []netip.Prefix{route}}
+	n.authorize = func(net.Addr) (string, bool) { return "ops@example.com on laptop", true }
+	n.localAddrs = func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("192.0.2.1")} }
 
 	src := netip.MustParseAddrPort("100.64.0.9:40000")
 	if h, intercept := n.subnetTCP(src, netip.MustParseAddrPort("192.0.2.7:9007")); h != nil || intercept {
@@ -164,5 +187,109 @@ func TestSubnetFlowsAreForwardedAndMarkRoutesInUse(t *testing.T) {
 	}
 	if got := n.approvedRoutes(); len(got) != 1 || got[0] != route.String() {
 		t.Fatalf("a route that carried traffic must count as approved, got %v", got)
+	}
+}
+
+// A tailnet peer the allowlist refuses never reaches a station device, even
+// though the tailnet's ACLs routed its flow here.
+func TestSubnetFlowsFromRefusedPeersNeverReachTheDevice(t *testing.T) {
+	dev, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dev.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		if c, err := dev.Accept(); err == nil {
+			accepted <- struct{}{}
+			c.Close()
+		}
+	}()
+	devAP := netip.MustParseAddrPort(dev.Addr().String())
+	n := &Node{advertised: []netip.Prefix{netip.PrefixFrom(devAP.Addr(), 32)}}
+	src := netip.MustParseAddrPort("100.64.0.9:40000")
+	var asked net.Addr
+	n.authorize = func(a net.Addr) (string, bool) { asked = a; return "guest on phone", false }
+
+	for _, tc := range []struct {
+		name string
+		node *Node
+	}{{"refused by the allowlist", n}, {"node not running", &Node{advertised: n.advertised}}} {
+		h, intercept := tc.node.subnetTCP(src, devAP)
+		if h == nil || !intercept {
+			t.Fatalf("%s: a flow to an advertised route must be intercepted, not left to tsnet", tc.name)
+		}
+		client, server := net.Pipe()
+		done := make(chan struct{})
+		go func() { h(server); close(done) }()
+		client.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if k, err := client.Read(make([]byte, 8)); err == nil {
+			t.Fatalf("%s: the refused caller read %d bytes", tc.name, k)
+		}
+		client.Close()
+		<-done
+	}
+	if got := n.approvedRoutes(); len(got) != 0 {
+		t.Fatalf("a refused flow marked routes in use: %v", got)
+	}
+	if asked == nil || asked.String() != src.String() {
+		t.Fatalf("the allowlist was asked about %v, want the flow's source %v", asked, src)
+	}
+	select {
+	case <-accepted:
+		t.Fatal("a refused caller's flow reached the station device")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A route wide enough to contain the radio's own address never splices into
+// the radio itself, even for an allowed peer.
+func TestSubnetFlowsNeverReachTheRadioItself(t *testing.T) {
+	radio, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer radio.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		if c, err := radio.Accept(); err == nil {
+			accepted <- struct{}{}
+			c.Close()
+		}
+	}()
+	radioAP := netip.MustParseAddrPort(radio.Addr().String())
+	route := netip.MustParsePrefix("127.0.0.0/24")
+	for _, tc := range []struct {
+		name      string
+		radioAddr string
+		local     []netip.Addr
+	}{
+		{"one of the host's addresses", "172.30.1.1", []netip.Addr{radioAP.Addr()}},
+		{"RadioAddr", radioAP.Addr().String(), []netip.Addr{netip.MustParseAddr("192.0.2.1")}},
+	} {
+		n := &Node{advertised: []netip.Prefix{route}, RadioAddr: tc.radioAddr}
+		n.authorize = func(net.Addr) (string, bool) { return "ops@example.com on laptop", true }
+		local := tc.local
+		n.localAddrs = func() []netip.Addr { return local }
+
+		h, intercept := n.subnetTCP(netip.MustParseAddrPort("100.64.0.9:40000"), radioAP)
+		if h == nil || !intercept {
+			t.Fatalf("%s: a flow to an advertised route must be intercepted, not left to tsnet", tc.name)
+		}
+		client, server := net.Pipe()
+		done := make(chan struct{})
+		go func() { h(server); close(done) }()
+		client.SetReadDeadline(time.Now().Add(3 * time.Second))
+		client.Read(make([]byte, 8))
+		client.Close()
+		<-done
+		select {
+		case <-accepted:
+			t.Fatalf("%s: a station-device flow reached the radio", tc.name)
+		case <-time.After(200 * time.Millisecond):
+		}
+		if got := n.approvedRoutes(); len(got) != 0 {
+			t.Fatalf("%s: a refused flow marked routes in use: %v", tc.name, got)
+		}
 	}
 }

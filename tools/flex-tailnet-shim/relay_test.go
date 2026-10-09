@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -113,7 +115,7 @@ func TestRelayEndToEnd(t *testing.T) {
 	relay := &Relay{
 		RadioAddr: "127.0.0.1",
 		DialRadio: func() (net.Conn, error) { return net.Dial("tcp", fr.api.Addr().String()) },
-		HostUDP: func() (*net.UDPConn, error) {
+		HostUDP: func(netip.Addr) (*net.UDPConn, error) {
 			c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			if err == nil {
 				hostPort = c.LocalAddr().(*net.UDPAddr).Port
@@ -239,7 +241,7 @@ func TestSideChannelForwarding(t *testing.T) {
 	relay := &Relay{
 		RadioAddr: "127.0.0.1",
 		DialRadio: func() (net.Conn, error) { return net.Dial("tcp", fr.api.Addr().String()) },
-		HostUDP: func() (*net.UDPConn, error) {
+		HostUDP: func(netip.Addr) (*net.UDPConn, error) {
 			return net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 		},
 		ClientTX: loopUDP(t), ClientPrime: loopUDP(t), ClientOut: loopUDP(t),
@@ -271,6 +273,16 @@ func TestSideChannelForwarding(t *testing.T) {
 	if len(opened) != 1 || opened[0] != port {
 		t.Fatalf("forwarders opened %v, want only [%d] (an unrelated reply must not open one)", opened, port)
 	}
+	// Another tailnet peer can't take the transfer: the port is this
+	// session's alone.
+	other := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 3)}}
+	if stolen, err := other.Dial("tcp", fmt.Sprintf("127.0.0.2:%d", port)); err == nil {
+		stolen.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if got, _ := io.ReadAll(stolen); len(got) > 0 {
+			t.Fatalf("another peer read the side channel: %q", got)
+		}
+		stolen.Close()
+	}
 	side, err := net.Dial("tcp", fmt.Sprintf("127.0.0.2:%d", port))
 	if err != nil {
 		t.Fatalf("side channel not forwarded: %v", err)
@@ -284,5 +296,238 @@ func TestSideChannelForwarding(t *testing.T) {
 	verbs := strings.Join(relay.RecentCommands(), ",")
 	if !strings.Contains(verbs, "file download") || strings.Contains(verbs, "db_package") {
 		t.Fatalf("verb log %q must name verbs but never arguments", verbs)
+	}
+}
+
+// A LAN host that finds a session's host socket cannot feed the remote
+// client: only the radio's datagrams are relayed, and the rest are counted.
+// The radio is recognised either as RadioAddr or, when it sends from another
+// of the host's own addresses, through LocalAddrs.
+func TestHostSocketRelaysOnlyTheRadio(t *testing.T) {
+	for _, tc := range []struct{ name, radioAddr string }{
+		{"radio at RadioAddr", "127.0.0.1"},
+		{"radio at another host address", "192.0.2.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { hostSocketRelaysOnlyTheRadio(t, tc.radioAddr) })
+	}
+}
+
+func hostSocketRelaysOnlyTheRadio(t *testing.T, radioAddr string) {
+	stranger, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2)})
+	if err != nil {
+		t.Skipf("needs a second loopback address: %v", err)
+	}
+	defer stranger.Close()
+	fr := newFakeRadio(t)
+	clientTX, clientPrime, clientOut := loopUDP(t), loopUDP(t), loopUDP(t)
+	var hostPort atomic.Int64
+	var boundTo atomic.Pointer[netip.Addr]
+	relay := &Relay{
+		RadioAddr: radioAddr,
+		DialRadio: func() (net.Conn, error) { return net.Dial("tcp", fr.api.Addr().String()) },
+		HostUDP: func(local netip.Addr) (*net.UDPConn, error) {
+			boundTo.Store(&local)
+			c, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, 0)))
+			if err == nil {
+				hostPort.Store(int64(c.LocalAddr().(*net.UDPAddr).Port))
+			}
+			return c, err
+		},
+		LocalAddrs:     func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("127.0.0.1")} },
+		ClientTX:       clientTX,
+		ClientPrime:    clientPrime,
+		ClientOut:      clientOut,
+		RadioTXPort:    fr.tx.LocalAddr().(*net.UDPAddr).Port,
+		RadioPrimePort: fr.tx.LocalAddr().(*net.UDPAddr).Port,
+	}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln.Close()
+	go relay.Serve(ln)
+	ctl, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctl.Close()
+	myUDP := loopUDP(t)
+	fmt.Fprintf(ctl, "C1|client udpport %d\n", myUDP.LocalAddr().(*net.UDPAddr).Port)
+
+	buf := make([]byte, 2048)
+	myUDP.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if n, _, err := myUDP.ReadFromUDP(buf); err != nil || n != 1200 {
+		t.Fatalf("the radio's own VITA-49 must still be relayed: n=%d err=%v", n, err)
+	}
+	if b := boundTo.Load(); b == nil || *b != netip.MustParseAddr("127.0.0.1") {
+		t.Fatalf("host socket bound to %v, want the radio connection's local address", b)
+	}
+	stranger.WriteToUDP([]byte("forged"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(hostPort.Load())})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		myUDP.SetReadDeadline(deadline)
+		n, _, err := myUDP.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+		if string(buf[:n]) == "forged" {
+			t.Fatal("a stranger's datagram reached the client")
+		}
+	}
+	ss := relay.Sessions()
+	if len(ss) != 1 || ss[0].FromOthers != 1 || !strings.HasPrefix(ss[0].LastRejected, "127.0.0.2:") {
+		t.Fatalf("the dropped datagram must be counted and named: %+v", ss)
+	}
+}
+
+// A failed address listing keeps the radio recognised rather than dropping
+// its datagrams until the next refresh.
+func TestFailedAddressListingKeepsThePreviousSet(t *testing.T) {
+	addrs := []netip.Addr{netip.MustParseAddr("192.168.50.20")}
+	r := &Relay{LocalAddrs: func() []netip.Addr { return addrs }}
+	r.init()
+	if !r.fromRadio(netip.MustParseAddr("192.168.50.20")) {
+		t.Fatal("a host address must be recognised")
+	}
+	addrs = nil
+	r.locals.at = time.Now().Add(-2 * time.Second) // due for a refresh
+	if r.fromRadio(netip.MustParseAddr("192.168.50.99")) {
+		t.Fatal("an unknown source must be refused")
+	}
+	if !r.fromRadio(netip.MustParseAddr("192.168.50.20")) {
+		t.Fatal("a failed listing dropped the radio's address")
+	}
+}
+
+// Closing a session withdraws its side-channel access and nobody else's,
+// including another session from the same computer.
+func TestClosingASessionWithdrawsItsSideChannels(t *testing.T) {
+	r := &Relay{}
+	r.init()
+	var forgotten []uint64
+	r.ForgetForward = func(id uint64) { forgotten = append(forgotten, id) }
+	ip := netip.MustParseAddr("100.64.0.9")
+	mk := func(id uint64) *Session {
+		a, b := net.Pipe()
+		t.Cleanup(func() { a.Close(); b.Close() })
+		s := &Session{id: id, relay: r, client: a, radio: b, host: loopUDP(t), clientIP: ip, done: make(chan struct{})}
+		r.sessions[id] = s
+		return s
+	}
+	first, second := mk(1), mk(2)
+	first.close("test")
+	if len(forgotten) != 1 || forgotten[0] != 1 || !first.closed.Load() || second.closed.Load() {
+		t.Fatalf("withdrawn %v after closing session 1", forgotten)
+	}
+
+	f := &Forwarder{Listen: func(int) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }}
+	open := func(sess uint64, closed bool) {
+		if err := f.Open(5000, sess, ip, func() bool { return closed }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	from := &net.TCPAddr{IP: net.IPv4(100, 64, 0, 9), Port: 1}
+	open(1, false)
+	open(2, false)
+	f.Forget(1)
+	if !f.claim(5000, from) {
+		t.Fatal("session 2 from the same computer lost its transfer when session 1 closed")
+	}
+	// Each announced transfer admits one connection.
+	if f.claim(5000, from) {
+		t.Fatal("one grant admitted a second connection")
+	}
+	// A reply that arrives after its session closed (and after Forget ran)
+	// must not leave the port open to that computer.
+	open(3, true)
+	if f.claim(5000, from) {
+		t.Fatal("a closed session's late reply opened the port")
+	}
+	f.mu.Lock()
+	sc := f.active[5000]
+	f.mu.Unlock()
+	f.shut(5000, sc)
+}
+
+// A second transfer announced on an open port gets the full window again.
+func TestANewTransferRestartsTheWindow(t *testing.T) {
+	f := &Forwarder{
+		Listen: func(int) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
+		Window: time.Second,
+	}
+	ip := netip.MustParseAddr("100.64.0.9")
+	if err := f.Open(5000, 1, ip, nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if err := f.Open(5000, 2, ip, nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(700 * time.Millisecond) // past the first window, inside the second
+	f.mu.Lock()
+	sc := f.active[5000]
+	f.mu.Unlock()
+	if sc == nil {
+		t.Fatal("the port closed on the first transfer's window")
+	}
+	time.Sleep(time.Second)
+	f.mu.Lock()
+	sc = f.active[5000]
+	f.mu.Unlock()
+	if sc != nil {
+		t.Fatal("the port outlived its window")
+	}
+}
+
+// A side channel that is shutting down is replaced, not joined: a new
+// transfer on the same port gets a working listener.
+func TestReopeningAShutSideChannelListensAgain(t *testing.T) {
+	var opened int
+	f := &Forwarder{Listen: func(port int) (net.Listener, error) {
+		opened++
+		return net.Listen("tcp", "127.0.0.1:0")
+	}}
+	ip := netip.MustParseAddr("100.64.0.9")
+	if err := f.Open(5000, 1, ip, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	old := f.active[5000]
+	f.mu.Unlock()
+	f.shut(5000, old) // what the window's deadline does
+	if err := f.Open(5000, 2, ip, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	cur := f.active[5000]
+	f.mu.Unlock()
+	if opened != 2 || cur == nil || cur == old {
+		t.Fatalf("listeners opened %d; the new transfer joined the closing channel", opened)
+	}
+	if c, err := net.Dial("tcp", cur.ln.Addr().String()); err != nil {
+		t.Fatalf("the replacement listener doesn't accept: %v", err)
+	} else {
+		c.Close()
+	}
+	f.shut(5000, cur)
+}
+
+// AetherSDR re-sends `client udpport` after a collision; the first port must
+// stop feeding the session once the second replaces it.
+func TestRepeatedUDPPortReplacesTheOldMapping(t *testing.T) {
+	r := &Relay{}
+	r.init()
+	s := &Session{relay: r, host: loopUDP(t)}
+	first := netip.MustParseAddrPort("100.64.0.9:4993")
+	second := netip.MustParseAddrPort("100.64.0.9:4994")
+	s.bindClientUDP(first)
+	s.bindClientUDP(second)
+	if r.byClient[first] != nil || r.byClient[second] != s || *s.udpClient.Load() != second {
+		t.Fatalf("mappings after a repeated udpport: %v", r.byClient)
+	}
+	// A mapping another session owns is not this session's to remove.
+	other := &Session{relay: r, host: loopUDP(t)}
+	other.bindClientUDP(first)
+	s.bindClientUDP(first)
+	other.bindClientUDP(netip.MustParseAddrPort("100.64.0.10:4993"))
+	if r.byClient[first] != s {
+		t.Fatalf("a session removed another's mapping: %v", r.byClient)
 	}
 }

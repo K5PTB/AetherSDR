@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -24,52 +25,94 @@ type Forwarder struct {
 	Listen    func(port int) (net.Listener, error) // on the tailnet
 	DialRadio func(port int) (net.Conn, error)
 	Authorize func(remote net.Addr) (string, bool)
+	// Window overrides sideChannelWindow (tests).
+	Window time.Duration
 
 	mu     sync.Mutex
-	active map[int]bool
+	active map[int]*sideChannel
+
+	splices liveSplices // transfers in progress, for revocation
 }
 
-// Open starts forwarding port, unless a forwarder for it is already open.
-// The listener accepts connections for sideChannelWindow after the last
-// connection ends, then closes.
-func (f *Forwarder) Open(port int) error {
-	f.mu.Lock()
-	if f.active == nil {
-		f.active = map[int]bool{}
+func (f *Forwarder) window() time.Duration {
+	if f.Window > 0 {
+		return f.Window
 	}
-	if f.active[port] {
-		f.mu.Unlock()
-		return nil
-	}
-	f.active[port] = true
-	f.mu.Unlock()
+	return sideChannelWindow
+}
 
-	ln, err := f.Listen(port)
-	if err != nil {
-		f.mu.Lock()
-		delete(f.active, port)
-		f.mu.Unlock()
-		return err
+// sideChannel is one open port and the sessions whose transfers opened it.
+type sideChannel struct {
+	ln       net.Listener
+	clients  map[uint64]netip.Addr // session ID -> that session's tailnet address
+	deadline *time.Timer           // shuts the channel sideChannelWindow after it goes idle
+}
+
+// Open starts forwarding port for session, whose file transfer the radio
+// announced it for; only that session's tailnet address, client, may
+// connect. If the port is already open, the session is added to it and the
+// window starts again, so the new transfer gets its full minute. closed
+// reports whether the session has ended: a reply still in flight when its
+// session closes must not leave the port open to a computer with no session.
+// The listener accepts connections for sideChannelWindow after the last
+// announcement or connection, then closes.
+func (f *Forwarder) Open(port int, session uint64, client netip.Addr, closed func() bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.active == nil {
+		f.active = map[int]*sideChannel{}
 	}
-	go f.serve(port, ln)
+	sc := f.active[port]
+	if sc == nil {
+		// A channel shutting down has already left f.active with its
+		// listener closed (shut), so the port is free to listen on again.
+		ln, err := f.Listen(port)
+		if err != nil {
+			return err
+		}
+		sc = &sideChannel{ln: ln, clients: map[uint64]netip.Addr{}}
+		sc.deadline = time.AfterFunc(f.window(), func() { f.shut(port, sc) })
+		f.active[port] = sc
+		go f.serve(port, sc)
+	} else {
+		sc.deadline.Reset(f.window())
+	}
+	sc.clients[session] = client
+	// The session sets its closed flag before calling Forget, and both run
+	// under f.mu here or there: either Forget removes this entry, or the
+	// flag is already visible.
+	if closed != nil && closed() {
+		delete(sc.clients, session)
+	}
 	return nil
 }
 
-func (f *Forwarder) serve(port int, ln net.Listener) {
-	defer func() {
-		ln.Close()
-		f.mu.Lock()
+// shut closes a side channel and removes it, both under f.mu, so a
+// concurrent Open sees either the open channel or a free port, never a
+// closing one it could add a session to.
+func (f *Forwarder) shut(port int, sc *sideChannel) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.active[port] == sc {
 		delete(f.active, port)
-		f.mu.Unlock()
-	}()
+	}
+	sc.deadline.Stop()
+	sc.ln.Close()
+}
+
+func (f *Forwarder) serve(port int, sc *sideChannel) {
+	defer f.shut(port, sc)
 	var wg sync.WaitGroup
-	deadline := time.AfterFunc(sideChannelWindow, func() { ln.Close() })
-	defer deadline.Stop()
 	for {
-		c, err := ln.Accept()
+		c, err := sc.ln.Accept()
 		if err != nil {
 			wg.Wait()
 			return
+		}
+		if !f.claim(port, c.RemoteAddr()) {
+			log.Printf("side channel %d: refused %s: not the session that asked for it", port, c.RemoteAddr())
+			c.Close()
+			continue
 		}
 		if f.Authorize != nil {
 			if who, ok := f.Authorize(c.RemoteAddr()); !ok {
@@ -78,14 +121,48 @@ func (f *Forwarder) serve(port int, ln net.Listener) {
 				continue
 			}
 		}
-		deadline.Stop()
+		sc.deadline.Stop()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			f.splice(port, c)
-			deadline.Reset(sideChannelWindow)
+			sc.deadline.Reset(f.window())
 		}()
 	}
+}
+
+// Forget withdraws a closed session from every open side channel. A port no
+// session can use stays shut until its window lapses.
+func (f *Forwarder) Forget(session uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, sc := range f.active {
+		delete(sc.clients, session)
+	}
+}
+
+// claim admits remote if a session at its address has an unused grant on
+// the port, and uses that grant up: each announced transfer admits one
+// connection, so when the radio reuses a port for another computer's
+// transfer, the first can't take the second's.
+func (f *Forwarder) claim(port int, remote net.Addr) bool {
+	ap, ok := addrPortOf(remote)
+	if !ok {
+		return false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sc := f.active[port]
+	if sc == nil {
+		return false
+	}
+	for id, c := range sc.clients {
+		if c == ap.Addr() {
+			delete(sc.clients, id)
+			return true
+		}
+	}
+	return false
 }
 
 func (f *Forwarder) splice(port int, c net.Conn) {
@@ -104,6 +181,7 @@ func (f *Forwarder) splice(port int, c net.Conn) {
 		return
 	}
 	defer r.Close()
+	defer f.splices.add(c.RemoteAddr(), c, r)()
 	done := make(chan struct{}, 2)
 	var up, down int64
 	go func() { up, _ = io.Copy(r, c); closeWrite(r); done <- struct{}{} }()
@@ -111,6 +189,55 @@ func (f *Forwarder) splice(port int, c net.Conn) {
 	<-done
 	<-done
 	log.Printf("side channel %d: %s done (%d bytes to radio, %d from radio)", port, c.RemoteAddr(), up, down)
+}
+
+// liveSplices tracks open splices by the tailnet caller that opened them,
+// so a narrowed allowlist can end the ones it no longer admits.
+type liveSplices struct {
+	mu sync.Mutex
+	m  map[*liveSplice]struct{}
+}
+
+type liveSplice struct {
+	from  net.Addr
+	conns []net.Conn
+}
+
+// add records a splice and returns the func that forgets it.
+func (l *liveSplices) add(from net.Addr, conns ...net.Conn) (remove func()) {
+	sp := &liveSplice{from: from, conns: conns}
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = map[*liveSplice]struct{}{}
+	}
+	l.m[sp] = struct{}{}
+	l.mu.Unlock()
+	return func() {
+		l.mu.Lock()
+		delete(l.m, sp)
+		l.mu.Unlock()
+	}
+}
+
+// revoke closes every splice whose caller authorize now refuses, and
+// reports how many it closed.
+func (l *liveSplices) revoke(authorize func(net.Addr) (string, bool)) int {
+	l.mu.Lock()
+	all := make([]*liveSplice, 0, len(l.m))
+	for sp := range l.m {
+		all = append(all, sp)
+	}
+	l.mu.Unlock()
+	n := 0
+	for _, sp := range all {
+		if _, ok := authorize(sp.from); !ok {
+			for _, c := range sp.conns {
+				c.Close()
+			}
+			n++
+		}
+	}
+	return n
 }
 
 func closeWrite(c net.Conn) {

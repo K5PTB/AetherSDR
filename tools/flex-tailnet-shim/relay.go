@@ -32,8 +32,12 @@ type Relay struct {
 	// DialRadio opens the radio API connection (net.Dial in production).
 	DialRadio func() (net.Conn, error)
 	// HostUDP opens the per-session UDP socket in the radio's network
-	// namespace; the radio sends this session's VITA-49 to it.
-	HostUDP func() (*net.UDPConn, error)
+	// namespace, bound to local: the address the shim's own radio connection
+	// comes from, which is where the radio sends this session's VITA-49.
+	// Bound there it no longer listens on the radio's LAN address, though
+	// Linux still delivers to it a datagram a LAN host routes to that
+	// address; the source filter (fromRadio) is what drops those.
+	HostUDP func(local netip.Addr) (*net.UDPConn, error)
 
 	// Tailnet-side UDP sockets: TX in (4991), primes in (4992), VITA out (4993).
 	ClientTX    net.PacketConn
@@ -51,8 +55,26 @@ type Relay struct {
 	RadioTXPort, RadioPrimePort int
 
 	// OpenForward opens a tailnet listener on port for a radio side channel
-	// (see forward.go). Nil disables side-channel forwarding.
-	OpenForward func(port int) error
+	// that only the requesting session may use (see forward.go). Nil
+	// disables side-channel forwarding.
+	OpenForward func(port int, session uint64, client netip.Addr, closed func() bool) error
+	// ForgetForward withdraws a closed session from every side channel. Nil
+	// when side channels are disabled.
+	ForgetForward func(session uint64)
+
+	// LocalAddrs lists this host's own addresses (net.InterfaceAddrs when
+	// nil). Only the radio may feed a session's host socket: the container
+	// shares the radio's network namespace, so the radio's datagrams carry
+	// one of these addresses. Binding the socket to the radio-facing address
+	// keeps it off the LAN address; this filter drops what still arrives.
+	// The kernel normally drops a packet arriving from outside with a local
+	// source address, but that depends on the radio's rp_filter and
+	// accept_local settings.
+	LocalAddrs func() []netip.Addr
+
+	radioIP netip.Addr // RadioAddr, parsed once in init
+
+	locals localAddrCache
 
 	mu       sync.Mutex
 	byClient map[netip.AddrPort]*Session // client UDP address -> session
@@ -73,6 +95,7 @@ type Session struct {
 	clientIP  netip.Addr
 	udpClient atomic.Pointer[netip.AddrPort] // where VITA-49 goes on the tailnet
 	closeOnce sync.Once
+	closed    atomic.Bool // set first in close, before side channels are withdrawn
 	done      chan struct{}
 
 	rxPackets, txPackets atomic.Uint64
@@ -82,8 +105,11 @@ type Session struct {
 
 	// UDP diagnostics, reported in /v1/status and the caller's /v1/session.
 	fromRadio, toClientErrs, maxDatagram atomic.Uint64
-	vita                                 vitaStats
-	lastSendErr                          atomic.Pointer[string]
+	// Datagrams on the host socket that did not come from the radio; dropped.
+	fromOthers   atomic.Uint64
+	lastRejected atomic.Pointer[string]
+	vita         vitaStats
+	lastSendErr  atomic.Pointer[string]
 
 	// The shim's own MTU clamp, sent once after `client gui` with a sequence
 	// number the client never uses; its reply is not forwarded.
@@ -98,6 +124,9 @@ func (r *Relay) init() {
 	}
 	if r.sessions == nil {
 		r.sessions = map[uint64]*Session{}
+	}
+	if a, err := netip.ParseAddr(r.RadioAddr); err == nil {
+		r.radioIP = a.Unmap()
 	}
 	r.mu.Unlock()
 }
@@ -160,7 +189,14 @@ func (r *Relay) handle(c net.Conn) {
 		c.Close()
 		return
 	}
-	host, err := r.HostUDP()
+	local, okLocal := addrPortOf(radio.LocalAddr())
+	if !okLocal {
+		log.Printf("radio connection for %s has no local address: %v", who, radio.LocalAddr())
+		radio.Close()
+		c.Close()
+		return
+	}
+	host, err := r.HostUDP(local.Addr())
 	if err != nil {
 		log.Printf("host UDP socket failed for %s: %v", who, err)
 		radio.Close()
@@ -189,6 +225,7 @@ func (r *Relay) handle(c net.Conn) {
 // it can no longer hear.
 func (s *Session) close(reason string) {
 	s.closeOnce.Do(func() {
+		s.closed.Store(true)
 		log.Printf("session %d: closing: %s", s.id, reason)
 		s.radio.Close()
 		s.client.Close()
@@ -201,6 +238,9 @@ func (s *Session) close(reason string) {
 			}
 		}
 		s.relay.mu.Unlock()
+		if s.relay.ForgetForward != nil {
+			s.relay.ForgetForward(s.id)
+		}
 		close(s.done)
 	})
 }
@@ -214,7 +254,7 @@ func (s *Session) radioToClientTCP() {
 		line, err := readLine(br, maxControlLine)
 		if len(line) > 0 {
 			if port := s.sideChannelPort(line); port > 0 && s.relay.OpenForward != nil {
-				if ferr := s.relay.OpenForward(port); ferr != nil {
+				if ferr := s.relay.OpenForward(port, s.id, s.clientIP, s.closed.Load); ferr != nil {
 					log.Printf("session %d: cannot forward radio port %d: %v", s.id, port, ferr)
 				} else {
 					log.Printf("session %d: forwarding radio side channel on TCP %d", s.id, port)
@@ -405,23 +445,42 @@ func (s *Session) injectedReply(line []byte) (ours, accepted bool) {
 	return true, m
 }
 
+// bindClientUDP points the session's UDP at ap. A repeated `client udpport`
+// (AetherSDR retries after a collision) replaces the earlier address, which
+// would otherwise keep relaying that port's datagrams into this session.
 func (s *Session) bindClientUDP(ap netip.AddrPort) {
-	s.udpClient.Store(&ap)
+	prev := s.udpClient.Swap(&ap)
 	s.relay.mu.Lock()
+	if prev != nil && *prev != ap && s.relay.byClient[*prev] == s {
+		delete(s.relay.byClient, *prev)
+	}
 	s.relay.byClient[ap] = s
 	s.relay.mu.Unlock()
 	log.Printf("session %d: client UDP %s <-> host %s", s.id, ap, s.host.LocalAddr())
 }
 
 // Radio -> client VITA-49: everything the radio sends to this session's host
-// socket goes to the client's registered tailnet address.
+// socket goes to the client's registered tailnet address. Datagrams from any
+// other sender (a LAN host that found the port) are dropped and counted.
 func (s *Session) radioToClientUDP() {
 	buf := make([]byte, 65536)
 	for {
-		n, _, err := s.host.ReadFromUDPAddrPort(buf)
+		n, src, err := s.host.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			s.close(fmt.Sprintf("host UDP ended: %v", err))
 			return
+		}
+		if !s.relay.fromRadio(src.Addr()) {
+			// Dropping must stay cheap under a flood: name the sender only on
+			// the 1st, 2nd, 4th, 8th… drop.
+			if n := s.fromOthers.Add(1); n&(n-1) == 0 {
+				from := src.String()
+				s.lastRejected.Store(&from)
+				if n == 1 {
+					log.Printf("session %d: dropping datagrams from %s: not the radio", s.id, from)
+				}
+			}
+			continue
 		}
 		s.fromRadio.Add(1)
 		s.vita.note(buf[:n])
@@ -440,6 +499,64 @@ func (s *Session) radioToClientUDP() {
 			s.lastSendErr.Store(&msg)
 		}
 	}
+}
+
+// fromRadio reports whether a host-socket datagram's source is the radio:
+// RadioAddr or one of this host's own addresses. The address list is
+// re-read at most once a second, when an unknown source arrives.
+func (r *Relay) fromRadio(a netip.Addr) bool {
+	a = a.Unmap()
+	if r.radioIP.IsValid() && r.radioIP == a {
+		return true
+	}
+	return r.locals.has(a, r.LocalAddrs)
+}
+
+// localAddrCache answers "is this one of the host's own addresses?" without
+// a netlink dump per question: the set is re-read at most once a second,
+// and only when an unknown address is asked about. A failed listing keeps
+// the previous set rather than refusing everything until the next refresh.
+type localAddrCache struct {
+	mu  sync.Mutex
+	set map[netip.Addr]bool
+	at  time.Time
+}
+
+// has reports whether a is a host address; list is interfaceAddrs when nil.
+func (c *localAddrCache) has(a netip.Addr, list func() []netip.Addr) bool {
+	a = a.Unmap()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.set == nil || (!c.set[a] && time.Since(c.at) > time.Second) {
+		if list == nil {
+			list = interfaceAddrs
+		}
+		if addrs := list(); len(addrs) > 0 || c.set == nil {
+			c.set = map[netip.Addr]bool{}
+			for _, l := range addrs {
+				c.set[l.Unmap()] = true
+			}
+		}
+		c.at = time.Now()
+	}
+	return c.set[a]
+}
+
+func interfaceAddrs() []netip.Addr {
+	as, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Printf("listing local addresses: %v", err)
+		return nil
+	}
+	out := make([]netip.Addr, 0, len(as))
+	for _, a := range as {
+		if p, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(p.IP); ok {
+				out = append(out, ip.Unmap())
+			}
+		}
+	}
+	return out
 }
 
 // Client -> radio datagrams (TX VITA-49 on 4991, primes on 4992) leave from
@@ -497,6 +614,13 @@ type SessionInfo struct {
 	FromClient    uint64 `json:"from_client"`
 	MaxDatagram   uint64 `json:"max_datagram"`
 	LastSendError string `json:"last_send_error"`
+	// Datagrams on the host socket from anything but the radio, dropped.
+	// Nonzero on a healthy session would mean the radio's own source
+	// address isn't recognised, so its VITA-49 is being dropped too.
+	// LastRejected names a recent sender; it is a station-LAN address, so
+	// only /v1/status (on the LAN) carries it, never /v1/session.
+	FromOthers   uint64 `json:"from_other_sources"`
+	LastRejected string `json:"last_rejected_source,omitempty"`
 	// Per-stream packets and sequence gaps as datagrams leave the radio,
 	// before the tunnel.
 	Streams []StreamInfo `json:"streams"`
@@ -527,6 +651,10 @@ func (r *Relay) Sessions() []SessionInfo {
 		if e := s.lastSendErr.Load(); e != nil {
 			info.LastSendError = *e
 		}
+		info.FromOthers = s.fromOthers.Load()
+		if e := s.lastRejected.Load(); e != nil {
+			info.LastRejected = *e
+		}
 		out = append(out, info)
 	}
 	return out
@@ -537,6 +665,26 @@ func (r *Relay) SessionCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.sessions)
+}
+
+// Revoke ends every session whose caller authorize now refuses; each closes
+// its radio connection, so the radio drops that client and unkeys anything it
+// owned (Principle VI). It reports how many it ended.
+func (r *Relay) Revoke(authorize func(net.Addr) (string, bool)) int {
+	r.mu.Lock()
+	all := make([]*Session, 0, len(r.sessions))
+	for _, s := range r.sessions {
+		all = append(all, s)
+	}
+	r.mu.Unlock()
+	n := 0
+	for _, s := range all {
+		if who, ok := authorize(s.client.RemoteAddr()); !ok {
+			s.close(fmt.Sprintf("%s is no longer on the allowlist", who))
+			n++
+		}
+	}
+	return n
 }
 
 // CloseAll ends every session; each one closes its radio connection, so the

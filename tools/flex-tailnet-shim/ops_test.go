@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"strings"
@@ -15,8 +17,8 @@ import (
 // Socket-free regressions for the Node's serialized operations: no tsnet,
 // no radio. startFn and applyRoutes stand in for the tailnet.
 
-func inertStart(n *Node) func(string, time.Duration) error {
-	return func(string, time.Duration) error {
+func inertStart(n *Node) func(context.Context, string, time.Duration) error {
+	return func(context.Context, string, time.Duration) error {
 		n.setState(stateRunning, "")
 		return nil
 	}
@@ -27,7 +29,7 @@ func TestConcurrentFirstUseProvisionNeedsTheFirstToken(t *testing.T) {
 	n := newTestNode(t, "")
 	release := make(chan struct{})
 	entered := make(chan struct{}, 2)
-	n.startFn = func(string, time.Duration) error {
+	n.startFn = func(context.Context, string, time.Duration) error {
 		entered <- struct{}{}
 		<-release
 		n.setState(stateRunning, "")
@@ -214,7 +216,7 @@ func TestProvisionFailsClosedWhenOldStateRemains(t *testing.T) {
 	const token = "test-admin-token"
 	n := newTestNode(t, token)
 	started := false
-	n.startFn = func(string, time.Duration) error { started = true; return nil }
+	n.startFn = func(context.Context, string, time.Duration) error { started = true; return nil }
 	state := n.tsnetDir()
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatal(err)
@@ -241,4 +243,219 @@ func TestProvisionFailsClosedWhenOldStateRemains(t *testing.T) {
 	if !reloaded.checkToken(token) {
 		t.Fatal("after a restart the saved token no longer matches the caller's")
 	}
+}
+
+// A boot attempt waiting on a tailnet login that never comes (the node was
+// removed in the admin console, or the radio is offline) must not hold the
+// operator's requests hostage: AetherSDR gives sign-out, the allowlist and
+// shared devices 8 seconds.
+func TestOperatorRequestsInterruptAStuckBoot(t *testing.T) {
+	const token = "test-admin-token"
+	n := newTestNode(t, token)
+	n.applyRoutes = func([]netip.Prefix) error { return nil }
+	attempts := make(chan struct{}, 16)
+	n.startFn = func(ctx context.Context, authKey string, _ time.Duration) error {
+		if authKey != "" {
+			n.setState(stateRunning, "")
+			return nil
+		}
+		attempts <- struct{}{}
+		<-ctx.Done() // srv.Up waiting for a login
+		n.setState(stateStarting, "")
+		return ctx.Err()
+	}
+	waitAttempt := func(what string) {
+		t.Helper()
+		select {
+		case <-attempts:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: no boot attempt", what)
+		}
+	}
+	within := func(what string, f func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- f() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s queued behind the boot attempt", what)
+		}
+	}
+
+	n.Boot()
+	waitAttempt("first boot")
+	within("SetAllow", func() error { return n.SetAllow(token, []string{"tag:ops"}) })
+	waitAttempt("boot after SetAllow") // a provisioned node keeps trying to rejoin
+	within("SetSharing", func() error { return n.SetSharing(token, nil, nil) })
+	waitAttempt("boot after SetSharing")
+	// A caller without the token is refused without touching the boot
+	// attempt: otherwise a LAN host could keep the radio off the tailnet by
+	// restarting it in a loop.
+	if !errors.Is(n.SetAllow("wrong", nil), errUnauthorized) ||
+		!errors.Is(n.SetSharing("wrong", nil, nil), errUnauthorized) ||
+		!errors.Is(n.SignOut("wrong"), errUnauthorized) {
+		t.Fatal("a wrong token must still be refused")
+	}
+	if _, err := n.Provision("wrong", "tskey-auth-x", "flex-test", nil, nil, nil); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("re-provision with a wrong token: %v", err)
+	}
+	select {
+	case <-attempts:
+		t.Fatal("a refused request restarted the boot attempt")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	var fresh string
+	within("re-provision", func() (err error) {
+		fresh, err = n.Provision(token, "tskey-auth-fresh", "flex-test", nil, nil, nil)
+		return err
+	})
+	if !n.checkToken(fresh) || n.Status().State != stateRunning {
+		t.Fatalf("re-provision did not take: %+v", n.Status())
+	}
+	within("sign-out", func() error { return n.SignOut(fresh) })
+	if st := n.Status(); st.Provisioned || st.State != stateUnprovisioned {
+		t.Fatalf("sign-out left %+v", st)
+	}
+}
+
+// Sign-out on its own, while the boot attempt is parked waiting for a login.
+func TestSignOutInterruptsAStuckBoot(t *testing.T) {
+	const token = "test-admin-token"
+	n := newTestNode(t, token)
+	attempts := make(chan struct{}, 4)
+	n.startFn = func(ctx context.Context, _ string, _ time.Duration) error {
+		attempts <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	n.Boot()
+	select {
+	case <-attempts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no boot attempt")
+	}
+	done := make(chan error, 1)
+	go func() { done <- n.SignOut(token) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("sign-out queued behind the boot attempt")
+	}
+	if st := n.Status(); st.Provisioned || st.State != stateUnprovisioned {
+		t.Fatalf("sign-out left %+v", st)
+	}
+	select {
+	case <-attempts:
+		t.Fatal("a signed-out node kept booting")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// Saving a narrower allowlist ends what it no longer admits, at once: the
+// removed computer's radio session (so the radio drops it and unkeys what it
+// owned), its side-channel transfer and its station-device splice. The
+// computer still allowed keeps its session.
+func TestSaveAccessListEndsRemovedConnections(t *testing.T) {
+	const token = "test-admin-token"
+	n := newTestNode(t, token)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sessionFrom := func(id uint64, ip net.IP) *Session {
+		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: ip}}
+		cl, err := d.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Skipf("needs %v on loopback: %v", ip, err)
+		}
+		srv, err := ln.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		radioA, radioB := net.Pipe()
+		t.Cleanup(func() { cl.Close(); srv.Close(); radioA.Close(); radioB.Close() })
+		return &Session{id: id, client: srv, radio: radioA, host: loopUDP(t),
+			clientIP: netip.MustParseAddr(ip.String()), done: make(chan struct{})}
+	}
+	r := &Relay{}
+	r.init()
+	kept, removed := sessionFrom(1, net.IPv4(127, 0, 0, 1)), sessionFrom(2, net.IPv4(127, 0, 0, 2))
+	for _, s := range []*Session{kept, removed} {
+		s.relay = r
+		r.sessions[s.id] = s
+	}
+	n.relay = r
+	n.fwd = &Forwarder{}
+	n.authorize = func(a net.Addr) (string, bool) {
+		ap, _ := addrPortOf(a)
+		return ap.Addr().String(), ap.Addr() == netip.MustParseAddr("127.0.0.1")
+	}
+	removedFrom := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1}
+	devA, devB := net.Pipe()
+	sideA, sideB := net.Pipe()
+	defer devB.Close()
+	defer sideB.Close()
+	n.splices.add(removedFrom, devA)
+	n.fwd.splices.add(removedFrom, sideA)
+
+	if err := n.SetAllow(token, []string{"tag:ops"}); err != nil {
+		t.Fatal(err)
+	}
+	if !removed.waitClosed(2 * time.Second) {
+		t.Fatal("the removed computer's radio session is still open")
+	}
+	if kept.waitClosed(100 * time.Millisecond) {
+		t.Fatal("the allowed computer's session was ended")
+	}
+	for name, c := range map[string]net.Conn{"device splice": devB, "side channel": sideB} {
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := c.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("the removed computer's %s is still open: %v", name, err)
+		}
+	}
+}
+
+// If a cancelled boot attempt is slow to unwind (tsnet teardown), an
+// operator request answers "try again" inside AetherSDR's timeout instead of
+// hanging, and the boot resumes by itself afterwards.
+func TestSlowBootTeardownAnswersBusy(t *testing.T) {
+	const token = "test-admin-token"
+	n := newTestNode(t, token)
+	n.interruptWait = 100 * time.Millisecond
+	attempts := make(chan struct{}, 4)
+	n.startFn = func(ctx context.Context, _ string, _ time.Duration) error {
+		attempts <- struct{}{}
+		<-ctx.Done()
+		time.Sleep(400 * time.Millisecond) // teardown outlasting the wait
+		return ctx.Err()
+	}
+	n.Boot()
+	select {
+	case <-attempts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no boot attempt")
+	}
+	start := time.Now()
+	err := n.SetAllow(token, []string{"tag:ops"})
+	if !errors.Is(err, errBusy) || time.Since(start) > time.Second {
+		t.Fatalf("SetAllow: %v after %v, want errBusy promptly", err, time.Since(start))
+	}
+	select {
+	case <-attempts: // resumed once the slow attempt was gone
+	case <-time.After(3 * time.Second):
+		t.Fatal("boot didn't resume after the slow teardown")
+	}
+	n.mu.Lock()
+	n.cfg = provisionConfig{} // stop the loop
+	n.mu.Unlock()
+	n.interruptBoot()
 }
