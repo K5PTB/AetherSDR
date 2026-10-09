@@ -977,11 +977,18 @@ add_test(NAME wdsp_nb_hold_test COMMAND wdsp_nb_hold_test)
 set_tests_properties(wdsp_nb_hold_test PROPERTIES TIMEOUT 30)
 
 # Socket-free lifetime checks for the two process-global FFTW planners.
-# Uses real NR2/NR4/RTL constructors and destructors, without radio sockets.
+# Uses real NR2/NR4/NNR/RTL constructors and destructors, without radio sockets.
 add_executable(fftw_planner_lock_test tests/fftw_planner_lock_test.cpp)
 target_link_libraries(fftw_planner_lock_test PRIVATE aethercore Qt6::Core)
 add_test(NAME fftw_planner_lock_test COMMAND fftw_planner_lock_test)
 set_tests_properties(fftw_planner_lock_test PROPERTIES TIMEOUT 30)
+
+# Socket-free shutdown join for the audio thread: waits while an FFTW planner
+# lock is held elsewhere, still gives up on a non-planner stall (#6287).
+add_executable(audio_thread_planner_join_test tests/audio_thread_planner_join_test.cpp)
+target_link_libraries(audio_thread_planner_join_test PRIVATE aethercore Qt6::Core)
+add_test(NAME audio_thread_planner_join_test COMMAND audio_thread_planner_join_test)
+set_tests_properties(audio_thread_planner_join_test PROPERTIES TIMEOUT 60)
 
 # Socket-free shared-pool admission and injected receiver lifetime tests. These
 # foundations are compiled/tested even when the optional RTL USB driver is off.
