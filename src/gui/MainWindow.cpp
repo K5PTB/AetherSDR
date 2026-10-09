@@ -281,6 +281,8 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <psapi.h>
+#include <dwmapi.h>
+#include <QOperatingSystemVersion>
 #else
 #include <sys/resource.h>
 #ifdef Q_OS_MAC
@@ -1141,6 +1143,10 @@ MainWindow::MainWindow(QWidget* parent)
         setAutoFillBackground(false);
         connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
                 this, qOverload<>(&QWidget::update));
+#ifdef Q_OS_WIN
+        connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+                this, &MainWindow::applyWindowsFrameColor);
+#endif
 
         // 8-axis edge resize in frameless mode; app-wide filter because
         // MainWindow's children are native windows (see FramelessResizer, #4827).
@@ -3786,6 +3792,9 @@ void MainWindow::applyWindowsCaptionStyles()
     }
     const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
     const LONG_PTR desired = style | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    // On Windows 10 this frame change is also what routes WM_NCCALCSIZE
+    // through nativeEvent() before setFramelessWindow() and the startup
+    // re-apply measure the client rect; Qt answered it at creation.
     if (style != desired) {
         SetWindowLongPtr(hwnd, GWL_STYLE, desired);
         SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
@@ -3855,6 +3864,49 @@ void MainWindow::restoreNativeClientRect(const QString& role)
         setNativeClientRect(saved);
     }
 }
+
+void MainWindow::applyWindowsFrameColor()
+{
+    // DWMWA_BORDER_COLOR exists from Windows 11 (build 22000). Windows 10 has
+    // no visible border once nativeEvent makes the whole window client area.
+    constexpr DWORD kDwmBorderColor = 34;
+    if (QOperatingSystemVersion::current() < QOperatingSystemVersion::Windows11
+        || !windowHandle()) {
+        return;
+    }
+    const QColor bg = ThemeManager::instance().color("color.background.app");
+    if (!bg.isValid()) {
+        return;
+    }
+    const COLORREF border = RGB(bg.red(), bg.green(), bg.blue());
+    DwmSetWindowAttribute(reinterpret_cast<HWND>(winId()), kDwmBorderColor,
+                          &border, sizeof(border));
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+{
+    // The whole window is client area, inset only while maximized so nothing
+    // sits past the screen edge. Qt's WM_NCHITTEST still resizes from the edges.
+    auto* msg = static_cast<MSG*>(message);
+    if (msg && result && msg->message == WM_NCCALCSIZE && msg->wParam
+        && WindowChrome::claimsWholeWindowAsClient(windowFlags(),
+                                                   QOperatingSystemVersion::current())) {
+        if (IsZoomed(msg->hwnd) && !isFullScreen()) {
+            const UINT dpi = GetDpiForWindow(msg->hwnd);
+            const int padded = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            const int borderX = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + padded;
+            const int borderY = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + padded;
+            RECT& client = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam)->rgrc[0];
+            client.left += borderX;
+            client.top += borderY;
+            client.right -= borderX;
+            client.bottom -= borderY;
+        }
+        *result = 0;
+        return true;
+    }
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
 #endif
 
 void MainWindow::showEvent(QShowEvent* event)
@@ -3867,6 +3919,7 @@ void MainWindow::showEvent(QShowEvent* event)
     // Every show: setWindowFlags() (View -> Frameless Window) re-creates the
     // native window with Qt's own style set.
     applyWindowsCaptionStyles();
+    applyWindowsFrameColor();
 #endif
 
     // The caption controls are keyboard-reachable, which puts them first in the
