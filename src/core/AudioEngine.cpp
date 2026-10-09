@@ -5629,6 +5629,27 @@ void AudioEngine::processMixedRxAudioData(const QByteArray& pcm,
     // interlock flip.
     const bool bypassRxChainForTx = m_radioTransmitting && !externalSource;
 
+    // Pre-DSP receive-presentation feed: nothing below has touched `pcm` yet,
+    // so this is the one place every source's audio exists without client DSP.
+    // It carries the same open-sink and transmit-gate conditions as the
+    // post-DSP emit in writeAudio(), so both feeds go quiet together. It does
+    // NOT wait on an enabled NR processor that is still preparing (the early
+    // returns below) — nothing in this block depends on one.
+    //
+    // Channels is 2 because every caller hands this function whole interleaved
+    // stereo frames at the producer rate; see the drain loops in
+    // drainRxAudio() and the frame alignment in the feed paths.
+    if (m_audioDevice->isOpen() && !txPresentationGated) {
+        emit receivePresentationPreDspAudioReady(
+            source == RxDspSource::KiwiSdr ? QStringLiteral("kiwi")
+                                           : QStringLiteral("flex"),
+            externalSource ? externalSource->id : QString(),
+            pcm,
+            source == RxDspSource::Main ? m_rxProducerRate.load()
+                                        : DEFAULT_SAMPLE_RATE,
+            2);
+    }
+
     // feedAudioData() handles all remote_audio_rx paths: SSB/CW/digital on any
     // pan, and the zero-filled frames the radio sends for muted slices
     // (audio_mute=1 zeroes the payload; it does NOT suppress packets).
@@ -6535,6 +6556,50 @@ void AudioEngine::setRxChainStages(const QVector<RxChainStage>& stages)
 QVector<AudioEngine::RxChainStage> AudioEngine::rxChainStages() const
 {
     return unpackRxChain(m_rxChainPacked.load(std::memory_order_acquire));
+}
+
+float AudioEngine::rxStaticChainMakeupDb() const
+{
+    // Same walk as runRxChain(), over the same atomic, so a stage the operator
+    // removed from the chain is skipped here exactly as it is skipped there.
+    // Read the packed order directly rather than via rxChainStages(), which
+    // allocates.
+    const uint64_t packed = m_rxChainPacked.load(std::memory_order_acquire);
+    float db = 0.0f;
+    for (int slot = 0; slot < kMaxRxChainStages; ++slot) {
+        const auto stage = static_cast<RxChainStage>((packed >> (slot * 8)) & 0xFF);
+        switch (stage) {
+            case RxChainStage::None:
+                return db;                       // end-of-list marker
+            case RxChainStage::Eq:
+                if (m_clientEqRx && m_clientEqRx->isEnabled()) {
+                    // masterGain is linear and clamps to [0, 4.0]; zero is
+                    // -inf dB, which the caller's finite check turns into
+                    // "leave the threshold alone" rather than a divide by zero.
+                    const float linear = m_clientEqRx->masterGain();
+                    db += (linear > 0.0f)
+                              ? 20.0f * std::log10(linear)
+                              : -std::numeric_limits<float>::infinity();
+                }
+                break;
+            case RxChainStage::Comp:
+                if (m_clientCompRx && m_clientCompRx->isEnabled()) {
+                    db += m_clientCompRx->makeupDb();
+                }
+                break;
+            case RxChainStage::Tube:
+                if (m_clientTubeRx && m_clientTubeRx->isEnabled()) {
+                    db += m_clientTubeRx->outputGainDb();
+                }
+                break;
+            // Gain depends on the signal, so there is no number to add: the
+            // gate's attenuation, and pudu's drive/harmonics mix.
+            case RxChainStage::Gate:
+            case RxChainStage::Pudu:
+                break;
+        }
+    }
+    return db;
 }
 
 // Keys that were written by an earlier build and are read by nothing now.

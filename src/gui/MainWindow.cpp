@@ -10767,9 +10767,11 @@ void MainWindow::updateKeyerAvailability()
     // DIGx/RTTY), gated on the SELECTED slice, which the rest of Copy Assist
     // follows (setActiveSliceInternal()) — not the TX slice, which may not exist
     // (#4825). The slice is a proxy: AsrTapPolicy locks onto a RECEIVER
-    // (first-block-wins, 2 s release), and on a Flex the stream is all audible
-    // slices mixed. Hiding the panel calls setAsrEnabled(false), so selecting a
-    // CW slice stops a running transcription.
+    // (first-block-wins, 2 s release) on whichever presentation signal the
+    // operator's tap point selects — post-DSP, or its PreDsp twin when they
+    // transcribe ahead of NR — and on a Flex the stream is all audible slices
+    // mixed. Hiding the panel calls setAsrEnabled(false), so selecting a CW
+    // slice stops a running transcription.
     SliceModel* asrSlice = activeSlice();
     const bool asrIsVoice = asrSlice && isVoiceMode(asrSlice->mode());
     if (m_asrIndicator) {

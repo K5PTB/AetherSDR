@@ -210,6 +210,15 @@ target_link_libraries(audio_engine_rates_test PRIVATE aethercore Qt6::Core)
 add_test(NAME audio_engine_rates_test COMMAND audio_engine_rates_test)
 set_tests_properties(audio_engine_rates_test PROPERTIES TIMEOUT 120)
 
+# The pre-NR fan-out Copy Assist's "unprocessed audio" tap subscribes to
+# (RFC #4861). Same socket-free engine seam as audio_engine_rates_test; pins
+# that the emit sits ABOVE the NR early-return, which no other test covers.
+add_executable(asr_pre_dsp_emit_test tests/asr_pre_dsp_emit_test.cpp)
+target_include_directories(asr_pre_dsp_emit_test PRIVATE src tests)
+target_link_libraries(asr_pre_dsp_emit_test PRIVATE aethercore Qt6::Core)
+add_test(NAME asr_pre_dsp_emit_test COMMAND asr_pre_dsp_emit_test)
+set_tests_properties(asr_pre_dsp_emit_test PROPERTIES TIMEOUT 120)
+
 # RX BYPASS snapshots and restores the running AetherNR method along with the
 # chain stages (#5913); enable flags only, no sockets/devices.
 add_executable(audio_engine_rx_bypass_nr_test tests/audio_engine_rx_bypass_nr_test.cpp)
@@ -4358,6 +4367,20 @@ if (ENABLE_ASR)
     target_link_libraries(asr_engine_test PRIVATE Qt6::Core Qt6::Test)
     set_target_properties(asr_engine_test PROPERTIES AUTOMOC ON)
     add_test(NAME asr_engine_test COMMAND asr_engine_test)
+
+    # Tap-point selection (RFC #4861): real AudioEngine -> real AsrAudioTap ->
+    # real AsrEngine, counting how much audio each point delivers. Needs both
+    # libraries because the tap sits between them; AsrAudioTap.cpp is compiled
+    # in directly because the GUI sources are not a library.
+    add_executable(asr_audio_tap_test
+        tests/asr_audio_tap_test.cpp
+        src/gui/AsrAudioTap.cpp
+    )
+    target_include_directories(asr_audio_tap_test PRIVATE src tests)
+    target_link_libraries(asr_audio_tap_test PRIVATE aethercore aetherasr Qt6::Core)
+    set_target_properties(asr_audio_tap_test PROPERTIES AUTOMOC ON)
+    add_test(NAME asr_audio_tap_test COMMAND asr_audio_tap_test)
+    set_tests_properties(asr_audio_tap_test PROPERTIES TIMEOUT 120)
 
     # Silero VAD (ONNX) smoke test — only when ONNX Runtime is available; env-gated
     # on a model + WAV at run time (see the test's header), so it SKIPs otherwise.

@@ -167,6 +167,25 @@ public:
     void  setRxOutputTrimDb(float db) { m_rxOutputTrimDb.store(db); }
     float rxOutputTrimDb() const { return m_rxOutputTrimDb.load(); }
 
+    // Total of the RX chain gains that are one number regardless of what the
+    // audio is doing: EQ master gain, compressor makeup and tube output gain.
+    // Counts a stage only when it is BOTH present in the operator's stored
+    // chain order and enabled, mirroring runRxChain()'s own walk, so a stage
+    // the operator removed from the chain contributes nothing. Read from the
+    // RX singletons, which RxClientEffects mirrors into each external source's
+    // own instances (syncParametersFrom), so the answer holds for every source.
+    //
+    // Deliberately EXCLUDES everything signal-dependent — EQ band shaping, the
+    // gate, compressor gain reduction, tube drive, pudu — because no single
+    // number describes those. Also excludes the output pan, which IS a scalar
+    // but applies only to external Kiwi sources and is held per source behind
+    // the DSP lock, so reading it at this function's call rate (per audio
+    // block) would contend with the audio thread; asrSpeechRmsForTapPoint()
+    // records why that is safe to leave. Copy Assist's pre-DSP tap uses this to
+    // keep a saved Sensitivity calibrated across the tap-point toggle
+    // (RFC #4861); see asrSpeechRmsForTapPoint(), which states the boundary.
+    float rxStaticChainMakeupDb() const;
+
     // Client-side RX pan (0=full-left, 50=centre, 100=full-right).
     // Normally the radio handles Flex panning. External single-source audio
     // still uses this as an output pan after stereo-preserving client DSP.
@@ -809,6 +828,25 @@ signals:
                                               const QByteArray& pcmFloat,
                                               int sampleRate,
                                               int channels);
+    // The same source-tagged, unthrottled stream, taken where each block
+    // ENTERS processMixedRxAudioData(): ahead of the client NR stage
+    // (NR2/RN2/NR4/DFNR/BNR/MNR), the RX effects chain, output resampling,
+    // boost, trim and pan. Whatever the radio or the Kiwi did to the audio is
+    // still in it — this is "before AetherSDR's DSP", not "off the antenna".
+    //
+    // `sampleRate` is the source's PRODUCER rate (the Flex stream's rate,
+    // 24 kHz for a Kiwi), not the output rate the post-DSP signal carries.
+    // The two differ whenever the sink runs at another rate, so a consumer
+    // that switches between them must read it rather than carry it over.
+    //
+    // Copy Assist listens here when the operator asks to transcribe ahead of
+    // noise reduction, whose artifacts can confuse a speech model more than
+    // the noise it removes.
+    void receivePresentationPreDspAudioReady(const QString& source,
+                                             const QString& sourceId,
+                                             const QByteArray& pcmFloat,
+                                             int sampleRate,
+                                             int channels);
     void receivePresentationOutputAudioReady(const QString& source,
                                              const QString& sourceId,
                                              const QByteArray& pcmStereoFloat,
