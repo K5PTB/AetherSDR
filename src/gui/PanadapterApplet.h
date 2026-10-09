@@ -41,7 +41,10 @@ public:
 
     void setSliceId(int id, const QString& perClientLetter = QString());
     void clearSliceTitle();
+    // Plain text ("Slice A₁"), for window titles; the header label is HTML.
     QString sliceTitle() const;
+    // The slice the title names, or -1 when it names none.
+    int titleSliceId() const { return m_titleSliceId; }
 
     void setMultiPanMode(bool multi);
     void setFloatingState(bool floating);
@@ -122,6 +125,7 @@ signals:
     void closeRequested(const QString& panId);
     void popOutClicked();
     void dockClicked();
+    void sliceTitleChanged();
     void maximizeRequested(const QString& panId);
 
     // CW
@@ -154,6 +158,8 @@ private:
     SpectrumWidget* m_spectrum{nullptr};
     QWidget*        m_titleBar{nullptr};
     QLabel*         m_titleLabel{nullptr};
+    QString         m_sliceTitle;
+    int             m_titleSliceId{-1};
     QPushButton*    m_popOutBtn{nullptr};
     QPushButton*    m_maxBtn{nullptr};
     QPushButton*    m_closeBtn{nullptr};

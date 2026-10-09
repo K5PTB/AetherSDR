@@ -676,18 +676,30 @@ void PanadapterApplet::setFloatingState(bool floating)
 
 void PanadapterApplet::setSliceId(int id, const QString& perClientLetter)
 {
+    m_titleSliceId = id;
     m_titleLabel->setText(
         QString("Slice %1").arg(SliceLabel::richText(id, perClientLetter)));
+    const QString title =
+        QString("Slice %1").arg(SliceLabel::unicodeForm(id, perClientLetter));
+    if (title != m_sliceTitle) {
+        m_sliceTitle = title;
+        emit sliceTitleChanged();
+    }
 }
 
 void PanadapterApplet::clearSliceTitle()
 {
     m_titleLabel->clear();
+    m_titleSliceId = -1;
+    if (!m_sliceTitle.isEmpty()) {
+        m_sliceTitle.clear();
+        emit sliceTitleChanged();
+    }
 }
 
 QString PanadapterApplet::sliceTitle() const
 {
-    return m_titleLabel->text();
+    return m_sliceTitle;
 }
 
 void PanadapterApplet::setCwPanelVisible(bool visible)
