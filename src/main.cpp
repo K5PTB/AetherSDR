@@ -18,6 +18,7 @@
 #include "core/ShutdownTrace.h"
 #include "core/SystemInventory.h"
 #include "core/MacMicPermission.h"
+#include "core/AppActivity.h"
 #include "core/AutomationServer.h"
 #include "QtPlatformChoice.h"
 
@@ -493,6 +494,11 @@ int main(int argc, char* argv[])
     // Request microphone permission early (macOS only).
     // Shows the system prompt on first launch so it's ready before PTT.
     requestMicrophonePermission();
+
+    // For the life of the app: no App Nap (macOS), no power throttling
+    // (Windows), so audio/DAX/TCI keep flowing while the window is hidden or
+    // muted. Sleep stays with "Prevent system sleep while connected".
+    AetherSDR::keepAppActive();
 
     // One-shot migration from the double-nested AppConfigLocation
     // (~/.config/AetherSDR/AetherSDR/, because org and app name are both

@@ -1,4 +1,5 @@
 #include "core/backends/flex/FlexBackend.h"
+#include "core/AppActivity.h"
 
 #include <algorithm>
 #include <limits>
@@ -47,7 +48,7 @@ FlexBackend::FlexBackend(QObject* parent)
     m_panStream = new PanadapterStream;   // no parent — moved to thread
     m_panStream->moveToThread(m_networkThread);
     connect(m_networkThread, &QThread::started, m_panStream, &PanadapterStream::init);
-    m_networkThread->start();
+    AetherSDR::startStreamThread(m_networkThread);   // High QoS; see AppActivity.h
 
     m_connThread = new QThread(this);
     m_connThread->setObjectName("RadioConnection");

@@ -6936,6 +6936,22 @@ void RadioModel::onBackendSpectrumFrame(int panId, const QByteArray& frame,
 }
 
 
+bool RadioModel::sleepInhibitWhileConnected()
+{
+    return AppSettings::instance().value("InhibitSleepWhileConnected", "True").toString() == "True";
+}
+
+void RadioModel::setSleepInhibitWhileConnected(bool on)
+{
+    auto& s = AppSettings::instance();
+    s.setValue("InhibitSleepWhileConnected", on ? "True" : "False");
+    s.save();
+    if (!on)
+        m_sleepInhibitor.release();
+    else if (isConnected())
+        m_sleepInhibitor.acquire(QStringLiteral("AetherSDR connected to radio"));
+}
+
 void RadioModel::onConnected()
 {
     m_cwInputSession.fetch_add(1, std::memory_order_release);
@@ -6979,9 +6995,10 @@ void RadioModel::onConnected()
         emit infoChanged();
     }
 
-    // Inhibit system sleep while connected if the user has opted in (#1420)
-    if (AppSettings::instance().value("InhibitSleepWhileConnected", "False").toString() == "True")
-        m_sleepInhibitor.acquire("AetherSDR connected to radio");
+    // Inhibit system sleep while connected (#1420); on unless the operator
+    // turned it off (#6192). The only idle-sleep block AetherSDR takes.
+    if (sleepInhibitWhileConnected())
+        m_sleepInhibitor.acquire(QStringLiteral("AetherSDR connected to radio"));
 
     // A fresh command session is the one thing that makes a firmware retry
     // unambiguous again: any `file update` status arriving now belongs to this

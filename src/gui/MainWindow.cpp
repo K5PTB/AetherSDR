@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "MainWindow.h"
+#include "core/AppActivity.h"
 #include "core/backends/AutoRfGainControl.h"
 
 #include "MainWindowHelpers.h"
@@ -1224,7 +1225,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_audio->setRxBufferCapMs(
         AppSettings::instance().value("AudioBufferMs", "100").toInt());
     m_audio->moveToThread(m_audioThread);
-    m_audioThread->start();
+    AetherSDR::startStreamThread(m_audioThread);   // High QoS; see AppActivity.h
     const auto updateAetherDspPolicy = [this](bool) {
         updateAetherDspModePolicy();
     };

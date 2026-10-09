@@ -1,4 +1,5 @@
 #include "core/backends/hl2/Hl2Backend.h"
+#include "core/AppActivity.h"
 #include "core/backends/WdspNoiseBlanker.h"
 #include "core/backends/hl2/Hl2Bands.h"
 #include "core/backends/hl2/Hl2ModeVocabulary.h"
@@ -323,7 +324,7 @@ Hl2Backend::Hl2Backend(QObject* parent) : IRadioBackend(parent)
     m_ioThread->setObjectName(QStringLiteral("hl2-io"));
     m_metis->moveToThread(m_ioThread);
     m_txDsp->moveToThread(m_ioThread);
-    m_ioThread->start();
+    AetherSDR::startStreamThread(m_ioThread);   // High QoS; see AppActivity.h
 
     // The rate-change build thread — see the member declarations. Started here
     // and never restarted: it is idle except during a pan-bandwidth crossing,
@@ -333,7 +334,10 @@ Hl2Backend::Hl2Backend(QObject* parent) : IRadioBackend(parent)
     m_dspBuildThread->setObjectName(QStringLiteral("hl2-dsp-build"));
     m_dspBuildContext = new QObject();   // nullptr parent: moveToThread requires it
     m_dspBuildContext->moveToThread(m_dspBuildThread);
-    m_dspBuildThread->start();
+    // Same High QoS as the io thread: this one holds the FFTW planner mutex the
+    // io thread takes in WdspChannel::setShift, so lower would be a priority
+    // inversion. Idle except during a rebuild.
+    AetherSDR::startStreamThread(m_dspBuildThread);
 
     // THE UNKEY HOLD. Single-shot and parented here, so it lives and fires on
     // this object's thread — the same thread applyKeying() runs on, which is

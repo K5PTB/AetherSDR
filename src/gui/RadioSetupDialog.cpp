@@ -4896,6 +4896,9 @@ QWidget* RadioSetupDialog::buildAudioTab()
     }
 
     // ── Prevent Sleep ───────────────────────────────────────────────────
+    // On by default (#6192). Idle sleep is the only thing this governs:
+    // keepAppActive() stops App Nap / power throttling for the app's
+    // lifetime but never blocks sleep.
     {
         auto* sleepCheck = new QCheckBox("Prevent system sleep while connected");
         AetherSDR::ThemeManager::instance().applyStyleSheet(sleepCheck,
@@ -4904,12 +4907,9 @@ QWidget* RadioSetupDialog::buildAudioTab()
         sleepCheck->setToolTip("Hold a system power assertion to prevent idle sleep\n"
                                "while connected to a radio. Keeps TCP/UDP/audio\n"
                                "streams alive during long sessions.");
-        sleepCheck->setChecked(
-            AppSettings::instance().value("InhibitSleepWhileConnected", "False").toString() == "True");
-        connect(sleepCheck, &QCheckBox::toggled, this, [](bool on) {
-            auto& s = AppSettings::instance();
-            s.setValue("InhibitSleepWhileConnected", on ? "True" : "False");
-            s.save();
+        sleepCheck->setChecked(RadioModel::sleepInhibitWhileConnected());
+        connect(sleepCheck, &QCheckBox::toggled, this, [this](bool on) {
+            m_model->setSleepInhibitWhileConnected(on);
         });
         vbox->addWidget(sleepCheck);
     }
