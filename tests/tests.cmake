@@ -3505,6 +3505,7 @@ set_tests_properties(client_chain_audio_path_test PROPERTIES
 add_executable(firmware_close_dialog_test
     tests/firmware_close_dialog_test.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp
@@ -3528,6 +3529,7 @@ set_tests_properties(firmware_close_dialog_test PROPERTIES
 add_executable(flex_control_visibility_test
     tests/flex_control_visibility_test.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp
@@ -3562,6 +3564,7 @@ set_tests_properties(flex_control_visibility_test PROPERTIES
 add_executable(radio_setup_region_field_test
     tests/radio_setup_region_field_test.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp
@@ -3590,6 +3593,7 @@ set_tests_properties(radio_setup_region_field_test PROPERTIES
 add_executable(radio_setup_label_theme_token_test
     tests/radio_setup_label_theme_token_test.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp
@@ -3618,6 +3622,7 @@ set_tests_properties(radio_setup_label_theme_token_test PROPERTIES
 add_executable(radio_setup_max_power_field_test
     tests/radio_setup_max_power_field_test.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp
@@ -3643,6 +3648,7 @@ set_tests_properties(radio_setup_max_power_field_test PROPERTIES
 add_executable(radio_setup_tx_timing_fields_test
     tests/radio_setup_tx_timing_fields_test.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp
@@ -3669,6 +3675,7 @@ set_tests_properties(radio_setup_tx_timing_fields_test PROPERTIES
 add_executable(radio_setup_recording_mode_dim_test
     tests/radio_setup_recording_mode_dim_test.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp
@@ -4821,6 +4828,7 @@ add_executable(peripheral_auth_dialog_test
     tests/peripheral_auth_dialog_test.cpp
     tests/fakes/PeripheralAuthStoreFake.cpp
     src/gui/DragValuePopup.cpp
+    src/gui/FirmwareReleasesDialog.cpp
     src/gui/RadioSetupDialog.cpp
     src/gui/RtlReceiverSettingsWidget.cpp
     src/gui/ControlAvailabilityRegistry.cpp

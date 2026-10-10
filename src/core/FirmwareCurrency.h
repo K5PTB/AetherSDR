@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QMap>
+#include <QStringList>
 #include <QString>
 #include <QVersionNumber>
 
@@ -78,6 +79,30 @@ inline Status evaluate(const QMap<int, QString>& published, const QString& repor
 // The release a radio would be upgraded TO: the newest of its own line, or
 // empty when that line is not published. This is what the release-notes link
 // must be built from — never the newest release overall.
+// The newest release in the SAME LINE as `reported`, taken from a list that is
+// already newest-first (FirmwareStager::parseAllReleases()). Empty when the
+// radio reports nothing parseable or the list names no release in its line.
+//
+// The list form of upgradeTargetFor(): Radio Setup holds every release rather
+// than one per major, and still has to mark which single row is the one this
+// radio should care about.
+inline QString newestInLine(const QStringList& releasesNewestFirst,
+                            const QString& reported)
+{
+    const QVersionNumber theirs = releaseOf(reported);
+    if (theirs.isNull())
+        return {};
+
+    for (const QString& release : releasesNewestFirst) {
+        const QVersionNumber candidate = QVersionNumber::fromString(release);
+        // First match wins because the list is ordered, so this is the newest
+        // release in the line and not merely one of them.
+        if (!candidate.isNull() && candidate.majorVersion() == theirs.majorVersion())
+            return release;
+    }
+    return {};
+}
+
 inline QString upgradeTargetFor(const QMap<int, QString>& published,
                                 const QString& reported)
 {

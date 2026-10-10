@@ -85,7 +85,7 @@ bool FirmwareStager::versionUsesMsi(const QString& version)
 // Only major.minor.patch is published anywhere on the site; the fourth
 // component of a radio's reported version (the build, "4.2.20.41343") appears
 // only inside a downloaded installer, so nothing here can produce one.
-QMap<int, QString> FirmwareStager::parsePublishedReleases(const QByteArray& json)
+QStringList FirmwareStager::parseAllReleases(const QByteArray& json)
 {
     QJsonParseError parseError{};
     const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
@@ -111,12 +111,7 @@ QMap<int, QString> FirmwareStager::parsePublishedReleases(const QByteArray& json
         QStringLiteral(R"(^smartsdr-v(\d+)-(\d+)-(\d+)$)"),
         QRegularExpression::CaseInsensitiveOption);
 
-    // GROUPED BY MAJOR, not reduced to one maximum. FlexRadio offers several
-    // lines side by side -- today 2.10.1, 3.10.15 and 4.1.5/4.2.18/4.2.20 --
-    // and a radio must be judged against the newest release of the line it is
-    // actually running. Taking a single maximum tells a v3 radio it is behind
-    // 4.2.20 and links release notes for a line it is not on.
-    QMap<int, QString> newestByMajor;
+    QList<QVersionNumber> found;
     const QJsonArray records = doc.array();
     for (const QJsonValue& value : records) {
         if (!value.isObject())
@@ -150,18 +145,50 @@ QMap<int, QString> FirmwareStager::parsePublishedReleases(const QByteArray& json
         if (v.isNull() || v.segmentCount() != 3)
             continue;
 
-        const int major = v.majorVersion();
-        const auto existing = newestByMajor.constFind(major);
-        if (existing == newestByMajor.constEnd()
-            || QVersionNumber::compare(v, QVersionNumber::fromString(*existing)) > 0) {
-            newestByMajor.insert(major, text);
-        }
+        if (!found.contains(v))
+            found.append(v);
+    }
+
+    // NEWEST FIRST, numerically. Every caller depends on this order:
+    // parsePublishedReleases() takes the first entry it sees per major, and
+    // Radio Setup's list shows the newest release at the top.
+    std::sort(found.begin(), found.end(),
+              [](const QVersionNumber& a, const QVersionNumber& b) {
+                  return QVersionNumber::compare(a, b) > 0;
+              });
+
+    QStringList releases;
+    releases.reserve(found.size());
+    for (const QVersionNumber& v : std::as_const(found))
+        releases.append(v.toString());
+    return releases;
+}
+
+// Derived from parseAllReleases() rather than parsed again, so there is exactly
+// one place that decides what counts as a release.
+//
+// GROUPED BY MAJOR, not reduced to one maximum. FlexRadio offers several lines
+// side by side -- today 2.10.1, 3.10.15 and 4.1.5/4.2.18/4.2.20 -- and a radio
+// must be judged against the newest release of the line it is actually running.
+// Taking a single maximum tells a v3 radio it is behind 4.2.20 and links
+// release notes for a line it is not on.
+QMap<int, QString> FirmwareStager::parsePublishedReleases(const QByteArray& json)
+{
+    QMap<int, QString> newestByMajor;
+    const QStringList all = parseAllReleases(json);
+    for (const QString& release : all) {
+        // The list is newest-first, so the first entry for a major IS its
+        // newest and later ones must not displace it.
+        const int major = QVersionNumber::fromString(release).majorVersion();
+        if (!newestByMajor.contains(major))
+            newestByMajor.insert(major, release);
     }
     return newestByMajor;
 }
 
 void FirmwareStager::requestPublishedReleases(
-    std::function<void(const QMap<int, QString>&, const QString&)> done)
+    std::function<void(const QMap<int, QString>&, const QStringList&,
+                       const QString&)> done)
 {
     auto* reply = m_nam.get(QNetworkRequest(QUrl(SOFTWARE_INDEX_URL)));
     connect(reply, &QNetworkReply::finished, this,
@@ -170,7 +197,7 @@ void FirmwareStager::requestPublishedReleases(
             [reply, done = std::move(done)]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            done({}, "Cannot reach FlexRadio: " + reply->errorString());
+            done({}, {}, "Cannot reach FlexRadio: " + reply->errorString());
             return;
         }
 
@@ -178,23 +205,25 @@ void FirmwareStager::requestPublishedReleases(
         // public endpoint over which we have no control, so an implausibly
         // large answer is refused before it is parsed at all.
         if (reply->bytesAvailable() > kMaxSoftwareIndexBytes) {
-            done({}, "FlexRadio's software index is implausibly large; ignoring it.");
+            done({}, {}, "FlexRadio's software index is implausibly large; ignoring it.");
             return;
         }
 
-        const QMap<int, QString> releases = parsePublishedReleases(reply->readAll());
+        const QByteArray body = reply->readAll();
+        const QStringList all = parseAllReleases(body);
+        const QMap<int, QString> releases = parsePublishedReleases(body);
         if (releases.isEmpty()) {
-            done({}, "Could not determine any SmartSDR release from FlexRadio's software index.");
+            done({}, {}, "Could not determine any SmartSDR release from FlexRadio's software index.");
             return;
         }
-        done(releases, {});
+        done(releases, all, {});
     });
 }
 
 void FirmwareStager::fetchLatestVersion()
 {
     requestPublishedReleases([this](const QMap<int, QString>& releases,
-                                    const QString& error) {
+                                    const QStringList&, const QString& error) {
         if (releases.isEmpty())
             emit latestVersionUnavailable(error);
         else
@@ -209,6 +238,7 @@ void FirmwareStager::checkForUpdate(const QString& currentVersion)
     emit stageProgress(0, "Checking for updates...");
 
     requestPublishedReleases([this, currentVersion](const QMap<int, QString>& releases,
+                                                    const QStringList& all,
                                                     const QString& error) {
         if (releases.isEmpty()) {
             emit updateCheckFailed(error);
@@ -228,7 +258,10 @@ void FirmwareStager::checkForUpdate(const QString& currentVersion)
         // the radio's fourth component has nothing on the other side to meet.
         const bool updateAvailable =
             FirmwareCurrency::compareReleases(latest, currentVersion) > 0;
-        emit updateCheckComplete(latest, updateAvailable);
+        // The full list goes with the verdict: Radio Setup shows every release
+        // FlexRadio offers, not just the newest, so an operator can see which
+        // line they are on and what else exists.
+        emit updateCheckComplete(latest, updateAvailable, all);
     });
 }
 

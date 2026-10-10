@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMap>
+#include <QStringList>
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -47,6 +48,16 @@ public:
     // on the page" heuristic here and no HTML to spell-match.
     static QMap<int, QString> parsePublishedReleases(const QByteArray& json);
 
+    // EVERY SmartSDR release the index names, newest first: {"4.2.20",
+    // "4.2.18", "4.1.5", "3.10.15", "2.10.1"} today. The same records and the
+    // same rules as parsePublishedReleases(), which is derived from this --
+    // what differs is only that nothing is discarded for being superseded.
+    //
+    // Radio Setup lists these so an operator can see what FlexRadio offers;
+    // the status bar does not use it, because a verdict needs one target per
+    // line and not a catalogue.
+    static QStringList parseAllReleases(const QByteArray& json);
+
     // Download installer, verify, extract .ssdr for the given model family
     // modelFamily: "6x00" or "9600"
     void downloadAndStage(const QString& version, const QString& modelFamily);
@@ -77,7 +88,8 @@ signals:
     void latestVersionUnavailable(const QString& reason);
 
     // Step 1: version check
-    void updateCheckComplete(const QString& latestVersion, bool updateAvailable);
+    void updateCheckComplete(const QString& latestVersion, bool updateAvailable,
+                             const QStringList& publishedReleases);
     void updateCheckFailed(const QString& error);
 
     // Steps 2-4: download, verify, extract
@@ -104,6 +116,7 @@ private:
     // `done` receives the parsed version, or an empty string plus a reason.
     void requestPublishedReleases(
         std::function<void(const QMap<int, QString>& newestByMajor,
+                           const QStringList& allReleases,
                            const QString& error)> done);
 
     // Refuse to PARSE an index larger than this. QNetworkReply has already

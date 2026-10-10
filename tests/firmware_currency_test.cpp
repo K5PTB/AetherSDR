@@ -388,6 +388,78 @@ void checkTheSoftwareIndexIsReadIntoLines()
           "numbers where strings were expected name no release");
 }
 
+// RADIO SETUP'S LIST. The button shows every release FlexRadio publishes, not
+// just the newest, so an operator can see which line they are on and what else
+// exists. parsePublishedReleases() is DERIVED from this list, so the two can
+// never disagree about what counts as a release.
+void checkEveryPublishedReleaseIsListedNewestFirst()
+{
+    const QByteArray real = index({
+        release(QStringLiteral("4.2.20")),
+        record(QStringLiteral("SmartSDR v4 Changelog"),
+               QStringLiteral("smartsdr_v4_changelog")),
+        release(QStringLiteral("4.2.18")),
+        release(QStringLiteral("4.1.5")),
+        release(QStringLiteral("3.10.15")),
+        release(QStringLiteral("2.10.1")),
+    });
+
+    const QStringList all = FirmwareStager::parseAllReleases(real);
+    check(all == QStringList({QStringLiteral("4.2.20"), QStringLiteral("4.2.18"),
+                              QStringLiteral("4.1.5"), QStringLiteral("3.10.15"),
+                              QStringLiteral("2.10.1")}),
+          "every release is listed, newest first, with non-releases dropped");
+
+    // ORDER IS NUMERIC, not lexicographic. The dialog shows this list top-down
+    // and takes the first entry per line as that line's newest, so a text sort
+    // would both mis-order the rows and mis-mark the recommended release.
+    check(FirmwareStager::parseAllReleases(
+              index({release(QStringLiteral("4.2.5")), release(QStringLiteral("4.2.20"))}))
+              == QStringList({QStringLiteral("4.2.20"), QStringLiteral("4.2.5")}),
+          "4.2.20 sorts above 4.2.5 although it sorts lower as text");
+    check(FirmwareStager::parseAllReleases(
+              index({release(QStringLiteral("3.9.19")), release(QStringLiteral("3.10.15"))}))
+              == QStringList({QStringLiteral("3.10.15"), QStringLiteral("3.9.19")}),
+          "3.10.15 sorts above 3.9.19 although it sorts lower as text");
+
+    // A release named twice (title AND a duplicate record) is one release.
+    check(FirmwareStager::parseAllReleases(
+              index({release(QStringLiteral("4.2.20")), release(QStringLiteral("4.2.20"))}))
+              == QStringList({QStringLiteral("4.2.20")}),
+          "a release named twice is listed once");
+
+    // The derived map must agree with the list it came from.
+    const auto map = FirmwareStager::parsePublishedReleases(real);
+    check(map.value(4) == QStringLiteral("4.2.20")
+              && map.value(3) == QStringLiteral("3.10.15")
+              && map.value(2) == QStringLiteral("2.10.1"),
+          "the per-major map is the newest entry of each line in the list");
+}
+
+// WHICH ROW THE LIST CALLS OUT. Pure, so the decision is pinned without
+// constructing a dialog: a v3 radio must be pointed at the newest v3, never at
+// the newest release overall.
+void checkTheListMarksTheRadiosOwnLine()
+{
+    const QStringList all = {QStringLiteral("4.2.20"), QStringLiteral("4.2.18"),
+                             QStringLiteral("4.1.5"), QStringLiteral("3.10.15"),
+                             QStringLiteral("2.10.1")};
+    using AetherSDR::FirmwareCurrency::newestInLine;
+
+    check(newestInLine(all, QStringLiteral("3.9.18.36988")) == QStringLiteral("3.10.15"),
+          "a v3 radio is pointed at the newest v3, not at 4.2.20");
+    check(newestInLine(all, QStringLiteral("4.1.5.39794")) == QStringLiteral("4.2.20"),
+          "a v4 radio is pointed at the newest v4 across its whole line");
+    check(newestInLine(all, QStringLiteral("4.2.20.41343")) == QStringLiteral("4.2.20"),
+          "a radio already on the newest release is pointed at it");
+    check(newestInLine(all, QStringLiteral("1.12.1")).isEmpty(),
+          "a line with no published release marks nothing");
+    check(newestInLine(all, QString()).isEmpty(),
+          "a radio that reports no version marks nothing");
+    check(newestInLine({}, QStringLiteral("4.2.20.41343")).isEmpty(),
+          "an empty list marks nothing");
+}
+
 // THE SMARTLINK FIX (PR #6177 review nit). The lookup used to hang off the Flex
 // backend's own RadioConnection, which a SmartLink session never dials — so a
 // WAN operator got no verdict at all. It now hangs off the seam's
@@ -495,6 +567,8 @@ int main(int argc, char** argv)
     checkWhenTheCachedAnswerIsLookedUpAgain();
     checkTheBackendDeclaresTheRecordAndAsksNobodyAtConstruction();
     checkTheSoftwareIndexIsReadIntoLines();
+    checkEveryPublishedReleaseIsListedNewestFirst();
+    checkTheListMarksTheRadiosOwnLine();
     checkTheSessionVerbAdoptsTheCacheWithoutAsking();
     checkANewerCacheDocumentSurvivesARepeatLookup();
     return g_failures == 0 ? 0 : 1;
