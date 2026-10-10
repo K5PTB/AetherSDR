@@ -9,6 +9,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QVersionNumber>
@@ -81,39 +85,67 @@ bool FirmwareStager::versionUsesMsi(const QString& version)
 // Only major.minor.patch is published anywhere on the site; the fourth
 // component of a radio's reported version (the build, "4.2.20.41343") appears
 // only inside a downloaded installer, so nothing here can produce one.
-QMap<int, QString> FirmwareStager::parsePublishedReleases(const QString& html)
+QMap<int, QString> FirmwareStager::parsePublishedReleases(const QByteArray& json)
 {
-    // Both spellings the page uses: "SmartSDR v4.1.5" in headings and alt text,
-    // and "smartsdr-v4-1-5" in the per-release links.
-    //
-    // THE `v` IS REQUIRED ON THE HYPHENATED FORM, and that is the whole point of
-    // writing this as two alternatives rather than one character class. With it
-    // optional, an asset named "SmartSDR-2025-03-12.png" parses as release
-    // 2025.3.12 — newer than anything real, so every radio reads Outdated and
-    // the release-notes link 404s. The dotted form keeps `v` optional because
-    // prose on the page genuinely writes both "SmartSDR v4.2.20" and
-    // "SmartSDR 4.2.20", and a dotted triple is not a date.
-    static const QRegularExpression re(
-        R"(SmartSDR[- _]v?(\d+\.\d+\.\d+)|smartsdr-v(\d+-\d+-\d+))",
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
+    // Untrusted input, validated at the boundary (Principle VII). Everything
+    // below asks what a value IS before using it: the top level must be an
+    // array, each record an object, each title or slug a string. A record that
+    // is not what it claims is skipped, never coerced.
+    if (parseError.error != QJsonParseError::NoError || !doc.isArray())
+        return {};
+
+    // The release title, e.g. "SmartSDR v4.2.20". ANCHORED, because the index
+    // also carries "SmartSDR v4 Changelog", "SmartSDR v2.5.1+ Changelog" and
+    // "SmartSDR v4.x API (FlexLib)" -- an unanchored search would read the
+    // 2.5.1 out of a changelog's name and publish it as a release.
+    static const QRegularExpression titleRe(
+        QStringLiteral(R"(^SmartSDR v(\d+\.\d+\.\d+)$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    // The same release as a slug, e.g. "smartsdr-v4-2-20". Read only when the
+    // title does not match, so an edited title ("SmartSDR v4.2.20 (Windows)")
+    // costs us a release only if BOTH spellings have drifted. The changelogs
+    // spell their slugs with underscores, so they do not collide here.
+    static const QRegularExpression slugRe(
+        QStringLiteral(R"(^smartsdr-v(\d+)-(\d+)-(\d+)$)"),
         QRegularExpression::CaseInsensitiveOption);
 
-    // GROUPED BY MAJOR, not reduced to one maximum. The page offers several
-    // lines side by side — today 2.10.1, 3.10.15 and 4.1.5/4.2.18/4.2.20 — and
-    // a radio must be judged against the newest release of the line it is
+    // GROUPED BY MAJOR, not reduced to one maximum. FlexRadio offers several
+    // lines side by side -- today 2.10.1, 3.10.15 and 4.1.5/4.2.18/4.2.20 --
+    // and a radio must be judged against the newest release of the line it is
     // actually running. Taking a single maximum tells a v3 radio it is behind
     // 4.2.20 and links release notes for a line it is not on.
     QMap<int, QString> newestByMajor;
-    auto it = re.globalMatch(html);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch m = it.next();
-        // Capture 1 is the dotted spelling, capture 2 the hyphenated link.
-        const QString text = (m.hasCaptured(1) ? m.captured(1) : m.captured(2))
-                                 .replace(QLatin1Char('-'), QLatin1Char('.'));
+    const QJsonArray records = doc.array();
+    for (const QJsonValue& value : records) {
+        if (!value.isObject())
+            continue;
+        const QJsonObject record = value.toObject();
+
+        QString text;
+        const QRegularExpressionMatch byTitle = titleRe.match(
+            record.value(QLatin1String("title"))
+                .toObject()
+                .value(QLatin1String("rendered"))
+                .toString());
+        if (byTitle.hasMatch()) {
+            text = byTitle.captured(1);
+        } else {
+            const QRegularExpressionMatch bySlug =
+                slugRe.match(record.value(QLatin1String("slug")).toString());
+            if (!bySlug.hasMatch())
+                continue;
+            text = QStringLiteral("%1.%2.%3").arg(bySlug.captured(1),
+                                                  bySlug.captured(2),
+                                                  bySlug.captured(3));
+        }
+
         const QVersionNumber v = QVersionNumber::fromString(text);
         // An int-overflowing component does not parse to nothing: fromString()
         // stops at it and returns the PREFIX before it, so "99.2147483648.0"
-        // becomes QVersionNumber(99) — not null, and it outranks 4.2.20. The
-        // pattern guarantees three components, so anything shorter is an
+        // becomes QVersionNumber(99) -- not null, and it outranks 4.2.20. The
+        // patterns guarantee three components, so anything shorter is an
         // overflow and must be discarded, not merely a null (Principle VII).
         if (v.isNull() || v.segmentCount() != 3)
             continue;
@@ -131,7 +163,7 @@ QMap<int, QString> FirmwareStager::parsePublishedReleases(const QString& html)
 void FirmwareStager::requestPublishedReleases(
     std::function<void(const QMap<int, QString>&, const QString&)> done)
 {
-    auto* reply = m_nam.get(QNetworkRequest(QUrl(SOFTWARE_PAGE)));
+    auto* reply = m_nam.get(QNetworkRequest(QUrl(SOFTWARE_INDEX_URL)));
     connect(reply, &QNetworkReply::finished, this,
             // `this` is the connect context (lifetime), not a capture: every
             // member this lambda touches is static.
@@ -143,18 +175,16 @@ void FirmwareStager::requestPublishedReleases(
         }
 
         // Untrusted input, validated at the boundary (Principle VII): this is a
-        // public web page over which we have no control, so its size is bounded
-        // before it is turned into a QString and its content is only ever
-        // matched against a digits-and-dots pattern.
-        if (reply->bytesAvailable() > kMaxSoftwarePageBytes) {
-            done({}, "FlexRadio software page is implausibly large; ignoring it.");
+        // public endpoint over which we have no control, so an implausibly
+        // large answer is refused before it is parsed at all.
+        if (reply->bytesAvailable() > kMaxSoftwareIndexBytes) {
+            done({}, "FlexRadio's software index is implausibly large; ignoring it.");
             return;
         }
 
-        const QMap<int, QString> releases =
-            parsePublishedReleases(QString::fromUtf8(reply->readAll()));
+        const QMap<int, QString> releases = parsePublishedReleases(reply->readAll());
         if (releases.isEmpty()) {
-            done({}, "Could not determine any SmartSDR release from FlexRadio's website.");
+            done({}, "Could not determine any SmartSDR release from FlexRadio's software index.");
             return;
         }
         done(releases, {});

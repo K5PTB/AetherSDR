@@ -17,6 +17,7 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QMap>
+#include <QStringList>
 
 #include <cstdio>
 #include <memory>
@@ -72,9 +73,30 @@ const QMap<int, QString> kPublished = {
 
 Status verdict(const QString& reported) { return evaluate(kPublished, reported); }
 
-QString newestInLine(const QString& html, int major)
+// One SmartSDR record as FlexRadio's REST index returns it.
+QString record(const QString& title, const QString& slug)
 {
-    return FirmwareStager::parsePublishedReleases(html).value(major);
+    return QStringLiteral(R"({"title":{"rendered":"%1"},"slug":"%2"})").arg(title, slug);
+}
+
+// A record whose title is the release, spelled the way the index spells it.
+QString release(const QString& version)
+{
+    QString slug = version;
+    return record(QStringLiteral("SmartSDR v") + version,
+                  QStringLiteral("smartsdr-v") + slug.replace(QLatin1Char('.'),
+                                                              QLatin1Char('-')));
+}
+
+QByteArray index(const QStringList& records)
+{
+    return (QLatin1Char('[') + records.join(QLatin1Char(','))
+            + QLatin1Char(']')).toUtf8();
+}
+
+QString newestInLine(const QByteArray& json, int major)
+{
+    return FirmwareStager::parsePublishedReleases(json).value(major);
 }
 
 // THE FINDING THIS FEATURE WAS REBUILT AROUND (PR #6177, Jeremy's B1).
@@ -255,70 +277,115 @@ void checkTheBackendDeclaresTheRecordAndAsksNobodyAtConstruction()
           "no upgrade target means no link");
 }
 
-// The software page is untrusted input (Principle VII) and the part most likely
-// to change under us, so its parse is pinned without a network.
-void checkThePageIsReadIntoLines()
+// FlexRadio's REST software index is untrusted input (Principle VII) and the
+// part most likely to change under us, so its parse is pinned without a network.
+//
+// The index replaced a scrape of flexradio.com/software/ (Pat's find: it is
+// what SmartSDR and Maestro themselves read). Each release is its own record,
+// so the old "biggest version named anywhere on the page" heuristic is gone --
+// but the index carries changelogs, an API page and fonts alongside the
+// releases, and those are what the parse must not mistake for one.
+void checkTheSoftwareIndexIsReadIntoLines()
 {
-    // The real page's shape: several lines at once, three of them v4.
-    const QString page = QStringLiteral(
-        "<h3>SmartSDR v4.2.20</h3><h3>SmartSDR v4.2.18</h3><h3>SmartSDR v4.1.5</h3>"
-        "<h3>SmartSDR v3.10.15</h3><h3>SmartSDR v2.10.1</h3>"
-        "<a href=\"/software/smartsdr-v3-10-10/\">older</a>");
-    const auto rel = FirmwareStager::parsePublishedReleases(page);
+    // The real index's shape, including every non-release record it returns
+    // for `search=SmartSDR` today.
+    const QByteArray real = index({
+        release(QStringLiteral("4.2.20")),
+        record(QStringLiteral("SmartSDR v4.x API (FlexLib)"),
+               QStringLiteral("smartsdr-v4-x-api-flexlib")),
+        record(QStringLiteral("SmartSDR v4 Changelog"),
+               QStringLiteral("smartsdr_v4_changelog")),
+        release(QStringLiteral("4.2.18")),
+        release(QStringLiteral("4.1.5")),
+        release(QStringLiteral("3.10.15")),
+        record(QStringLiteral("SmartSDR v2.5.1+ Changelog"),
+               QStringLiteral("smartsdr_v2_changelog")),
+        release(QStringLiteral("2.10.1")),
+        record(QStringLiteral("Didact Gothic Font"),
+               QStringLiteral("didact-gothic-font")),
+    });
+    const auto rel = FirmwareStager::parsePublishedReleases(real);
     check(rel.value(4) == QStringLiteral("4.2.20"), "v4's newest is 4.2.20");
     check(rel.value(3) == QStringLiteral("3.10.15"), "v3's newest is 3.10.15");
     check(rel.value(2) == QStringLiteral("2.10.1"), "v2's newest is 2.10.1");
     check(rel.size() == 3, "exactly the three published lines are reported");
 
-    // Both spellings the page uses.
-    check(newestInLine(QStringLiteral("smartsdr-v4-2-20"), 4) == QStringLiteral("4.2.20"),
-          "the hyphenated release link is read");
-    check(newestInLine(QStringLiteral("SmartSDR v4.2.20"), 4) == QStringLiteral("4.2.20"),
-          "the spaced heading spelling is read");
+    // THE TRAP THE ANCHOR EXISTS FOR. "SmartSDR v2.5.1+ Changelog" is a real
+    // record; an unanchored match reads 2.5.1 out of it and publishes a
+    // changelog as v2's newest release, beating the genuine 2.10.1.
+    check(rel.value(2) != QStringLiteral("2.5.1"),
+          "a changelog's name is not read as a release");
+    check(FirmwareStager::parsePublishedReleases(
+              index({record(QStringLiteral("SmartSDR v2.5.1+ Changelog"),
+                            QStringLiteral("smartsdr_v2_changelog"))})).isEmpty(),
+          "a changelog record alone yields no release");
+    check(FirmwareStager::parsePublishedReleases(
+              index({record(QStringLiteral("SmartSDR v4.x API (FlexLib)"),
+                            QStringLiteral("smartsdr-v4-x-api-flexlib"))})).isEmpty(),
+          "the API record is not a release");
+
+    // The slug is read only when the title has drifted, so one edited title
+    // does not cost us the release.
+    check(newestInLine(index({record(QStringLiteral("SmartSDR v4.2.20 (Windows)"),
+                                     QStringLiteral("smartsdr-v4-2-20"))}), 4)
+              == QStringLiteral("4.2.20"),
+          "an edited title falls back to the slug");
 
     // Lexicographic traps, per line.
-    check(newestInLine(QStringLiteral("SmartSDR v4.2.20 SmartSDR v4.2.5"), 4)
+    check(newestInLine(index({release(QStringLiteral("4.2.20")),
+                              release(QStringLiteral("4.2.5"))}), 4)
               == QStringLiteral("4.2.20"),
           "4.2.20 beats 4.2.5 although it sorts lower as text");
-    check(newestInLine(QStringLiteral("SmartSDR v3.9.19 SmartSDR v3.10.15"), 3)
+    check(newestInLine(index({release(QStringLiteral("3.9.19")),
+                              release(QStringLiteral("3.10.15"))}), 3)
               == QStringLiteral("3.10.15"),
           "3.10.15 beats 3.9.19 although it sorts lower as text");
-
-    // A date-shaped asset name is not a release (PR #6177 review, N2).
-    check(newestInLine(QStringLiteral("<img src=\"/uploads/SmartSDR-2025-03-12.png\">"
-                                      " SmartSDR v4.2.20"), 4)
-              == QStringLiteral("4.2.20"),
-          "a date-shaped asset name does not out-rank a real release");
-    check(FirmwareStager::parsePublishedReleases(
-              QStringLiteral("SmartSDR-2025-03-12.png")).isEmpty(),
-          "a date-shaped asset name alone yields nothing");
 
     // INT OVERFLOW IN ANY COMPONENT (PR #6177 review, rfoust B1 / Jeremy B2).
     // fromString() does NOT return null for a later overflowing component: it
     // stops and returns the PREFIX, so "99.2147483648.0" becomes
     // QVersionNumber(99) and would out-rank every real release.
-    check(newestInLine(QStringLiteral("SmartSDR v99.2147483648.0 SmartSDR v4.2.20"), 4)
+    check(newestInLine(index({release(QStringLiteral("99.2147483648.0")),
+                              release(QStringLiteral("4.2.20"))}), 4)
               == QStringLiteral("4.2.20"),
           "a second-component overflow does not out-rank a real release");
     check(FirmwareStager::parsePublishedReleases(
-              QStringLiteral("SmartSDR v99.2147483648.0")).isEmpty(),
+              index({release(QStringLiteral("99.2147483648.0"))})).isEmpty(),
           "a second-component overflow yields no release at all");
-    check(newestInLine(QStringLiteral("SmartSDR v4.2.2147483648 SmartSDR v4.2.20"), 4)
-              == QStringLiteral("4.2.20"),
-          "a third-component overflow does not out-rank a real release");
     check(FirmwareStager::parsePublishedReleases(
-              QStringLiteral("SmartSDR v2147483648.0.0")).isEmpty(),
+              index({release(QStringLiteral("4.2.2147483648"))})).isEmpty(),
+          "a third-component overflow yields no release at all");
+    check(FirmwareStager::parsePublishedReleases(
+              index({release(QStringLiteral("2147483648.0.0"))})).isEmpty(),
           "a first-component overflow yields no release at all");
 
-    // A page that says nothing useful must produce nothing.
-    check(FirmwareStager::parsePublishedReleases(QString()).isEmpty(),
-          "an empty page names no release");
+    // An index that says nothing useful must produce nothing.
+    check(FirmwareStager::parsePublishedReleases(index({})).isEmpty(),
+          "an empty index names no release");
     check(FirmwareStager::parsePublishedReleases(
-              QStringLiteral("<html>we have moved</html>")).isEmpty(),
-          "a page with no SmartSDR release names none");
-    check(FirmwareStager::parsePublishedReleases(
-              QStringLiteral("SmartSDR v4.2")).isEmpty(),
+              index({record(QStringLiteral("SmartSDR v4.2"),
+                            QStringLiteral("smartsdr-v4-2"))})).isEmpty(),
           "a two-component version is not accepted as a release");
+
+    // MALFORMED ANSWERS. The endpoint is public and we do not control it, so
+    // every one of these must come back empty rather than crash or coerce.
+    check(FirmwareStager::parsePublishedReleases(QByteArray()).isEmpty(),
+          "an empty body names no release");
+    check(FirmwareStager::parsePublishedReleases("<html>we have moved</html>").isEmpty(),
+          "HTML where JSON was expected names no release");
+    check(FirmwareStager::parsePublishedReleases(R"([{"title":)").isEmpty(),
+          "truncated JSON names no release");
+    check(FirmwareStager::parsePublishedReleases(R"({"code":"rest_no_route"})").isEmpty(),
+          "a REST error object is not an array, so it names no release");
+    check(FirmwareStager::parsePublishedReleases(R"(["SmartSDR v4.2.20"])").isEmpty(),
+          "a bare string where a record was expected names no release");
+    check(FirmwareStager::parsePublishedReleases(
+              R"([{"title":"SmartSDR v4.2.20","slug":"smartsdr-v4-2-20"}])")
+              .value(4) == QStringLiteral("4.2.20"),
+          "a title that is a string rather than an object falls back to the slug");
+    check(FirmwareStager::parsePublishedReleases(
+              R"([{"title":{"rendered":4},"slug":42}])").isEmpty(),
+          "numbers where strings were expected name no release");
 }
 
 // THE SMARTLINK FIX (PR #6177 review nit). The lookup used to hang off the Flex
@@ -427,7 +494,7 @@ int main(int argc, char** argv)
     checkTooltipsMatchTheState();
     checkWhenTheCachedAnswerIsLookedUpAgain();
     checkTheBackendDeclaresTheRecordAndAsksNobodyAtConstruction();
-    checkThePageIsReadIntoLines();
+    checkTheSoftwareIndexIsReadIntoLines();
     checkTheSessionVerbAdoptsTheCacheWithoutAsking();
     checkANewerCacheDocumentSurvivesARepeatLookup();
     return g_failures == 0 ? 0 : 1;
