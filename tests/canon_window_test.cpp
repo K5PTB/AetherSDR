@@ -18,10 +18,13 @@
 #include "gui/CanonWindow.h"
 
 #include <QApplication>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPointer>
 #include <QTest>
@@ -124,6 +127,77 @@ int main(int argc, char** argv)
         EXPECT_TRUE(QTest::qWaitForWindowActive(&w));
         QTest::keyClick(&w, Qt::Key_Escape);
         EXPECT_TRUE(!w.isVisible());
+    }
+
+    // ---- closing with Escape flushes the saved geometry to disk: QDialog's
+    //      reject() hides the window without a close event ----
+    {
+        const QString key = QStringLiteral("CanonTestEscapeGeometry");
+        CanonWindow w(QStringLiteral("Canon"));
+        w.setGeometryKey(key);
+        w.resize(400, 300);
+        w.show();
+        w.activateWindow();
+        EXPECT_TRUE(QTest::qWaitForWindowActive(&w));
+        w.move(w.pos() + QPoint(30, 20));   // saved in memory only
+        const QString moved = AppSettings::instance().value(key).toString();
+        EXPECT_TRUE(!moved.isEmpty());
+        QTest::keyClick(&w, Qt::Key_Escape);
+        EXPECT_TRUE(!w.isVisible());
+        AppSettings::instance().load();     // drops memory, re-reads the disk
+        EXPECT_TRUE(AppSettings::instance().value(key).toString() == moved);
+    }
+
+    // ---- a pinned launch size wins over the saved size, and a window whose
+    //      saved position is unusable centres at the pinned size ----
+    {
+        const QString key = QStringLiteral("CanonTestLaunchGeometry");
+        // A size, and a position on no screen (an unplugged monitor).
+        AppSettings::instance().setValue(key, QStringLiteral("-30000,-30000,1420,900"));
+        CanonWindow w(QStringLiteral("Canon"));
+        w.setGeometryKey(key);
+        w.setLaunchSize(QSize(720, 480));
+        w.show();
+        EXPECT_TRUE(QTest::qWaitForWindowExposed(&w));
+        EXPECT_TRUE(w.size() == QSize(720, 480));
+        const QRect screen = QGuiApplication::primaryScreen()->availableGeometry();
+        EXPECT_TRUE(w.pos() == screen.center() - w.rect().center());
+    }
+
+    // ---- a workspace is its own top-level window, and Return or Enter in a
+    //      field never clicks a button (AetherTX: Return in a knob's value
+    //      field pressed the Gate tab, QDialog's first auto-default) ----
+    {
+        QWidget parent;
+        for (const auto kind : {CanonWindow::Kind::Dialog, CanonWindow::Kind::Workspace}) {
+            const bool workspace = kind == CanonWindow::Kind::Workspace;
+            CanonWindow w(QStringLiteral("Canon"), &parent, kind);
+            EXPECT_TRUE(w.windowType() == (workspace ? Qt::Window : Qt::Dialog));
+            EXPECT_TRUE(w.testAttribute(Qt::WA_QuitOnClose) == !workspace);
+            auto* box = new QVBoxLayout(w.bodyWidget());
+            auto* tab = new QPushButton(QStringLiteral("Gate"));
+            auto* field = new QLineEdit;
+            box->addWidget(tab);
+            box->addWidget(field);
+            int clicks = 0;
+            QObject::connect(tab, &QPushButton::clicked, [&clicks] { ++clicks; });
+            w.resize(400, 300);
+            w.show();
+            w.activateWindow();
+            EXPECT_TRUE(QTest::qWaitForWindowActive(&w));
+            field->setFocus();
+            QTest::keyClick(field, Qt::Key_Return);
+            QTest::keyClick(field, Qt::Key_Enter, Qt::KeypadModifier);
+            // A dialog keeps QDialog's default-button behaviour (About's OK).
+            EXPECT_TRUE(clicks == (workspace ? 0 : 2));
+            EXPECT_TRUE(w.isVisible());
+            // A focused button still takes Return itself in a workspace.
+            if (workspace) {
+                tab->setFocus();
+                QTest::keyClick(tab, Qt::Key_Return);
+                EXPECT_TRUE(clicks == 1);
+            }
+        }
     }
 
     // ---- the sparks hold still under the OS reduced-motion preference ----
