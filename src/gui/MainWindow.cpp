@@ -13,6 +13,7 @@
 #include "core/backends/AutoRfGainControl.h"
 
 #include "MainWindowHelpers.h"
+#include "MixerControlAvailability.h"
 #include "WindowGeometryRestore.h"
 
 #include "models/Ctr2ProxyModel.h"
@@ -2053,7 +2054,23 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_titleBar, &TitleBar::headphoneVolumeChanged,
             &m_radioModel, &RadioModel::setHeadphoneGain);
     connect(m_titleBar, &TitleBar::lineoutMuteChanged, this, [this](bool muted) {
-        m_radioModel.setLineoutMute(muted);
+        // Both paths where the radio has a line out (#4665); a radio without
+        // one has only this computer's output to mute (MixerControlAvailability.h).
+        const bool lineout = lineoutControlsAvailable(
+            m_radioModel.isConnected(), m_radioModel.hasCommandPlane(),
+            m_radioModel.backendCapabilities().lineoutControl.has_value());
+        const bool pcAudio = AppSettings::instance()
+            .value("PcAudioEnabled", "True").toString() == "True";
+        if (!lineout && !pcAudio) {
+            // Neither output is ours to mute: refuse as the master knob does,
+            // and put the icon back.
+            showUnsupportedControlNotice();
+            syncTitleBarOutput();
+            return;
+        }
+        if (lineout) {
+            m_radioModel.setLineoutMute(muted);
+        }
         m_audio->setMuted(muted);
     });
     connect(m_audio, &AudioEngine::mutedChanged, this, [this](bool muted) {

@@ -6,6 +6,7 @@
 #include "RttyDecodeSettings.h"
 #include "ScopedChildWidget.h"
 #include "GuardedSlider.h"
+#include "MixerControlAvailability.h"
 #include "ComboStyle.h"
 #include "DocsLinks.h"
 #include "SliceColorManager.h"
@@ -4761,6 +4762,31 @@ QWidget* RadioSetupDialog::buildAudioTab()
         m_model->setLineoutGain(v);
     });
     connect(lineoutMute, &QPushButton::toggled, m_model, &RadioModel::setLineoutMute);
+    // Dimmed, never hidden, on a radio with no line out of its own; re-applied
+    // live because this dialog can stay open across a reconnect.
+    auto applyLineoutAvailability = [this, lineoutLabel, lineoutSlider,
+                                     lineoutValue, lineoutMute] {
+        const bool available = AetherSDR::lineoutControlsAvailable(
+            m_model->isConnected(), m_model->hasCommandPlane(),
+            m_model->backendCapabilities().lineoutControl.has_value());
+        const QString reason = available
+            ? QString()
+            : QStringLiteral("Unavailable: this radio has no line out "
+                             "AetherSDR can control.");
+        for (QWidget* w : {static_cast<QWidget*>(lineoutLabel),
+                           static_cast<QWidget*>(lineoutSlider),
+                           static_cast<QWidget*>(lineoutValue),
+                           static_cast<QWidget*>(lineoutMute)}) {
+            w->setEnabled(available);
+            w->setToolTip(reason);
+            w->setAccessibleDescription(reason);
+        }
+    };
+    applyLineoutAvailability();
+    connect(m_model, &RadioModel::connectionStateChanged, lineoutMute,
+            applyLineoutAvailability);
+    connect(m_model, &RadioModel::capabilitiesChanged, lineoutMute,
+            applyLineoutAvailability);
 
     // Headphone
     auto* hpRow = new QHBoxLayout;

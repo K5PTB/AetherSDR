@@ -2072,6 +2072,7 @@ RadioCapabilities Hl2Backend::capabilities() const
     c.speechProcessorControl = std::nullopt;
     c.voxControl = std::nullopt;
     c.txMonitorControl = std::nullopt;
+    c.lineoutControl = std::nullopt;
     c.hasMainFanTelemetry = false;
     // The HL2 persists NOTHING across power cycles — "the radio reports no
     // VFO, so the app is authoritative and must push" (pushInitialState).

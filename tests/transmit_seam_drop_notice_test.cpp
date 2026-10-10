@@ -62,6 +62,8 @@ public:
     int voxCalls{0};
     int monitorCalls{0};
     int speechProcessorCalls{0};
+    QList<int> lineoutGains;
+    QList<bool> lineoutMutes;
     bool connected{true};
     RadioCapabilities capabilities() const override { return caps; }
     bool isConnected() const override { return connected; }
@@ -90,6 +92,8 @@ public:
     }
     void setVox(bool, int, int) override { ++voxCalls; }
     void setTxMonitor(bool, int) override { ++monitorCalls; }
+    void setLineoutGain(int percent) override { lineoutGains << percent; }
+    void setLineoutMute(bool mute) override { lineoutMutes << mute; }
     void setSpeechProcessor(bool, int) override { ++speechProcessorCalls; }
 };
 
@@ -525,6 +529,37 @@ static void voxAndMonitorWithoutRecordsKeepDropNotice()
           "no monitor record: mon still raises commandDropped");
 }
 
+// A backend that declares its own line out takes setLineoutMute/Gain typed,
+// and their Flex text raises no drop notice (#4665). One that declares none
+// gets no seam call and keeps the notice: nothing applied the request.
+static void lineoutReachesDeclaredSeamWithoutDropNotice()
+{
+    RadioCapabilities caps = hostModulatingTransmitter();
+    caps.lineoutControl = RadioCapabilities::LineoutControl{};
+    Fixture f(caps);
+    f.radio.setLineoutMute(true);
+    f.radio.setLineoutMute(false);
+    f.radio.setLineoutGain(30);
+    check(f.backend->lineoutMutes == QList<bool>{true, false},
+          "lineout mute: setLineoutMute() reached a declaring backend for each click");
+    check(f.backend->lineoutGains == QList<int>{30},
+          "lineout gain: setLineoutGain(30) reached a declaring backend once");
+    check(!f.droppedStartingWith(QStringLiteral("mixer lineout")),
+          "lineout: no commandDropped where the backend applied it");
+}
+
+static void lineoutWithoutRecordKeepsDropNotice()
+{
+    Fixture f(hostModulatingTransmitter());   // the HL2: no line out declared
+    f.radio.setLineoutMute(true);
+    f.radio.setLineoutGain(30);
+    check(f.backend->lineoutMutes.isEmpty() && f.backend->lineoutGains.isEmpty(),
+          "lineout: no seam call to a backend that declares no line out");
+    check(f.droppedStartingWith(QStringLiteral("mixer lineout mute"))
+              && f.droppedStartingWith(QStringLiteral("mixer lineout gain")),
+          "lineout without a record: the drop notice stands");
+}
+
 // Flex now has its VOX, monitor and PROC setters called (it declares the
 // records), and they must write nothing: the wire text from TransmitModel is
 // still the only Flex output for these controls.
@@ -642,6 +677,8 @@ int main(int argc, char** argv)
     speechProcessorOnHostCompressorWithoutDropNotice();
     speechProcessorWithNoProcessorKeepsDropNotice();
     voxAndMonitorWithoutRecordsKeepDropNotice();
+    lineoutReachesDeclaredSeamWithoutDropNotice();
+    lineoutWithoutRecordKeepsDropNotice();
     flexSeamSettersWriteNothing();
     unroutedVerbStillRaisesDropNotice();
     undeclaredCapabilityKeepsDropNotice();
