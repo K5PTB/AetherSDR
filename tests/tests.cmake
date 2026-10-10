@@ -1025,6 +1025,13 @@ target_link_libraries(wdsp_channel_reservation_test PRIVATE aethercore)
 add_test(NAME wdsp_channel_reservation_test COMMAND wdsp_channel_reservation_test)
 set_tests_properties(wdsp_channel_reservation_test PROPERTIES TIMEOUT 120)
 
+# Tearing down a TX channel waits for the PureSignal correction thread before
+# freeing what it uses (#6179, WDSP patch 22). POSIX FIFO; skips on Windows.
+add_executable(wdsp_calcc_teardown_test tests/wdsp_calcc_teardown_test.cpp)
+target_link_libraries(wdsp_calcc_teardown_test PRIVATE aethercore)
+add_test(NAME wdsp_calcc_teardown_test COMMAND wdsp_calcc_teardown_test)
+set_tests_properties(wdsp_calcc_teardown_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
 # Compiles src/core/NnrControls.h so its static_asserts are real, and pins the
 # default markers the NNR tab draws. Header-only: the WDSP cross-check needs the
 # facade that arrives with NnrFilter (RFC #5684 step 2).
