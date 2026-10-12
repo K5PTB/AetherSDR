@@ -75,8 +75,8 @@ bool FirmwareStager::versionUsesMsi(const QString& version)
 
 // ─── Step 0: What does FlexRadio publish? ───────────────────────────────────
 
-// The software page lists every SmartSDR release it has ever carried, so this
-// picks the highest rather than the first. NUMERICALLY: as text, "4.2.5" sorts
+// The index lists several SmartSDR releases side by side, so the order is
+// computed rather than trusted. NUMERICALLY: as text, "4.2.5" sorts
 // after "4.2.20" and "3.9.19" after "3.10.15", so a string maximum silently
 // picks an older release whenever a one-digit component meets a two-digit one.
 // The page happens not to contain such a pair today, which is exactly the kind

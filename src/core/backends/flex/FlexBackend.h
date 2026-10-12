@@ -250,12 +250,18 @@ private:
     // connected radio is behind without any code above the seam knowing where
     // SmartSDR releases are listed.
     //
-    // ASKED ONLY ON CONNECT TO A FLEX, AND AT MOST ONCE A DAY. flexradio.com is
-    // contacted when this backend reaches a radio — never at launch, never for
-    // a station that connects to something else, never for one that only opens
-    // the app. The answer is cached in AppSettings as one family-wide feature
-    // document, so a disconnect and reconnect, a switch between radios, and a
-    // later launch all reuse it until it ages out (PR #6177 review, M2).
+    // ASKED ONLY ON CONNECT TO A FLEX. flexradio.com is contacted when this
+    // backend reaches a radio — never at launch, never for a station that
+    // connects to something else, never for one that only opens the app. A
+    // SUCCESSFUL answer is cached in AppSettings as one family-wide feature
+    // document, so for a day a disconnect and reconnect, a switch between
+    // radios, and a later launch all reuse it instead of asking.
+    //
+    // What this does NOT bound: a failed lookup writes nothing, so no window
+    // starts and every later connect asks again until one succeeds. And a
+    // cached answer older than a day is still adopted (and drawn) while the
+    // refresh runs, and stays if that refresh fails — so an offline station
+    // keeps showing its last verdict, however old.
     QMap<int, QString> m_publishedReleases;
     FirmwareStager* m_firmwareVersions{nullptr};
     bool m_firmwareLookupInFlight{false};

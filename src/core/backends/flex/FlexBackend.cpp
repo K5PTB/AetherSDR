@@ -8,7 +8,6 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QThread>
-#include <QTimer>
 
 #include "core/AppSettings.h"
 #include "core/FirmwareCurrency.h"  // publishedVersionIsStale() — the one freshness rule
@@ -63,16 +62,6 @@ FlexBackend::FlexBackend(QObject* parent)
     m_connection->moveToThread(m_connThread);
     connect(m_connThread, &QThread::started, m_connection, &RadioConnection::init);
     m_connThread->start();
-
-    // Ask FlexRadio once, now, which SmartSDR release is published. This runs at
-    // app startup: RadioModel builds a backend in its own constructor, well
-    // before any radio is connected, and the answer is about what the vendor
-    // publishes rather than about any particular radio.
-    //
-    // A failure is not an error state and raises nothing. m_latestPublishedVersion
-    // simply stays empty, which is the "no verdict" every consumer already
-    // handles, and an operator with no route to the internet sees the status bar
-    // they have always seen. There is no retry; the next launch asks again.
 
     // Observe wire lifecycle and re-emit as the interface's own signals. Queued
     // (auto) connections: the connection lives on its worker thread.
@@ -220,6 +209,7 @@ void FlexBackend::setRadioReportedCapacity(int maxSlices, int maxPanadapters)
 // Order matters: the cached answer is adopted first, so a station with no route
 // to the internet still shows a verdict from whatever it learned last, and the
 // status bar never blanks while a lookup is in flight.
+//
 // Reaching a radio is the only thing that may contact flexradio.com, and even
 // then only if the cached answer has aged out. Hung off the seam's
 // session-established verb rather than this backend's own RadioConnection,
@@ -331,7 +321,8 @@ void FlexBackend::refreshPublishedFirmwareVersion()
         connect(m_firmwareVersions, &FirmwareStager::latestVersionUnavailable, this,
                 [this](const QString& reason) {
             // Not an error state: nothing is written, nothing is retried, and
-            // whatever was already cached stays. The next connect asks again.
+            // whatever was already cached stays. Because nothing is written, no
+            // window starts either, so the next connect asks again.
             m_firmwareLookupInFlight = false;
             // Warning, not info: `aether.firmware` defaults to Warning, so an
             // info line would not appear in the log the Known limits section

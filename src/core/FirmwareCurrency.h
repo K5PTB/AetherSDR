@@ -27,14 +27,20 @@ namespace AetherSDR::FirmwareCurrency {
 // compare against, and keeping the radio's would make every radio look ahead of
 // every published version. Truncating both sides is the only comparison that
 // can actually be made.
+//
+// ONLY A COMPLETE RELEASE PARSES. Fewer than three components ("4", "4.2") or
+// anything left over ("4.2.20garbage") yields a null version and so no verdict.
+// fromString() alone is too forgiving: it stops at the first thing it cannot
+// read and returns the PREFIX, so an int-overflowing "4.2.2147483648" would
+// otherwise become release 4.2 and be judged.
 inline QVersionNumber releaseOf(const QString& version)
 {
-    const QVersionNumber full = QVersionNumber::fromString(version);
-    if (full.isNull())
+    qsizetype suffix = 0;
+    const QVersionNumber full = QVersionNumber::fromString(version, &suffix);
+    if (full.isNull() || full.segmentCount() < 3 || suffix != version.size())
         return {};
 
-    const QList<int> segments = full.segments();
-    return QVersionNumber(segments.mid(0, qMin<qsizetype>(3, segments.size())));
+    return QVersionNumber(full.segments().mid(0, 3));
 }
 
 enum class Status {
@@ -76,9 +82,6 @@ inline Status evaluate(const QMap<int, QString>& published, const QString& repor
                                                      : Status::Current;
 }
 
-// The release a radio would be upgraded TO: the newest of its own line, or
-// empty when that line is not published. This is what the release-notes link
-// must be built from — never the newest release overall.
 // The newest release in the SAME LINE as `reported`, taken from a list that is
 // already newest-first (FirmwareStager::parseAllReleases()). Empty when the
 // radio reports nothing parseable or the list names no release in its line.
@@ -103,6 +106,9 @@ inline QString newestInLine(const QStringList& releasesNewestFirst,
     return {};
 }
 
+// The release a radio would be upgraded TO: the newest of its own line, or
+// empty when that line is not published. This is what the release-notes link
+// must be built from — never the newest release overall.
 inline QString upgradeTargetFor(const QMap<int, QString>& published,
                                 const QString& reported)
 {

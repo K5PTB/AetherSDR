@@ -1809,12 +1809,15 @@ void RadioSetupDialog::showFirmwareReleases(const QStringList& releases)
     if (const auto& source = m_model->backendCapabilities().firmwareUpdateSource)
         notesTemplate = source->releaseNotesUrlTemplate;
 
-    if (!m_firmwareReleasesDialog) {
-        auto* dlg = new FirmwareReleasesDialog(
-            releases, m_model->softwareVersion(), notesTemplate, this);
-        dlg->setAttribute(Qt::WA_DeleteOnClose);
-        m_firmwareReleasesDialog = dlg;
-    }
+    // Rebuilt on every check rather than re-raised: the list and the radio's
+    // own release are baked in at construction, so an open dialog from an
+    // earlier check would otherwise keep showing that check's answer.
+    if (m_firmwareReleasesDialog)
+        m_firmwareReleasesDialog->close();
+    auto* dlg = new FirmwareReleasesDialog(
+        releases, m_model->softwareVersion(), notesTemplate, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    m_firmwareReleasesDialog = dlg;
     m_firmwareReleasesDialog->show();
     m_firmwareReleasesDialog->raise();
     m_firmwareReleasesDialog->activateWindow();

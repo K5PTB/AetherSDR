@@ -235,7 +235,7 @@ struct FirmwareUpdateSource {
     // whose major matches the radio's own reported version, and shows nothing
     // when the radio's line is not listed.
     //
-    // DELIBERATELY NOT THE RADIO'S LICENSED VERSION. A radio's licence fields
+    // DELIBERATELY NOT THE RADIO'S LICENSED VERSION. A radio's license fields
     // cannot carry this: measured on a FLEX-6500 running 4.2.20.41343, the
     // discovery broadcast and the connected `license` status both reported a
     // ceiling BELOW the firmware actually running, and disagreed with

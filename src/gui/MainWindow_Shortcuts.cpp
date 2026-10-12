@@ -13,10 +13,8 @@
 #include "core/IambicKeyer.h"
 
 #include <QApplication>
-#include <QDesktopServices>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QUrl>
 
 #include "MainWindowHelpers.h"
 #include "VoiceModeGate.h"   // isCwMode() — one CW-mode list, not thirteen
@@ -854,41 +852,13 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
         toggleConnectionDialog();
         return true;
     }
-    // The firmware version is a link to the release notes, but ONLY while it is
-    // showing an out-of-date version — that is the state the tooltip invites a
-    // click in. A current (green) version is plain text, so the press falls
-    // through and the status bar behaves as it always has.
-    // Left click or Return/Enter — NOT Space, which is application-level
-    // PTT-hold and is consumed above before any widget sees it. Restricting the
-    // mouse to the left button also stops a right- or middle-click from opening
-    // a browser out from under a context menu.
-    if (obj == m_radioVersionLabel
-        && ((event->type() == QEvent::MouseButtonPress
-             && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
-            || (event->type() == QEvent::KeyPress
-                && (static_cast<QKeyEvent*>(event)->key() == Qt::Key_Return
-                    || static_cast<QKeyEvent*>(event)->key() == Qt::Key_Enter)))) {
-        if (m_radioFirmwareCurrency != AetherSDR::FirmwareCurrency::Status::Outdated)
-            return false;
-        // The page is the newest release OF THE RADIO'S OWN LINE — never the
-        // newest overall. An operator on v3 must not be handed v4's notes for
-        // an upgrade that is not the one being recommended.
-        const auto& source = m_radioModel.backendCapabilities().firmwareUpdateSource;
-        if (!source.has_value())
-            return false;
-        const QString url = AetherSDR::FirmwareCurrency::releaseNotesUrl(
-            source->releaseNotesUrlTemplate,
-            AetherSDR::FirmwareCurrency::upgradeTargetFor(
-                source->publishedReleases, m_radioVersionLabel->text()));
-        if (url.isEmpty())
-            return false;
-        QDesktopServices::openUrl(QUrl(url));
-        return true;
-    }
     // Status-bar indicators: a press and the keyboard (StatusIndicator's
     // Return/Enter/Space and the accessible Press action) run one action.
     if (event->type() == QEvent::MouseButtonPress && isStatusIndicator(obj)) {
-        if (obj == m_txIndicator
+        // Left button only for these two: TX must not key from a stray
+        // right-click, and the firmware row must not open a browser out from
+        // under a context menu.
+        if ((obj == m_txIndicator || obj == m_radioVersionLabel)
             && static_cast<QMouseEvent*>(event)->button() != Qt::LeftButton) {
             return true;
         }
@@ -911,7 +881,7 @@ bool MainWindow::isStatusIndicator(const QObject* obj) const
     return obj == m_cwxIndicator || obj == m_tnfIndicator
         || obj == m_fdxIndicator || obj == m_bandStackIndicator || obj == m_tgxlContainer
         || obj == m_pgxlContainer || obj == m_txIndicator || obj == m_addPanLabel
-        || obj == m_dvkIndicator;
+        || obj == m_dvkIndicator || obj == m_radioVersionLabel;
 }
 
 void MainWindow::activateStatusIndicator(QObject* obj)
@@ -924,6 +894,10 @@ void MainWindow::activateStatusIndicator(QObject* obj)
         return;
     }
 #endif
+    if (obj == m_radioVersionLabel) {
+        openFirmwareReleaseNotes();   // no-op unless the row shows out-of-date firmware
+        return;
+    }
     if (obj == m_cwxIndicator) {
         if (!m_cwxIndicator->isEnabled()) return;
         toggleCwKeyerPanel();

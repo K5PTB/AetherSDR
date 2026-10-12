@@ -209,6 +209,18 @@ void checkUnparseableRadioVersionsAreUnknown()
           "a label word in front of the number is not silently parsed");
     check(verdict(QStringLiteral("unknown")) == Status::Unknown,
           "a non-numeric version yields no verdict");
+    // fromString() returns the readable PREFIX of a malformed version, so
+    // each of these would otherwise be judged as a release it is not.
+    check(verdict(QStringLiteral("4.2.2147483648")) == Status::Unknown,
+          "an overflowing reported component yields no verdict, not release 4.2");
+    check(verdict(QStringLiteral("4.2.20garbage")) == Status::Unknown,
+          "trailing text after the release yields no verdict");
+    check(verdict(QStringLiteral("4.2")) == Status::Unknown,
+          "a two-component version is not a release");
+    check(verdict(QStringLiteral("4")) == Status::Unknown,
+          "a bare major is not a release");
+    check(evaluate({{4, QStringLiteral("4.2")}}, QStringLiteral("4.1.5")) == Status::Unknown,
+          "a published entry that is not a complete release yields no verdict");
 }
 
 void checkTooltipsMatchTheState()

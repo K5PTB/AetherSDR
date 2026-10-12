@@ -21,8 +21,8 @@ class FirmwareStager : public QObject {
 public:
     explicit FirmwareStager(QObject* parent = nullptr);
 
-    // Fetch the latest SmartSDR version FlexRadio publishes, and judge nothing.
-    // Answers `latestVersionKnown` or `latestVersionUnavailable` exactly once.
+    // Fetch the SmartSDR releases FlexRadio publishes, and judge nothing.
+    // Answers `publishedReleasesKnown` or `latestVersionUnavailable` exactly once.
     //
     // Separate from checkForUpdate() because the two have different questions:
     // this one asks "what is published?", which needs no radio and is safe to
@@ -55,7 +55,7 @@ public:
     //
     // Radio Setup lists these so an operator can see what FlexRadio offers;
     // the status bar does not use it, because a verdict needs one target per
-    // line and not a catalogue.
+    // line and not a full list.
     static QStringList parseAllReleases(const QByteArray& json);
 
     // Download installer, verify, extract .ssdr for the given model family

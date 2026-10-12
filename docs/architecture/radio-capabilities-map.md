@@ -148,7 +148,7 @@ major matches the radio's own reported version, and shows nothing when that line
 is absent. Reducing the list to a single maximum tells an operator on v3 they are
 behind a v4 release and links release notes for a line they are not on.
 
-**Not the radio's licensed version.** A radio's licence fields cannot stand in
+**Not the radio's licensed version.** A radio's license fields cannot stand in
 for this. Measured on a FLEX-6500 running 4.2.20.41343: the discovery broadcast
 reported `max_licensed_version=v1` and the connected `license` status
 `highest_major_version=v1`, both *below* the firmware actually running, while
@@ -158,11 +158,14 @@ is running is observable and self-consistent; what it is licensed for is not.
 Presence currently also means *"compare me against the SmartSDR software page"*,
 because that is the only published list AetherSDR reads. A backend from another
 vendor must not simply declare a template: it needs its own lookup, and this
-record then needs a field naming which list it belongs to.
+record then needs a field naming which list it belongs to. The Flex declaration
+is unconditional across models, which assumes every Flex reports a version on
+the SmartSDR line. `FirmwareStager` routes the FLEX-9600 (RT-2122) to its own
+installer family, and no 9600 has been checked against the index.
 
 | Backend | Declares | Why |
 |---|---|---|
-| Flex | ✅ always; `publishedReleases` empty until the lookup answers | Reports a SmartSDR version, and SmartSDR releases are listed on flexradio.com/software. The lookup runs on connecting to a Flex and is cached for a day, so a station that never reaches a Flex never contacts the vendor |
+| Flex | ✅ always; `publishedReleases` empty until the lookup answers | Reports a SmartSDR version, and SmartSDR releases are listed in FlexRadio's REST software index. The lookup runs on connecting to a Flex, over LAN or SmartLink, so a station that never reaches a Flex never contacts the vendor. A successful answer is cached for a day; a failed one starts no window, so the next connect asks again |
 | HL2 / ANAN | — | Reports a gateware number, which no published list covers. Measuring one against a SmartSDR version would read as catastrophically out of date |
 | Icom | — | Reports no firmware version to compare |
 | RTL / Sim | — | No published firmware list is read |

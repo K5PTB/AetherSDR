@@ -27,7 +27,7 @@ const char* kDialogStyle =
     // No ::item:selected rule: selection comes from the palette, as for the
     // app-wide lists, so it stays readable whatever the theme's accent.
     // `favorites_picker_selection_test` scans src/ and fails the build if an
-    // accent-coloured selection creeps back in.
+    // accent-colored selection creeps back in.
     "QListWidget::item:hover { background: {{color.background.2}}; }"
     "QPushButton {"
     "  background: {{color.background.1}}; color: {{color.text.primary}};"

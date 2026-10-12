@@ -317,26 +317,8 @@ constexpr int kPanadapterSliceCapacityStatusMs = 4000;
 // shared between the constructor timer setup here and MainWindow_SwrSweep.cpp.
 constexpr const char* kSuppressAudioDeviceNotificationsKey =
     "SuppressAudioDeviceNotifications";
-constexpr const char* kStatusBarCompactLabelObjectName = "statusBarCompactLabel";
-
-QString statusBarCompactLabelStyle(const QString& color, bool bold = false)
-{
-    return QStringLiteral(
-        "QLabel#statusBarCompactLabel { color: %1; font-size: 12px; font-weight: %2; "
-        "background: transparent; }")
-        .arg(color, bold ? QStringLiteral("bold") : QStringLiteral("normal"));
-}
-
-void applyStatusBarCompactLabelStyle(QLabel* label, const QString& color, bool bold = false)
-{
-    if (!label) {
-        return;
-    }
-
-    label->setObjectName(kStatusBarCompactLabelObjectName);
-    AetherSDR::ThemeManager::instance().applyStyleSheet(
-        label, statusBarCompactLabelStyle(color, bold));
-}
+// statusBarCompactLabelStyle()/applyStatusBarCompactLabelStyle() live in
+// MainWindowHelpers, shared with MainWindow_Session.cpp's firmware verdict.
 
 int statusBarCompactTextWidth(const QStringList& samples, int horizontalPadding)
 {
@@ -6130,10 +6112,12 @@ void MainWindow::buildUI()
     m_radioVersionLabel = new QLabel("");
     applyStatusBarCompactLabelStyle(m_radioVersionLabel, QStringLiteral("{{color.text.secondary}}"));
     m_radioVersionLabel->setAlignment(Qt::AlignCenter);
-    // Only out-of-date firmware is clickable, but the filter is installed once
-    // here rather than added and removed as the verdict changes; the handler
-    // checks m_radioFirmwareCurrency and ignores the click otherwise.
+    // Only out-of-date firmware is actionable, but the row is wired once here
+    // rather than as the verdict changes: openFirmwareReleaseNotes() checks
+    // m_radioFirmwareCurrency and does nothing otherwise, and
+    // applyFirmwareCurrencyToVersionLabel() drops the tab stop it does not need.
     m_radioVersionLabel->installEventFilter(this);
+    keyboardOperable(m_radioVersionLabel);
     radioVbox->addWidget(m_radioInfoLabel);
     radioVbox->addWidget(m_radioVersionLabel);
     hbox->addWidget(radioStack);
@@ -7918,76 +7902,6 @@ void MainWindow::refreshRadioIdentityLabels()
     m_radioVersionLabel->setVisible(!m_radioVersionLabel->text().isEmpty());
     applyFirmwareCurrencyToVersionLabel();
     updateStatusBarMinimumWidth();
-}
-
-// Colour the version row by how current the firmware is, and make it a link to
-// the release notes when it is not.
-//
-// Runs from refreshRadioIdentityLabels() — the single owner of this stack — so
-// it repaints on exactly the edges the text does: connect, the late-arriving
-// infoChanged, a capabilities update, and disconnect. It reads the LABEL's
-// text rather than the model's, which is what makes disconnect correct for
-// free: the label is cleared first, an empty string parses to nothing, and the
-// verdict falls back to Unknown instead of stranding the last radio's colour
-// on a blank row.
-//
-// Bold is applied through the stylesheet rather than QFont so the width
-// recalculation that follows sees the wider text; setting it after
-// updateStatusBarMinimumWidth() would clip the row on a narrow window.
-//
-// The verdict comes entirely from the backend's declared FirmwareUpdateSource,
-// with no test of which family it is — see FirmwareCurrency.h. A radio whose
-// backend declares no source, and any station whose backend could not find out
-// what is published, keep the plain secondary colour of the model row above.
-void MainWindow::applyFirmwareCurrencyToVersionLabel()
-{
-    using AetherSDR::FirmwareCurrency::Status;
-
-    // Two things have to be true before a verdict exists: the backend must have
-    // declared that its firmware versions are published somewhere, and it must
-    // have found out what the newest one is. Either missing leaves Unknown.
-    // Both arrive on the same record, and neither is this window's business to
-    // go and fetch — see RadioCapabilities::FirmwareUpdateSource.
-    const auto& source = m_radioModel.backendCapabilities().firmwareUpdateSource;
-    m_radioFirmwareCurrency =
-        source.has_value()
-            ? AetherSDR::FirmwareCurrency::evaluate(source->publishedReleases,
-                                                    m_radioVersionLabel->text())
-            : AetherSDR::FirmwareCurrency::Status::Unknown;
-
-    QString color = QStringLiteral("{{color.text.secondary}}");
-    bool bold = false;
-    switch (m_radioFirmwareCurrency) {
-    case Status::Current:
-        color = QStringLiteral("{{color.accent.success}}");
-        break;
-    case Status::Outdated:
-        color = QStringLiteral("{{color.accent.warning}}");
-        bold = true;
-        break;
-    case Status::Unknown:
-        // Deliberately identical to the model row directly above it: no verdict
-        // must look like no opinion, not like a third verdict of its own.
-        break;
-    }
-
-    applyStatusBarCompactLabelStyle(m_radioVersionLabel, color, bold);
-    m_radioVersionLabel->setToolTip(
-        AetherSDR::FirmwareCurrency::tooltip(m_radioFirmwareCurrency));
-    // The verdict must not live only in colour and a hover. A screen reader
-    // otherwise hears "4.2.18.41174" and nothing about it being behind — the
-    // failure #4896 / #5262 M3a exist to prevent. Same string as the tooltip,
-    // on the accessible channel.
-    m_radioVersionLabel->setAccessibleDescription(
-        AetherSDR::FirmwareCurrency::tooltip(m_radioFirmwareCurrency));
-    // Reachable by keyboard only while it actually does something. A label that
-    // took focus in every state would add a dead tab stop to the status bar.
-    m_radioVersionLabel->setFocusPolicy(m_radioFirmwareCurrency == Status::Outdated
-                                            ? Qt::TabFocus
-                                            : Qt::NoFocus);
-    m_radioVersionLabel->setCursor(m_radioFirmwareCurrency == Status::Outdated
-                                       ? Qt::PointingHandCursor
-                                       : Qt::ArrowCursor);
 }
 
 void MainWindow::applyCapabilitiesToUi(bool connected, const RadioCapabilities& caps)
