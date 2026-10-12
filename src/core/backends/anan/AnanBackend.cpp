@@ -432,6 +432,8 @@ RadioCapabilities AnanBackend::capabilities() const
     // The radio's speaker output: setLineoutMute() sends it silence and
     // setLineoutGain() scales the samples this host feeds it.
     c.lineoutControl = RadioCapabilities::LineoutControl{};
+    // No client owner is declared for "Show TX in Waterfall" on an ANAN.
+    c.txWaterfallClientFlag = std::nullopt;
     // The panadapter dBm axis is dBFS with a dBm label: kUncalibratedDbfsToDbmOffset
     // is 0.0f and bin levels depend on window/normalisation, unverified against a
     // known input. Internally consistent, but not comparable: never publish as a
@@ -491,6 +493,7 @@ RadioCapabilities AnanBackend::capabilities() const
     // backend, which is what the record promises. Engine authority: the state is
     // ours, the radio echoes nothing back, and there is no register to read.
     c.receiveAudioControl = ReceiveAudioControl{SliceFrequencyControl::Authority::Engine};
+    c.receiveAudioExport = std::nullopt; // native DAX export not qualified for this backend
     c.receivePanCenterControl = std::nullopt; // center also retunes the slice
     c.receivePanBandwidthControl = ReceivePanRangeControl{SliceFrequencyControl::Authority::Engine,
                                                          48'000, 1'536'000};
@@ -515,6 +518,9 @@ RadioCapabilities AnanBackend::capabilities() const
     c.hasDdcPanEdgeRolloff = true; // see RadioCapabilities.h's own comment
     c.backendPanAveraging = BackendPanAveraging{kMsPerAverageStep, false, {}, {}}; // AnanPanAnalyzer
     c.panFrameRateShaping = std::nullopt;  // no client owner is declared for FFT FPS
+    // No protocol field holds a waterfall rate: the client keeps it.
+    c.panWaterfallRateShaping =
+        PanWaterfallRateShaping{/*clientPersistsWaterfallRate*/ true};
     // No band/segment zoom: the protocol carries no per-pan zoom flag.
     c.panZoomModes = std::nullopt;
     c.persistsMemories = false;    // default; stated explicitly

@@ -257,6 +257,7 @@ RadioCapabilities SimBackend::capabilities() const
                                                 {QStringLiteral("USB"), QStringLiteral("LSB")}};
     caps.receiveFilterControl = std::nullopt; // demo passband setters only echo state
     caps.receiveAudioControl = std::nullopt; // no independently controlled RX mixer yet
+    caps.receiveAudioExport = std::nullopt; // native DAX export not qualified for this backend
     caps.receivePanCenterControl = std::nullopt; // spectrum remains anchored to the VFO
     caps.receivePanBandwidthControl = std::nullopt; // fixed synthetic span
     caps.canReboot = false;
@@ -319,6 +320,9 @@ RadioCapabilities SimBackend::capabilities() const
     // case a bare hasCommandPlane() test would have got wrong.
     caps.panZoomModes = std::nullopt;
     caps.panFrameRateShaping = std::nullopt;  // demo; no client owner is declared for FFT FPS
+    // The demo radio stores no display state: the client keeps the waterfall rate.
+    caps.panWaterfallRateShaping =
+        PanWaterfallRateShaping{/*clientPersistsWaterfallRate*/ true};
     // The synthesised stream has no impulse noise in it, and the demo has no IQ
     // path this host demodulates — there is nothing to blank.
     caps.hasHostNoiseBlanker = false;
@@ -374,6 +378,7 @@ RadioCapabilities SimBackend::capabilities() const
     caps.voxControl = std::nullopt;
     caps.txMonitorControl = std::nullopt;
     caps.lineoutControl = std::nullopt;
+    caps.txWaterfallClientFlag = std::nullopt;  // RX-only demo; no owner declared
     caps.hasMainFanTelemetry = false;         // synthetic scene; no hardware fan
     // The demo radio regenerates its synthetic scene on every connect; there
     // is no operating state worth resurrecting across sessions.

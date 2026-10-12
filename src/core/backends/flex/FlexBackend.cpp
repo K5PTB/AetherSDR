@@ -367,6 +367,7 @@ RadioCapabilities FlexBackend::capabilities() const
         {QStringLiteral("SAM"), -12000, -10, 10, 12000, 20, 24000},
         {QStringLiteral("DSB"), -12000, -10, 10, 12000, 20, 24000}}};
     caps.receiveAudioControl = std::nullopt; // legacy wire mixer path has not migrated
+    caps.receiveAudioExport = std::nullopt; // native DAX export not qualified for this backend
     caps.receivePanCenterControl = std::nullopt; // unknown coverage including transverters
     caps.receivePanBandwidthControl = std::nullopt; // legacy coupled geometry path
     caps.txPowerBands = {};
@@ -436,6 +437,8 @@ RadioCapabilities FlexBackend::capabilities() const
         QStringLiteral("display pan set")};
     // The radio stores a pan's FFT frame rate and reports it on connect.
     caps.panFrameRateShaping = std::nullopt;
+    // Likewise the waterfall line duration: the radio's, never the client's.
+    caps.panWaterfallRateShaping = std::nullopt;
     // A Flex blanks impulses in its OWN DDC, so NB is already the radio's under
     // hasRadioSideDsp above and the host has nothing to add. This flag says
     // where the blanker runs, not whether the radio has one.
@@ -489,6 +492,8 @@ RadioCapabilities FlexBackend::capabilities() const
     caps.voxControl = RadioCapabilities::VoxControl{/*hasDelay*/ true};
     caps.txMonitorControl = RadioCapabilities::TxMonitorControl{};
     caps.lineoutControl = RadioCapabilities::LineoutControl{};
+    // The radio stores "Show TX in Waterfall" and echoes it in transmit status.
+    caps.txWaterfallClientFlag = std::nullopt;
 
     // FALSE, and stated rather than left to the default. A Flex modulates on
     // the radio AND takes its transmit audio over DAX/VITA-49, so it is the one
@@ -709,6 +714,9 @@ ReceiveDispatch FlexBackend::requestSliceAudio(int sliceId, const SliceAudioRequ
 
 ReceiveDispatch FlexBackend::requestSliceSquelch(int sliceId, const SliceSquelchRequest& request)
 {
+    if (request.kind != SliceSquelchRequest::Kind::Manual) {
+        return ReceiveDispatch::Unsupported;
+    }
     if (sliceId < 0 || !request.valid()) {
         return ReceiveDispatch::Unsupported;
     }

@@ -196,7 +196,7 @@ class UlanziDialMapperDialog;
 class EvdevEncoderManager;
 #elif defined(Q_OS_WIN) && defined(HAVE_HIDAPI)
 class UlanziDialWindowsManager;
-#elif defined(Q_OS_MAC)
+#elif defined(Q_OS_MACOS)
 class UlanziDialMacOSManager;
 #else
 class UlanziDialBackend;
@@ -206,7 +206,7 @@ class DvkPanel;
 #ifdef HAVE_RADE
 class RADEEngine;
 #endif
-#if defined(Q_OS_MAC)
+#if defined(Q_OS_MACOS)
 class VirtualAudioBridge;
 using DaxBridge = VirtualAudioBridge;
 #elif defined(HAVE_PIPEWIRE)
@@ -452,10 +452,15 @@ private:
     void handleAudioDeviceListChanged();
     void applyAudioDeviceSelection(const QAudioDevice& inputDevice,
                                    const QAudioDevice& outputDevice,
+                                   AudioDeviceSelection inputSelection,
+                                   AudioDeviceSelection outputSelection,
                                    bool reinitializePcInput);
     void resetMissingAudioDevicesToDefault(bool resetInput,
                                            bool resetOutput,
                                            bool reinitializePcInput);
+    void restorePreferredAudioDevices(const QAudioDevice& inputDevice,
+                                      const QAudioDevice& outputDevice,
+                                      bool reinitializePcInput);
     SliceModel* activeSlice() const;
 
     // Push the connected backend's reported tuning range into one overlay
@@ -858,6 +863,8 @@ private:
     // same commands the live sliders send). Returns how many pans were written.
     int cloneDisplaySettingsToAllPans(PanadapterApplet* source);
     AetherSDR::DeferredSettingsWrites m_pendingDisplayWrites;
+    // The waterfall rate, only where the backend declares the client the owner.
+    bool clientPersistsWaterfallRate() const;
     void scheduleClientWaterfallRateSave(int panIndex, int rate);
     // FFT FPS and the dBm scale, which a Flex stores for a pan and a radio
     // with no display engine does not. Same store and deferral as the
@@ -1522,7 +1529,7 @@ private:
     EvdevEncoderManager*       m_dialBackend{nullptr};
 #elif defined(Q_OS_WIN) && defined(HAVE_HIDAPI)
     UlanziDialWindowsManager*  m_dialBackend{nullptr};
-#elif defined(Q_OS_MAC)
+#elif defined(Q_OS_MACOS)
     UlanziDialMacOSManager*    m_dialBackend{nullptr};
 #else
     UlanziDialBackend*         m_dialBackend{nullptr};
@@ -2250,7 +2257,7 @@ private:
     // mode change) toggled it.
     void reflectWfmButtons(bool on, int sliceId);
 
-#if defined(Q_OS_MAC) || defined(HAVE_PIPEWIRE)
+#if defined(Q_OS_MACOS) || defined(HAVE_PIPEWIRE)
     DaxBridge* m_daxBridge{nullptr};
     QString m_savedMicSelection;  // restore on stopDax
     bool startDax();

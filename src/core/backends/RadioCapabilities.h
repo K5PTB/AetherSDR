@@ -64,6 +64,12 @@ struct ReceiveAudioControl {
     SliceFrequencyControl::Authority authority{SliceFrequencyControl::Authority::Unknown};
     // Both gain (0..100) and mute must act on the shared slice's RX audio.
 };
+// Typed pre-monitor sliceAudioFrameReady export; grants no TX, IQ or control verb.
+struct ReceiveAudioExport {
+    QVector<int> sampleRatesHz;
+    int maximumReceivers = 0;
+};
+
 // Broadcast FM controls are available only when their typed request is supported.
 struct BroadcastFmReceive {
     QVector<int> deemphasisUs;
@@ -112,6 +118,15 @@ struct PanFrameRateShaping {
     // a family's existing settings behavior. No default: an engaging backend
     // must state its own value.
     bool clientPersistsFrameRate;
+};
+
+// The waterfall rate of a pan whose rows this engine paces (Display, Rate).
+// Absent: no owner is declared for it and the client stores nothing (a Flex
+// stores and reports its own line duration).
+struct PanWaterfallRateShaping {
+    // Explicit client persistence owner for the waterfall rate. No default: an
+    // engaging backend must state its own value.
+    bool clientPersistsWaterfallRate;
 };
 
 // Engaged when the backend averages its own pan frames per the operator's FFT
@@ -325,6 +340,8 @@ struct RadioCapabilities {
     std::optional<BackendPanAveraging> backendPanAveraging;
     // See PanFrameRateShaping. Absent = the client keeps no FFT frame rate.
     std::optional<PanFrameRateShaping> panFrameRateShaping;
+    // See PanWaterfallRateShaping. Absent = the client keeps no waterfall rate.
+    std::optional<PanWaterfallRateShaping> panWaterfallRateShaping;
 
     // A backend nobody has read labelled its axis dBm and was consumed as
     // though it meant it. ABSENT KEEPS THAT CLAIM, so this is the legacy shape
@@ -349,6 +366,14 @@ struct RadioCapabilities {
     [[nodiscard]] bool clientPersistsPanFrameRate() const
     {
         return panFrameRateShaping && panFrameRateShaping->clientPersistsFrameRate;
+    }
+
+    // The one predicate for storing and for restoring the waterfall rate.
+    // Absent is "not declared", and an undeclared backend owns nothing here.
+    [[nodiscard]] bool clientPersistsPanWaterfallRate() const
+    {
+        return panWaterfallRateShaping
+            && panWaterfallRateShaping->clientPersistsWaterfallRate;
     }
 
     // The one predicate for storing and for restoring the pan's dBm range. The
@@ -384,6 +409,7 @@ struct RadioCapabilities {
     std::optional<ReceiveModeControl> receiveModeControl;
     std::optional<ReceiveFilterControl> receiveFilterControl;
     std::optional<ReceiveAudioControl> receiveAudioControl;
+    std::optional<ReceiveAudioExport> receiveAudioExport;
     std::optional<BroadcastFmReceive> broadcastFmReceive;
     std::optional<ReceivePanRangeControl> receivePanCenterControl;
     std::optional<ReceivePanRangeControl> receivePanBandwidthControl;
@@ -440,6 +466,26 @@ struct RadioCapabilities {
         bool tunePowerAppliesLive = false;
     };
     std::optional<TransmitDriveControl> transmitDriveControl;
+
+    // "Show TX in Waterfall" on a radio that neither stores nor echoes it.
+    // Absent: `transmit set show_tx_in_waterfall=` and its status echo own the
+    // flag (Flex), or no owner is declared and the client sets and stores
+    // nothing, which is every other family's existing behavior.
+    struct TxWaterfallClientFlag {
+        // Explicit client persistence owner for the flag: RadioModel applies
+        // it with no radio echo, stores it per radio and restores it on
+        // connect. False preserves a family's existing settings behavior. No
+        // default: an engaging backend must state its own value.
+        bool clientPersistsFlag;
+    };
+    std::optional<TxWaterfallClientFlag> txWaterfallClientFlag;
+
+    // The one predicate for the request, its store and the connect-time
+    // restore. Absent is "not declared", and an undeclared backend owns nothing.
+    [[nodiscard]] bool clientPersistsShowTxInWaterfall() const
+    {
+        return txWaterfallClientFlag && txWaterfallClientFlag->clientPersistsFlag;
+    }
 
     // Whether forward-power telemetry needs client-side attack/decay
     // ballistics. True preserves the established Flex presentation. A backend

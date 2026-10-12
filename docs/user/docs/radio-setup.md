@@ -25,6 +25,10 @@ Several menu items open Radio Setup straight at the right page:
 - **Settings → USB Cables...** → USB Cables
 - **Tools → Configure KiwiSDR...** → Antennas
 
+The window has no title bar. Drag any empty part of it to move it, and drag its top or bottom edge to make it taller or shorter; its width is fixed. It reopens at the height and place you left it. Close it with the round **✕** in the top-right corner, **Esc** or **Ctrl+W** (**⌘W** on macOS). It's a window of its own, with its own taskbar entry, so you can minimize it from the taskbar or park it on another monitor. **View → Frameless Window** does not apply to it.
+
+On/off buttons (**Enabled** / **Disabled**) fill green when on. Where you pick one of a set (**DHCP** / **Static**, **Radio Side** / **Client Side**, **CWU** / **CWL**), the chosen one fills cyan. A control the connected radio cannot use is dimmed, never hidden.
+
 ## Finding a setting
 
 Radio Setup is a searchable browser: a categorised tree of pages on the left and the selected page on the right.
@@ -44,7 +48,7 @@ Radio Setup is a searchable browser: a categorised tree of pages on the left and
 |------|----------------|
 | **Radio** | Radio information (serial, hardware version, region, options), identification (model, nickname, callsign), license info and [Firmware Update](./firmware-update.md) |
 | **Network** | The radio's IP address, mask, MAC and gateway; DHCP/static IP configuration; **Advanced**: Enforce Private IP Connections, **Agent Automation (MCP)** (see [Automation Bridge and MCP](./automation-bridge-and-mcp.md)), Network MTU and the VITA-49 RX buffer (see [Low Bandwidth Connections](./low-bandwidth-connections.md)) |
-| **GPS** | Whether a GPS is installed, position, grid, altitude, satellites and lock status. The full dashboard is **Tools → GPS Dashboard...**. See [AetherClock and GPS](./aetherclock-and-gps.md). Hidden on radios without GPS hardware. |
+| **GPS** | Whether a GPS is installed, position, grid, altitude, satellites and lock status. The full dashboard is **Tools → AetherGPS...**. See [AetherClock and GPS](./aetherclock-and-gps.md). Hidden on radios without GPS hardware. |
 | **Calibration** | Host-side frequency calibration in ppb, for radios that cannot calibrate themselves ([Hermes-Lite 2](./hermes-lite-2.md)). Hidden on FlexRadio, which calibrates on the Receive page. |
 | **RTL Receiver** | ppm correction, IQ DC suppression and serial for an [RTL-SDR](./rtl-sdr.md) dongle. Only when one is connected. |
 | **HL2 Hardware** | Board variant, dither, companion filter board, CL1 external 10 MHz reference and tuner for the [Hermes-Lite 2](./hermes-lite-2.md). Only when an HL2 is connected. |
@@ -55,7 +59,7 @@ Radio Setup is a searchable browser: a categorised tree of pages on the left and
 | Page | What it covers |
 |------|----------------|
 | **Audio** | The radio's Line Out, Headphone and Front Speaker outputs; SmartLink audio compression; packet-loss smoothing; PC audio devices, Audio Boost and Audio Buffer; recording. See [Audio Settings](./audio-settings.md). |
-| **Transmit** | TX timings (ACC TX, TX delay, timeout), TX REQ interlock polarity (RCA, Accessory), Max Power, Show TX in Waterfall, Slice/TX Follow, and **TX Band Settings** (per-band RF/tune power, PTT inhibit and interlocks). See [TX Controls](./tx-controls.md). |
+| **Transmit** | TX timings (ACC TX, TX delay, timeout), TX REQ interlock polarity (RCA, Accessory), Max Power, Show TX in Waterfall, Slice/TX Follow, and **TX Band Settings** (per-band RF/tune power, PTT inhibit and interlocks). The Show TX in Waterfall choice is remembered per [Hermes-Lite 2](./hermes-lite-2.md); a FlexRadio owns and reports its setting. See [TX Controls](./tx-controls.md). |
 | **Phone & CW** | Microphone bias and +20 dB boost; CW iambic mode, paddle swap, sideband and CWX sync, and CW decoder RX/TX decode; Digital (RTTY mark default). See [CW Decoder](./cw-decoder.md) and [CWX Panel](./cwx-panel.md). |
 | **Receive** | Frequency offset (GPSDO detection, manual calibration) and the 10 MHz reference source |
 | **Filters** | Voice, CW and Digital filter sharpness (Low Latency ↔ Sharp Filters) with Auto buttons, and **Use Low Latency Filters for Digital Modes** |
@@ -75,7 +79,7 @@ Radio Setup is a searchable browser: a categorised tree of pages on the left and
 
 | Page | What it covers |
 |------|----------------|
-| **Appearance & Behavior** | Slice Letter Display (see [Multi-Flex](./multi-flex.md)), slice colours (see [Slice Colors](./slice-colors.md)), Single-click delay and mouse-wheel behaviour. Themes are under **View → Theme**. See [Themes and Theme Editor](./themes-and-theme-editor.md). |
+| **Appearance & Behavior** | Slice Letter Display (see [Multi-Flex](./multi-flex.md)), slice colors (see [Slice Colors](./slice-colors.md)), Single-Click Delay and mouse-wheel behavior. Themes are under **View → Theme**. See [Themes and Theme Editor](./themes-and-theme-editor.md). |
 | **SmartLink** | Pinned SmartLink certificates. See [SmartLink Setup](./smartlink-setup.md). |
 | **QRZ & Callsigns** | QRZ.com account and lookup cache. See [Callsign Lookup](./callsign-lookup.md). |
 
