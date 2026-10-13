@@ -13,7 +13,7 @@ namespace AetherSDR {
 // puts the radio on the air (measured on a FLEX-6600) — but refusing the
 // recording does not prevent that, because VOX keys on the voice whether or not
 // anything is being recorded. Recording holds VOX off for its duration and
-// restores it instead; see shouldHoldVoxOff() and the controller's guards.
+// restores it instead; see voxHoldForRecording() and the controller's guards.
 //
 // What is left is the mic source. Recording taps what this computer captures,
 // so on a radio that chooses between its own mic inputs the PC has to be the
@@ -33,13 +33,30 @@ inline QString voiceKeyerRecordRefusal(bool hasSelectableMicInputs,
         .arg(micSource.isEmpty() ? QStringLiteral("not set") : micSource);
 }
 
-// Whether recording must hold VOX off. Only a connected radio can be keyed, so
-// a stale flag on a disconnected one is not a reason to touch anything. A
-// restore still waiting on the radio counts as on: it is on its way back, and
-// the model reads off only because the radio has not answered yet.
-inline bool shouldHoldVoxOff(bool radioConnected, bool voxEnabled, bool voxRestorePending)
+// What recording must do about VOX before it starts.
+//
+// Only a connected radio with a VOX AetherSDR controls can be keyed by it, so
+// a stale flag on a disconnected radio, or on one with no VOX at all (the
+// Hermes-Lite 2), is not a reason to touch anything.
+//
+// HoldAndRestore: VOX is on, or a restore is on its way back (the model reads
+// off only because the radio has not answered yet) — turn it off for the
+// recording and give it back afterwards.
+//
+// ConfirmOff: the model says off, but only because it was ASKED to be — an
+// operator's VOX click writes the model before the radio answers, and the
+// radio may answer late or refuse (#6292 review). Ask again and wait for the
+// radio's own answer; it was meant to be off, so nothing is given back.
+enum class VoxHold { None, ConfirmOff, HoldAndRestore };
+
+inline VoxHold voxHoldForRecording(bool radioConnected, bool radioHasVox, bool voxEnabled,
+                                   bool voxRestorePending, bool voxStateConfirmed)
 {
-    return radioConnected && (voxEnabled || voxRestorePending);
+    if (!radioConnected || !radioHasVox)
+        return VoxHold::None;
+    if (voxEnabled || voxRestorePending)
+        return VoxHold::HoldAndRestore;
+    return voxStateConfirmed ? VoxHold::None : VoxHold::ConfirmOff;
 }
 
 }  // namespace AetherSDR

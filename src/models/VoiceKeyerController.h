@@ -88,9 +88,12 @@ private:
     // The keyer a deferral has already been announced for, so a busy keyer's
     // every status tick does not re-announce the same pending change.
     VoiceKeyer* m_deferralAnnounced{nullptr};
-    // True while a recording holds the radio's VOX off, so release puts back
-    // only what this took.
+    // True while a recording holds the radio's VOX off.
     bool m_voxHeldOff{false};
+    // True when this hold turned VOX off and owes it back. False when the hold
+    // only asked the radio to confirm an operator's own VOX-off: the operator
+    // wanted it off, so nothing is put back.
+    bool m_restoreOwed{false};
     // Recording does not start until the radio confirms VOX is off, because
     // asking is not the same as it being off and the operator's voice would
     // key the transmitter in the gap. This bounds the wait.
@@ -103,7 +106,7 @@ private:
     // different mark at restore time means VOX was changed since.
     quint64 m_voxMark{0};
     enum class HoldOutcome { Confirmed, Unconfirmed, Superseded };
-    void beginVoxHold();
+    void beginVoxHold(bool restoreAfter);
     void onVoxAnswered(quint64 ticket, bool on, bool applied, bool current);
     void finishVoxHold(HoldOutcome outcome);
     void releaseVoxHold();

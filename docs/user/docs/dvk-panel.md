@@ -61,7 +61,7 @@ A change made while a recording, playback or preview is running waits for it to 
 
 Recording never transmits. With the local keyer:
 
-- **VOX is held off while you record.** If VOX is on, AetherSDR turns it off before recording starts — only once the radio has confirmed it — so your voice cannot key the transmitter, and turns it back on afterwards. The status line shows `· VOX held off` meanwhile. If you change VOX yourself during the recording, your setting is kept, and turning VOX on stops the recording without saving it.
+- **VOX is held off while you record.** If VOX is on, AetherSDR turns it off before recording starts — only once the radio has confirmed it — so your voice cannot key the transmitter, and turns it back on afterwards. If you have just turned VOX off yourself and the radio has not confirmed it yet, recording asks the radio again and starts once it answers; VOX stays off afterwards. The status line shows `· VOX held off` meanwhile. If you change VOX yourself during the recording, your setting is kept, and turning VOX on stops the recording without saving it. On a radio with no VOX that AetherSDR controls, such as the Hermes-Lite 2, there is nothing to hold.
 - **STOP works while recording is starting.** Pressing STOP before the radio has confirmed VOX is off cancels the recording.
 
 ### Playback (on-air)
@@ -122,14 +122,18 @@ A WAV file copied into the folder under a slot's name appears in that slot the n
 
 ### WAV file requirements
 
-**Import WAV…** converts the file for you, so most WAV files import as they are:
+**Import WAV…** converts the file for you, so most WAV files import as they are. The two keyers accept slightly different files:
 
-- **Encoding:** PCM 8, 16, 24 or 32-bit, or 32-bit float (plain or WAVE_FORMAT_EXTENSIBLE)
-- **Channels:** 1 to 8, mixed down to mono
-- **Sample rate:** 8 kHz to 384 kHz, resampled to 24 kHz
-- **Length:** at most 10 seconds for the Radio DVK, 30 seconds for Local
+| | Radio DVK | Local |
+|---|---|---|
+| **Encoding** | PCM 8, 16, 24 or 32-bit, or 32-bit float | PCM 8, 16, 24 or 32-bit, or 32 or 64-bit float |
+| **Header** | plain or WAVE_FORMAT_EXTENSIBLE | plain or WAVE_FORMAT_EXTENSIBLE |
+| **Channels** | 1 to 8, mixed down to mono | 1 to 8, mixed down to mono |
+| **Sample rate** | 8 kHz to 384 kHz | 8 kHz to 192 kHz |
+| **Length** | at most 10 seconds | at most 30 seconds |
+| **File size** | — | at most 100 MB |
 
-The Radio DVK receives the file as 24 kHz mono 16-bit PCM; a local slot stores it as 24 kHz 16-bit PCM. Files that can't be converted are rejected with a specific error message, such as `Recording is 12.0 s long; a DVK slot holds at most 10 s`.
+Every file is resampled to 24 kHz. The Radio DVK receives it as 24 kHz mono 16-bit PCM; a local slot stores it as 24 kHz 16-bit PCM. Files that can't be converted are rejected with a specific error message, such as `Recording is 12.0 s long; a DVK slot holds at most 10 s`.
 
 ### Status bar indicator
 
@@ -151,10 +155,11 @@ AetherSDR only applies this once the radio positively says no; if the radio neve
 
 ### The DVK indicator is grayed out
 
-The transmit slice is not in a voice mode, or the Radio DVK is selected and the radio reports no SmartSDR+ license.
+The transmit slice is not in a voice mode; or **Radio DVK** is selected and the radio reports no SmartSDR+ license, or has no voice keyer of its own (a Hermes-Lite 2 or Networked Icom radio).
 
 1. Switch the TX slice to a voice mode (USB, LSB, AM, SAM, FM, NFM or DFM).
 2. Hover the indicator. If the tooltip says it requires an active SmartSDR+ subscription, renew SmartSDR+ on the radio, or right-click the indicator and choose **Local — recordings on this computer**.
+3. On a radio with no voice keyer of its own, right-click the indicator, or choose **Settings → Voice Keyer Source...**, and pick **Local — recordings on this computer** or **Automatic by radio licence**.
 
 ### REC says to set the mic source to PC
 

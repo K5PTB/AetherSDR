@@ -29,6 +29,7 @@ void TransmitModel::resetState()
     for (quint64& revision : m_controlIntentRevisions) { ++revision; }
     // A request of the ending session is answered, if at all, by a dead link.
     m_pendingVoxAnswers.clear();
+    m_voxUnconfirmed = true;   // the next radio has not said yet
     cancelPttRelease();
     m_apdEnabled = false;
     m_apdConfigurable = false;
@@ -170,6 +171,8 @@ void TransmitModel::applyChanges(const TransmitDelta& d)
     micChanged |= assign(d.monGainSb, m_monGainSb);
 
     // ── VOX / phone ──
+    // The radio said what VOX is, so the state no longer rests on a request.
+    if (d.voxEnable) { m_voxUnconfirmed = false; }
     phoneChanged |= assign(d.voxEnable, m_voxEnable);
     phoneChanged |= assign(d.voxLevel, m_voxLevel);
     phoneChanged |= assign(d.voxDelay, m_voxDelay);
@@ -862,6 +865,8 @@ void TransmitModel::setVoxEnable(bool on)
     const auto field = TransmitControlRequest::Field::VoxEnabled;
     const auto current = captureControlIntent(field);
     m_voxEnable = on;  // optimistic update — radio may not echo
+    // ...so until the radio confirms it, the model says what was ASKED for.
+    m_voxUnconfirmed = true;
     emit phoneStateChanged();
     if (!current()) { return; }
     emit controlRequested({field, VoxSetting{m_voxEnable, m_voxLevel, m_voxDelay}});
@@ -893,9 +898,12 @@ void TransmitModel::handleControlAnswer(quint64 ticket, bool applied)
         TransmitControlRequest::Field::VoxEnabled)] == pending.revision;
     // Only the latest intent may write the model: an answer to a superseded
     // request describes a VOX state the radio has since been asked to leave.
-    if (applied && current && m_voxEnable != pending.on) {
-        m_voxEnable = pending.on;
-        emit phoneStateChanged();
+    if (applied && current) {
+        m_voxUnconfirmed = false;
+        if (m_voxEnable != pending.on) {
+            m_voxEnable = pending.on;
+            emit phoneStateChanged();
+        }
     }
     emit voxEnableAnswered(ticket, pending.on, applied, current);
 }

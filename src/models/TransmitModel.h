@@ -416,6 +416,13 @@ public:
     // Changes whenever VOX is asked to change, by anyone, and when a session
     // ends. A caller that changed VOX on the operator's behalf compares it
     // before putting VOX back, so a change the operator made since wins.
+    // Whether voxEnable() is what the radio has said — in a status, or in its
+    // answer to requestVoxEnable() — rather than what was last asked for.
+    // setVoxEnable() is optimistic: it writes the model at once and the radio
+    // may answer late, or refuse, and a FLEX-6500 never repeats vox_enable in
+    // a status, so a caller that must know VOX is really off (recording) asks
+    // the radio again while this is false.
+    bool voxStateConfirmed() const { return !m_voxUnconfirmed; }
     quint64 voxIntentMark() const
     {
         return m_controlIntentRevisions[static_cast<size_t>(TransmitControlRequest::Field::VoxEnabled)];
@@ -589,6 +596,8 @@ private:
     struct PendingVoxAnswer { bool on; quint64 revision; };
     QHash<quint64, PendingVoxAnswer> m_pendingVoxAnswers;
     quint64 m_lastAnswerTicket{0};
+    // See voxStateConfirmed(). Unconfirmed until the radio first reports VOX.
+    bool m_voxUnconfirmed{true};
     static ATUStatus parseAtuTuneStatus(const QString& s);
     bool isPhoneModeForQuindar() const;
     bool runPttPreflight(PttSource source, bool resyncMoxOnBlock = true);

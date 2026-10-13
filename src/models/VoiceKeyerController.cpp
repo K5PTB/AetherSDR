@@ -13,6 +13,8 @@
 #include "models/VoiceKeyer.h"
 #include "models/VoiceKeyerRecordGate.h"
 
+#include <utility>
+
 namespace AetherSDR {
 
 VoiceKeyerController::VoiceKeyerController(RadioModel& radio,
@@ -55,14 +57,16 @@ VoiceKeyerController::VoiceKeyerController(RadioModel& radio,
 
     m_local->setRecordGuards(
         [this]() -> bool {
-            // A restore still in flight is VOX on its way back on: the model
-            // reads off until the radio answers, but the operator's voice would
-            // key the radio the moment it lands.
-            if (!shouldHoldVoxOff(m_radio.isConnected(),
-                                  m_radio.transmitModel().voxEnable(),
-                                  m_restoreTicket != 0))
+            // A restore still in flight is VOX on its way back on, and an
+            // operator's VOX-off the radio has not answered is only a request:
+            // in both the model reads off while the radio may not be.
+            const auto& tx = m_radio.transmitModel();
+            const VoxHold hold = voxHoldForRecording(
+                m_radio.isConnected(), m_radio.backendCapabilities().voxControl.has_value(),
+                tx.voxEnable(), m_restoreTicket != 0, tx.voxStateConfirmed());
+            if (hold == VoxHold::None)
                 return true;   // nothing to hold, so nothing to wait for
-            beginVoxHold();
+            beginVoxHold(hold == VoxHold::HoldAndRestore);
             return false;      // recording waits for the radio's answer
         },
         [this] { releaseVoxHold(); });
@@ -111,8 +115,9 @@ VoiceKeyerController::~VoiceKeyerController() = default;
 //
 // The answer is matched by ticket, never by its value: an operator's own VOX
 // click is answered too, and an answer to VOX ON must never start a recording.
-void VoiceKeyerController::beginVoxHold()
+void VoiceKeyerController::beginVoxHold(bool restoreAfter)
 {
+    m_restoreOwed = restoreAfter;
     m_voxHeldOff = true;
     emit voxHeldOffChanged(true);
     auto& tx = m_radio.transmitModel();
@@ -151,6 +156,7 @@ void VoiceKeyerController::finishVoxHold(HoldOutcome outcome)
     m_voxHeldOff = false;
     emit voxHeldOffChanged(false);
     if (outcome == HoldOutcome::Superseded) {
+        m_restoreOwed = false;
         // VOX was changed while the radio was answering, so the answer no
         // longer says whether it is off — and the change is the operator's to
         // keep, not this hold's to undo.
@@ -161,7 +167,8 @@ void VoiceKeyerController::finishVoxHold(HoldOutcome outcome)
     }
     // The radio never said VOX was off, so recording would run with the
     // transmitter still armed. Put back what was asked for and say why.
-    restoreVox();
+    if (std::exchange(m_restoreOwed, false))
+        restoreVox();
     m_local->onRecordHoldFailed(
         QStringLiteral("The radio did not confirm VOX is off, so recording would put it "
                        "on the air — turn VOX off on the radio and try again."));
@@ -176,7 +183,8 @@ void VoiceKeyerController::releaseVoxHold()
     m_voxConfirmTimer.stop();
     m_holdTicket = 0;
     m_voxHeldOff = false;
-    restoreVox();
+    if (std::exchange(m_restoreOwed, false))
+        restoreVox();
     emit voxHeldOffChanged(false);
 }
 
@@ -193,14 +201,16 @@ void VoiceKeyerController::restoreVox()
 }
 
 // While a recording runs under the hold, VOX coming back on — the operator's
-// click, or another client's — would key the radio on the operator's voice.
-// The recording cannot be made safe again, so it ends, unsaved, and VOX is
-// left as whoever turned it on wanted it.
+// click, or a status that reports it on — would key the radio on the operator's
+// voice. The recording cannot be made safe again, so it ends, unsaved, and VOX
+// is left as whoever turned it on wanted it. (A FLEX-6500 does not repeat
+// vox_enable in a status, so another client's change may never reach here.)
 void VoiceKeyerController::checkVoxStillHeld()
 {
     if (!m_voxHeldOff || m_holdTicket != 0 || !m_radio.transmitModel().voxEnable())
         return;
     m_voxHeldOff = false;
+    m_restoreOwed = false;
     emit voxHeldOffChanged(false);
     m_local->abandonRecording(
         QStringLiteral("VOX was turned on during the recording, which would key the radio, "

@@ -74,6 +74,7 @@ public:
     explicit RecordingBackend(QStringList& record) : wire(&record)
     {
         caps.canTransmit = true;
+        caps.voxControl = RadioCapabilities::VoxControl{/*hasDelay*/ true};   // as on a Flex
     }
     RadioCapabilities capabilities() const override { return caps; }
     bool isConnected() const override { return connected; }
@@ -293,6 +294,73 @@ int main(int argc, char** argv)
                    && b.failures.size() == 1
                    && b.failures[0].contains(QLatin1String("did not confirm")),
                b.failures.join(" | ").toStdString());
+    }
+
+    // ── VOX turned off by the operator, REC pressed before the radio answers ─
+    // (#6292 re-review.) setVoxEnable(false) writes the model at once and sends
+    // an unticketed request, so the model reads off before the radio has said
+    // so — and the radio may answer late or refuse. Recording asks again with
+    // its own ticket and waits; off is what the operator wanted, so nothing is
+    // put back afterwards.
+    {
+        Bench b;
+        b.radioReportsVox(true);
+        b.radio.transmitModel().setVoxEnable(false);   // the operator's click
+        const int afterClick = b.voxRequests();
+        const bool clickUnticketed = afterClick == 1 && b.backend->lastTicket() == 0;
+        b.keyer()->recStart(1);
+        const quint64 confirm = b.backend->lastTicket();
+        const bool askedAgain = b.voxRequests() == 2 && confirm != 0 && !b.backend->lastAskedOn();
+        const bool waits = b.keyer()->status() == VoiceKeyer::Idle && !b.keyer()->canStartOperation();
+        b.backend->answer(confirm, true);
+        spin();
+        const bool records = b.keyer()->status() == VoiceKeyer::Recording;
+        b.keyer()->recStop(1);
+        spin();
+        report("rec_after_an_unanswered_operator_vox_off_confirms_it_first",
+               clickUnticketed && askedAgain && waits && records
+                   && b.voxRequests() == 2   // no restore: off was wanted
+                   && !b.radio.transmitModel().voxEnable(),
+               b.wire.join(",").toStdString());
+    }
+
+    // ...and when the radio refuses that VOX-off, recording does not start.
+    {
+        Bench b;
+        b.radioReportsVox(true);
+        b.radio.transmitModel().setVoxEnable(false);
+        b.keyer()->recStart(1);
+        b.backend->answer(b.backend->lastTicket(), false);
+        spin();
+        report("a_refused_vox_off_refuses_the_recording",
+               b.keyer()->status() == VoiceKeyer::Idle && b.keyer()->canStartOperation()
+                   && b.failures.size() == 1 && b.failures[0].contains(QLatin1String("did not confirm"))
+                   && b.voxRequests() == 2,   // and nothing switched VOX on
+               (b.failures.join(" | ") + QStringLiteral(" wire=") + b.wire.join(",")).toStdString());
+    }
+
+    // VOX the radio has reported off needs no round trip at all.
+    {
+        Bench b;
+        b.radioReportsVox(false);
+        b.keyer()->recStart(1);
+        report("a_radio_reported_vox_off_records_at_once",
+               b.keyer()->status() == VoiceKeyer::Recording && b.voxRequests() == 0,
+               b.wire.join(",").toStdString());
+        b.keyer()->recStop(1);
+    }
+
+    // A radio with no VOX AetherSDR controls (the Hermes-Lite 2) cannot be
+    // keyed by VOX, so recording neither holds nor asks, whatever the flag says.
+    {
+        Bench b;
+        b.backend->caps.voxControl = std::nullopt;
+        b.radioReportsVox(true);
+        b.keyer()->recStart(1);
+        report("a_radio_without_vox_records_without_a_hold",
+               b.keyer()->status() == VoiceKeyer::Recording && b.voxRequests() == 0,
+               b.wire.join(",").toStdString());
+        b.keyer()->recStop(1);
     }
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);
