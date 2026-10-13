@@ -7402,6 +7402,14 @@ target_include_directories(voice_keyer_controller_test PRIVATE src tests)
 target_link_libraries(voice_keyer_controller_test PRIVATE aethercore Qt6::Core Qt6::Test)
 add_test(NAME voice_keyer_controller_test COMMAND voice_keyer_controller_test)
 
+# The voice keyer's VOX hold and its disconnect unkey, driven through the real
+# controller, TransmitModel and RadioModel with a recording backend (#6292
+# review). Socket-free; AudioEngine is constructed but never started.
+add_executable(voice_keyer_radio_test tests/voice_keyer_radio_test.cpp)
+target_include_directories(voice_keyer_radio_test PRIVATE src tests)
+target_link_libraries(voice_keyer_radio_test PRIVATE aethercore Qt6::Core)
+add_test(NAME voice_keyer_radio_test COMMAND voice_keyer_radio_test)
+
 # Socket-free: inject PCM into AudioEngine, collect its output signals only.
 add_executable(tx_audio_context_test tests/tx_audio_context_test.cpp)
 target_include_directories(tx_audio_context_test PRIVATE src)

@@ -103,6 +103,16 @@ void LocalVoiceKeyer::onRecordHoldFailed(const QString& reason)
     refuse(QStringLiteral("rec_start"), id, reason);
 }
 
+void LocalVoiceKeyer::abandonRecording(const QString& reason)
+{
+    if (m_status != Recording)
+        return;
+    const int slot = m_activeId;
+    m_recordBuffer.clear();
+    setStatus(Idle, -1);
+    refuse(QStringLiteral("rec_stop"), slot, reason);
+}
+
 void LocalVoiceKeyer::refuse(const QString& verb, int id, const QString& message)
 {
     emit commandFailed(verb, id, 0, message);
@@ -175,6 +185,16 @@ void LocalVoiceKeyer::onMicPcm(const QByteArray& int16Stereo, TxAudioSource sour
 void LocalVoiceKeyer::recStop(int id)
 {
     Q_UNUSED(id);  // the slot being recorded is the one that stops
+    if (m_awaitingHoldSlot >= 0) {
+        // STOP before the radio answered: the recording is abandoned, and a
+        // late answer finds nothing waiting. The hold has asked the radio for
+        // something, so the release still runs to put it back.
+        m_awaitingHoldSlot = -1;
+        emit admissionChanged();
+        if (m_releaseAfterRecording)
+            m_releaseAfterRecording();
+        return;
+    }
     if (m_status != Recording)
         return;
     const int slot = m_activeId;

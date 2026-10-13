@@ -25,6 +25,11 @@
 
 using namespace AetherSDR;
 
+// The local slot cap is a documented, deliberate 30 s (docs/user/docs/dvk-panel.md
+// and the #6292 PR body). Change those together with the constant.
+static_assert(LocalVoiceKeyerStore::kMaxDurationMs == 30'000,
+              "the local voice keyer's 30 s slot cap is documented; update the docs with it");
+
 namespace {
 
 int g_failed = 0;
@@ -370,6 +375,8 @@ int main(int argc, char** argv)
         heard.failures.clear();
         const QString slot5 = LocalVoiceKeyerStore(recDir).slotPath(5);
         const bool wrote = writeMonoWav48k(slot5, LocalVoiceKeyerStore::kMaxDurationMs + 1000);
+        const QString overLength =
+            QStringLiteral("%1 seconds").arg((LocalVoiceKeyerStore::kMaxDurationMs + 1000) / 1000);
         keyer.reload();
         const int seen = keyer.recordings()[4].durationMs;
 
@@ -387,8 +394,8 @@ int main(int argc, char** argv)
                                  && route.calls.isEmpty() && route.sent.isEmpty()
                                  && heard.failures.size() == 1
                                  && heard.failures[0].startsWith("playback_start 5")
-                                 && heard.failures[0].contains("61 seconds")
-                                 && heard.failures[0].contains("limit is 60");
+                                 && heard.failures[0].contains(overLength)
+                                 && heard.failures[0].contains(QStringLiteral("limit is %1").arg(LocalVoiceKeyerStore::kMaxDurationMs / 1000));
         keyer.setTransmitter(nullptr);
 
         keyer.setPreviewHandlers([](const QString&, QString&) { return true; }, [] {});
@@ -396,7 +403,7 @@ int main(int argc, char** argv)
         const bool previewRefused = keyer.status() == VoiceKeyer::Idle
                                     && heard.failures.size() == 2
                                     && heard.failures[1].startsWith("preview_start 5")
-                                    && heard.failures[1].contains("61 seconds");
+                                    && heard.failures[1].contains(overLength);
         report("over_length_drop_in_is_refused_at_play_and_preview",
                wrote && seen > LocalVoiceKeyerStore::kMaxDurationMs && playRefused
                    && previewRefused,
@@ -434,7 +441,7 @@ int main(int argc, char** argv)
     // The radio's VOX is held off for the duration of a recording: the hold
     // runs BEFORE the keyer is recording, so the hold is in flight to the radio
     // before any microphone audio can reach the tap, and the release runs on the
-    // way out — including when the 60 s cap ends the recording rather than STOP.
+    // way out — including when the 30 s cap ends the recording rather than STOP.
     {
         QStringList guards;
         // What the keyer's status was when the hold ran. Idle means the hold
@@ -539,6 +546,23 @@ int main(int argc, char** argv)
         waiting.onRecordHoldFailed(QStringLiteral("late"));
         report("answers_after_the_wait_is_over_are_ignored",
                waiting.status() == VoiceKeyer::Idle && heardWaiting.failures.isEmpty());
+
+        // STOP while the radio has not answered yet (#6292 review). The panel's
+        // STOP reaches the waiting recording through pendingOperation(), the
+        // wait is abandoned, the release puts back what the hold asked for, and
+        // the answer arriving afterwards does not start a recording.
+        guards.clear();
+        waiting.recStart(4);
+        const bool stopReachesIt = waiting.pendingOperation() == VoiceKeyer::Recording;
+        waiting.recStop(4);
+        const bool freed = waiting.canStartOperation()
+                           && waiting.pendingOperation() == VoiceKeyer::Unknown;
+        waiting.onRecordHoldReady();
+        report("stop_cancels_a_recording_waiting_on_its_hold",
+               stopReachesIt && freed && waiting.status() == VoiceKeyer::Idle
+                   && guards == QStringList({QStringLiteral("hold"), QStringLiteral("release")}),
+               QString("pending=%1 status=%2 guards=%3").arg(stopReachesIt).arg(int(waiting.status()))
+                   .arg(guards.join(",")).toStdString());
     }
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);

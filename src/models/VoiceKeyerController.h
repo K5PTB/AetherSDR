@@ -95,10 +95,20 @@ private:
     // asking is not the same as it being off and the operator's voice would
     // key the transmitter in the gap. This bounds the wait.
     QTimer m_voxConfirmTimer;
-    QMetaObject::Connection m_voxConfirmWatch;
+    // The VOX-off request the hold is waiting on, and the VOX-on restore still
+    // unanswered; 0 for none. Answers are matched to these, never by value.
+    quint64 m_holdTicket{0};
+    quint64 m_restoreTicket{0};
+    // TransmitModel::voxIntentMark() just after the hold asked for VOX off. A
+    // different mark at restore time means VOX was changed since.
+    quint64 m_voxMark{0};
+    enum class HoldOutcome { Confirmed, Unconfirmed, Superseded };
     void beginVoxHold();
-    void finishVoxHold(bool confirmed);
+    void onVoxAnswered(quint64 ticket, bool on, bool applied, bool current);
+    void finishVoxHold(HoldOutcome outcome);
+    void releaseVoxHold();
     void restoreVox();
+    void checkVoxStillHeld();
 };
 
 }  // namespace AetherSDR

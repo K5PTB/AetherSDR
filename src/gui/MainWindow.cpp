@@ -10791,6 +10791,14 @@ void MainWindow::updateKeyerAvailability()
                                         && m_radioModel.hasCwTextStoredMacros());
     }
     if (m_dvkPanel) m_dvkPanel->setShortcutsEnabled(dvkAvailable);
+    // The local keyer is verified on FlexRadio; on a radio with no voice keyer
+    // of its own (Hermes-Lite 2, Icom, ...) it is Beta until those radios have
+    // been tested on the air. hasVoiceKeyer() is permissive while disconnected,
+    // so the word appears only once such a radio is actually connected.
+    if (m_dvkPanel) {
+        m_dvkPanel->setSourceQualifier(voiceKeyerSource() == VoiceKeyerSource::Local && !hasVoiceKeyer
+                                           ? QStringLiteral("Beta") : QString());
+    }
 
     // Only auto-hide an open panel when a TX slice *exists* and is in the wrong
     // mode (a deliberate mode change).  A momentary "no TX slice" — during a TX

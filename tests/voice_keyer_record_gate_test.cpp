@@ -64,16 +64,22 @@ int main()
     // being recorded or not — so recording holds VOX off instead. A gate that
     // refused here would leave the hazard in place and block recording too.
     report("vox_is_held_off_not_refused",
-           shouldHoldVoxOff(true, true)
+           shouldHoldVoxOff(true, true, false)
                && voiceKeyerRecordRefusal(true, kPc).isEmpty()
                && voiceKeyerRecordRefusal(false, QString()).isEmpty());
 
     // Nothing to hold when VOX is off.
-    report("vox_off_needs_no_hold", !shouldHoldVoxOff(true, false));
+    report("vox_off_needs_no_hold", !shouldHoldVoxOff(true, false, false));
 
     // A radio that is not connected cannot be keyed, so a stale VOX flag is not
     // a reason to send it commands.
-    report("disconnected_radio_is_left_alone", !shouldHoldVoxOff(false, true));
+    report("disconnected_radio_is_left_alone",
+           !shouldHoldVoxOff(false, true, false) && !shouldHoldVoxOff(false, false, true));
+
+    // The previous recording's VOX restore has not been answered yet: the model
+    // still reads off, but VOX is on its way back on, so the next recording
+    // holds it again rather than recording into a radio about to key (#6292).
+    report("restore_in_flight_is_held_like_vox_on", shouldHoldVoxOff(true, false, true));
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);
     return g_failed ? 1 : 0;

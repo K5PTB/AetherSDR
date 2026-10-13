@@ -235,8 +235,8 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
     m_recBtn = new QPushButton(QString::fromUtf8("\u25CF REC"));
     m_recBtn->setObjectName(QStringLiteral("dvkRecord"));
     m_recBtn->setAccessibleName(QStringLiteral("Record"));
-    m_recBtn->setAccessibleDescription(
-        QStringLiteral("Records your transmit audio into the selected slot, up to 10 seconds. Does not transmit."));
+    // Its accessible description names the bound keyer's own limit, so
+    // refreshFromKeyer() writes it.
     m_recBtn->setCheckable(true);
     btnRow->addWidget(m_recBtn);
 
@@ -357,6 +357,12 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
     // must run after that timer exists. It is what puts the keyer's source in
     // the title and its recordings in the rows on a freshly built panel.
     refreshFromKeyer();
+}
+
+QString DvkPanel::recordDescription(int maxRecordingMs)
+{
+    return QStringLiteral("Records your transmit audio into the selected slot, up to %1 "
+                          "seconds. Does not transmit.").arg(maxRecordingMs / 1000);
 }
 
 QString DvkPanel::verbLabel(const QString& verb)
@@ -744,10 +750,23 @@ void DvkPanel::setKeyer(VoiceKeyer* keyer)
     refreshFromKeyer();
 }
 
+void DvkPanel::setSourceQualifier(const QString& text)
+{
+    if (text == m_sourceQualifier) {
+        return;
+    }
+    m_sourceQualifier = text;
+    refreshFromKeyer();
+}
+
 void DvkPanel::refreshFromKeyer()
 {
     m_titleLabel->setText(QStringLiteral("Digital Voice Keyer (%1)")
-                              .arg(m_model->sourceLabel()));
+                              .arg(m_sourceQualifier.isEmpty()
+                                       ? m_model->sourceLabel()
+                                       : m_model->sourceLabel() + QStringLiteral(" · ")
+                                             + m_sourceQualifier));
+    m_recBtn->setAccessibleDescription(recordDescription(m_model->maxRecordingMs()));
     for (int id = 1; id <= 12; ++id) {
         onRecordingChanged(id);
     }

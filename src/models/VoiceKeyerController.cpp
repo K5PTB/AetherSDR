@@ -37,23 +37,35 @@ VoiceKeyerController::VoiceKeyerController(RadioModel& radio,
     // safe, and the radio gets its setting back when the recording ends.
     m_voxConfirmTimer.setSingleShot(true);
     m_voxConfirmTimer.setInterval(3000);
-    connect(&m_voxConfirmTimer, &QTimer::timeout, this, [this] { finishVoxHold(false); });
+    connect(&m_voxConfirmTimer, &QTimer::timeout, this, [this] {
+        finishVoxHold(HoldOutcome::Unconfirmed);
+    });
+    auto& tx = m_radio.transmitModel();
+    connect(&tx, &TransmitModel::voxEnableAnswered, this, &VoiceKeyerController::onVoxAnswered);
+    connect(&tx, &TransmitModel::phoneStateChanged, this, &VoiceKeyerController::checkVoxStillHeld);
+    connect(&m_radio, &RadioModel::connectionStateChanged, this, [this](bool connected) {
+        if (connected)
+            return;
+        // Nothing can be put back on a radio that is gone; and an answer the
+        // dead link still owes will not come.
+        m_restoreTicket = 0;
+        if (m_holdTicket != 0)
+            finishVoxHold(HoldOutcome::Unconfirmed);
+    });
 
     m_local->setRecordGuards(
         [this]() -> bool {
+            // A restore still in flight is VOX on its way back on: the model
+            // reads off until the radio answers, but the operator's voice would
+            // key the radio the moment it lands.
             if (!shouldHoldVoxOff(m_radio.isConnected(),
-                                  m_radio.transmitModel().voxEnable()))
+                                  m_radio.transmitModel().voxEnable(),
+                                  m_restoreTicket != 0))
                 return true;   // nothing to hold, so nothing to wait for
             beginVoxHold();
             return false;      // recording waits for the radio's answer
         },
-        [this] {
-            if (!m_voxHeldOff)
-                return;
-            m_voxHeldOff = false;
-            restoreVox();
-            emit voxHeldOffChanged(false);
-        });
+        [this] { releaseVoxHold(); });
     m_local->setPreviewHandlers(
         [this](const QString& path, QString& error) { return m_player->play(path, error); },
         [this] { m_player->stop(); });
@@ -96,51 +108,103 @@ VoiceKeyerController::~VoiceKeyerController() = default;
 // but not VOX. Watching for a status change therefore waits forever. The
 // reply's code is the radio's own answer, which is what Principle II asks for;
 // the timer is only a backstop for a radio that never replies at all.
+//
+// The answer is matched by ticket, never by its value: an operator's own VOX
+// click is answered too, and an answer to VOX ON must never start a recording.
 void VoiceKeyerController::beginVoxHold()
 {
     m_voxHeldOff = true;
     emit voxHeldOffChanged(true);
-    connect(&m_radio, &RadioModel::connectionStateChanged, this, [this](bool connected) {
-        if (!connected && m_voxConfirmTimer.isActive())
-            finishVoxHold(false);
-    });
     auto& tx = m_radio.transmitModel();
-    m_voxConfirmWatch = connect(&tx, &TransmitModel::voxEnableAcknowledged, this,
-                                [this](bool applied) {
-        if (m_voxConfirmTimer.isActive())
-            finishVoxHold(applied);
-    });
+    m_holdTicket = tx.requestVoxEnable(false);
+    m_voxMark = tx.voxIntentMark();
     m_voxConfirmTimer.start();
-    tx.requestVoxEnable(false);
 }
 
-// Put VOX back the way the operator had it, and reflect it only once the radio
-// has agreed — the same reason beginVoxHold() holds the reply.
-void VoiceKeyerController::restoreVox()
+void VoiceKeyerController::onVoxAnswered(quint64 ticket, bool on, bool applied, bool current)
 {
-    m_radio.transmitModel().requestVoxEnable(true);
+    if (ticket == 0)
+        return;
+    if (ticket == m_restoreTicket) {
+        m_restoreTicket = 0;
+        return;
+    }
+    if (ticket != m_holdTicket)
+        return;   // somebody else's VOX change, or a wait already given up
+    if (applied && current && !on) {
+        finishVoxHold(HoldOutcome::Confirmed);
+    } else if (!current) {
+        finishVoxHold(HoldOutcome::Superseded);
+    } else {
+        finishVoxHold(HoldOutcome::Unconfirmed);
+    }
 }
 
-void VoiceKeyerController::finishVoxHold(bool confirmed)
+void VoiceKeyerController::finishVoxHold(HoldOutcome outcome)
 {
     m_voxConfirmTimer.stop();
-    if (m_voxConfirmWatch) {
-        disconnect(m_voxConfirmWatch);
-        m_voxConfirmWatch = {};
-    }
-    if (confirmed) {
+    m_holdTicket = 0;
+    if (outcome == HoldOutcome::Confirmed) {
         m_local->onRecordHoldReady();
+        return;
+    }
+    m_voxHeldOff = false;
+    emit voxHeldOffChanged(false);
+    if (outcome == HoldOutcome::Superseded) {
+        // VOX was changed while the radio was answering, so the answer no
+        // longer says whether it is off — and the change is the operator's to
+        // keep, not this hold's to undo.
+        m_local->onRecordHoldFailed(
+            QStringLiteral("VOX was changed while recording was starting, so recording did "
+                           "not start — try again."));
         return;
     }
     // The radio never said VOX was off, so recording would run with the
     // transmitter still armed. Put back what was asked for and say why.
-    m_voxHeldOff = false;
-    emit voxHeldOffChanged(false);
-    if (m_radio.isConnected())
-        restoreVox();
+    restoreVox();
     m_local->onRecordHoldFailed(
         QStringLiteral("The radio did not confirm VOX is off, so recording would put it "
                        "on the air — turn VOX off on the radio and try again."));
+}
+
+// The recording ended, or STOP abandoned it while the radio was still
+// answering: give the operator's VOX back. A late answer then finds no hold.
+void VoiceKeyerController::releaseVoxHold()
+{
+    if (!m_voxHeldOff)
+        return;
+    m_voxConfirmTimer.stop();
+    m_holdTicket = 0;
+    m_voxHeldOff = false;
+    restoreVox();
+    emit voxHeldOffChanged(false);
+}
+
+// Put VOX back the way the operator had it, unless VOX has been asked to
+// change since this hold took it: that change is newer than the hold, so it
+// stands. The radio's answer is tracked, so a REC started before it arrives
+// holds again instead of reading the model's stale "off".
+void VoiceKeyerController::restoreVox()
+{
+    auto& tx = m_radio.transmitModel();
+    if (!m_radio.isConnected() || tx.voxIntentMark() != m_voxMark)
+        return;
+    m_restoreTicket = tx.requestVoxEnable(true);
+}
+
+// While a recording runs under the hold, VOX coming back on — the operator's
+// click, or another client's — would key the radio on the operator's voice.
+// The recording cannot be made safe again, so it ends, unsaved, and VOX is
+// left as whoever turned it on wanted it.
+void VoiceKeyerController::checkVoxStillHeld()
+{
+    if (!m_voxHeldOff || m_holdTicket != 0 || !m_radio.transmitModel().voxEnable())
+        return;
+    m_voxHeldOff = false;
+    emit voxHeldOffChanged(false);
+    m_local->abandonRecording(
+        QStringLiteral("VOX was turned on during the recording, which would key the radio, "
+                       "so the recording was stopped and not saved."));
 }
 
 void VoiceKeyerController::wireTransmitter()

@@ -55,8 +55,8 @@ public:
 
     QString sourceLabel() const override { return QStringLiteral("Local"); }
 
-    // A local recording may run to the store's cap — 60 s, against the radio
-    // DVK's 10 s. The panel reads this rather than a shared constant, so its
+    // A local recording may run to the store's cap — 30 s, against the radio
+    // DVK's 10 s (see LocalVoiceKeyerStore::kMaxDurationMs for why 30). The panel reads this rather than a shared constant, so its
     // progress bar and "x of y" readout follow whichever keyer is bound.
     int maxRecordingMs() const override { return LocalVoiceKeyerStore::kMaxDurationMs; }
     // Matches the radio's limit on purpose: a slot name typed under one keyer
@@ -92,14 +92,26 @@ public:
 
     // The hold that answered false has succeeded, or has given up. Recording
     // starts, or is refused with the reason. Both are no-ops once the operator
-    // has cancelled the wait.
+    // has cancelled the wait with recStop(), which runs the release so the
+    // radio side undoes what the hold asked for.
     void onRecordHoldReady();
     void onRecordHoldFailed(const QString& reason);
+    // The hold could not be kept while recording (VOX came back on), so the
+    // take is discarded rather than saved, and the reason is reported. The
+    // release still runs on the way out of Recording.
+    void abandonRecording(const QString& reason);
 
     // False while a recording is waiting on its hold, as well as while one is
     // running: the operation is already the operator's, and a second start
     // would race it.
     bool canStartOperation() const override;
+    // A recording waiting on its hold is the operation STOP must reach: the
+    // status is still Idle, so without this the panel's STOP has nothing to
+    // stop and the recording starts anyway once the radio answers.
+    Status pendingOperation() const override
+    {
+        return m_awaitingHoldSlot >= 0 ? Recording : Unknown;
+    }
 
     // On-air playback. Without one, PLAY refuses and says so.
     void setTransmitter(GeneratedAudioTransmitter* transmitter);

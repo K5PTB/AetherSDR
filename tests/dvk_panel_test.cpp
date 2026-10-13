@@ -59,7 +59,8 @@ public:
     QString sourceLabel() const override { return label; }
     // The panel reads its recording cap and name limit from the keyer, so a
     // fake states its own; 10 s matches the radio DVK's.
-    int maxRecordingMs() const override { return 10'000; }
+    int maxMs{10'000};
+    int maxRecordingMs() const override { return maxMs; }
     int maxNameBytes() const override { return 61; }
 
     void addRecording(int id, const QString& name, int ms)
@@ -263,8 +264,16 @@ int main(int argc, char** argv)
     // Switching keyers re-reads everything and cuts the old keyer off.
     FakeKeyer local;
     local.label = QStringLiteral("Local");
+    local.maxMs = 30'000;
     local.recs.append({4, QStringLiteral("Local CQ"), 2500});
+    const QString radioRecDescription = rec->accessibleDescription();
     panel.setKeyer(&local);
+    // REC tells a screen reader the bound keyer's own limit, not the radio
+    // DVK's 10 s whatever is bound.
+    report("rec_description_names_the_bound_keyers_limit",
+           radioRecDescription.contains(QLatin1String("up to 10 seconds"))
+               && rec->accessibleDescription().contains(QLatin1String("up to 30 seconds")),
+           (radioRecDescription + QStringLiteral(" | ") + rec->accessibleDescription()).toStdString());
     const bool titleOk = labelWithText(panel, QStringLiteral("Digital Voice Keyer (Local)")) != nullptr;
     const bool rowsOk = labelWithText(panel, QStringLiteral("Local CQ")) != nullptr
                         && labelWithText(panel, QStringLiteral("CQ")) == nullptr;
@@ -276,6 +285,13 @@ int main(int argc, char** argv)
            titleOk && rowsOk && oldCutOff && keyer.calls.isEmpty()
                && local.calls == QStringList{"playbackStart 4"},
            joined(local.calls));
+
+    // The local keyer on a radio it is not yet verified on says so in the title.
+    panel.setSourceQualifier(QStringLiteral("Beta"));
+    const bool betaShown = labelWithText(panel, QString::fromUtf8("Digital Voice Keyer (Local · Beta)")) != nullptr;
+    panel.setSourceQualifier(QString());
+    report("title_carries_a_beta_qualifier_and_drops_it",
+           betaShown && labelWithText(panel, QStringLiteral("Digital Voice Keyer (Local)")) != nullptr);
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);
     return g_failed ? 1 : 0;

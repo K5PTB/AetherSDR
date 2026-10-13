@@ -34,10 +34,12 @@ inline QString voiceKeyerRecordRefusal(bool hasSelectableMicInputs,
 }
 
 // Whether recording must hold VOX off. Only a connected radio can be keyed, so
-// a stale flag on a disconnected one is not a reason to touch anything.
-inline bool shouldHoldVoxOff(bool radioConnected, bool voxEnabled)
+// a stale flag on a disconnected one is not a reason to touch anything. A
+// restore still waiting on the radio counts as on: it is on its way back, and
+// the model reads off only because the radio has not answered yet.
+inline bool shouldHoldVoxOff(bool radioConnected, bool voxEnabled, bool voxRestorePending)
 {
-    return radioConnected && voxEnabled;
+    return radioConnected && (voxEnabled || voxRestorePending);
 }
 
 }  // namespace AetherSDR

@@ -20,7 +20,13 @@ public:
     static constexpr int kSlotCount     = 12;
     static constexpr int kSampleRate    = 24000;
     static constexpr int kChannels      = 2;
-    static constexpr int kMaxDurationMs = 60000;   // a CQ or an exchange, with room
+    // A local slot holds up to 30 s, and this one constant is the cap
+    // everywhere: recording, import, play and preview. Chosen deliberately,
+    // not taken from the RFC: #3915 (which RFC #4214 builds on) asked for 10 s,
+    // the radio DVK's own limit, which is too short for a contest exchange or
+    // a longer CQ; 30 s covers those while keeping a slot a short message
+    // rather than a recording. Documented in docs/user/docs/dvk-panel.md.
+    static constexpr int kMaxDurationMs = 30'000;
 
     explicit LocalVoiceKeyerStore(QString dir);
 

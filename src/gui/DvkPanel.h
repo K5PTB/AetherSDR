@@ -24,6 +24,9 @@ public:
     static QString styleTemplate();
     // The operator's word for a dvk command verb ("playback_start" → "Play").
     static QString verbLabel(const QString& verb);
+    // REC's accessible description, naming the bound keyer's own recording
+    // limit (10 s on the radio DVK, 30 s for local recordings).
+    static QString recordDescription(int maxRecordingMs);
     int selectedSlot() const;
 
     // Bind a different keyer. Every connection is re-made and the whole
@@ -52,6 +55,10 @@ public:
     // one-shot message would flash and vanish. Cleared when the swap lands.
     void setPendingSourceNotice(const QString& text);
 
+    // A word after the source in the title, e.g. "Beta" for the local keyer on
+    // a radio it has not yet been verified on. Empty for none.
+    void setSourceQualifier(const QString& text);
+
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
 
@@ -79,6 +86,7 @@ private:
     int m_selectedSlot{1};
     bool m_voxHeldOff{false};
     QString m_pendingSourceNotice;
+    QString m_sourceQualifier;
     QLineEdit* m_renameEdit{nullptr};
     int m_renameSlot{-1};
 
