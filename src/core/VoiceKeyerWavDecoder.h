@@ -20,8 +20,10 @@ namespace AetherSDR {
 // averaging — a DVK recording is logically mono.
 //
 // Contributed by dk4dj with the #957 client-side keyer patch and carried into
-// RFC #4214. Kept free of AudioEngine/RadioModel so the parser is unit-testable
-// on its own (see tests/voice_keyer_wav_decoder_test.cpp).
+// RFC #4214. One change since: the chunk walk's stride is taken in 64 bits and
+// the walk is bounded (kMaxChunks), after the #6292 review found a size near
+// UINT32_MAX wrapped it. Kept free of AudioEngine/RadioModel so the parser is
+// unit-testable on its own (see tests/voice_keyer_wav_decoder_test.cpp).
 class VoiceKeyerWavDecoder {
 public:
     // Boundary caps.
@@ -30,6 +32,9 @@ public:
     static constexpr int    kMinSampleRate  = 8000;
     static constexpr int    kMaxSampleRate  = 192000;
     static constexpr int    kMaxChannels    = 8;
+    // A real WAV has a handful of chunks (fmt, data, LIST, fact, bext...).
+    // The walk gives up past this many, so no file can make it long.
+    static constexpr int    kMaxChunks      = 256;
 
     // Header-only probe for duration display.  Returns false with a
     // user-readable error when the file is not a usable WAV.

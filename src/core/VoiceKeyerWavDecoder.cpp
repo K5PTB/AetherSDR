@@ -64,7 +64,12 @@ bool parseWav(const QString& filePath, WavFormat& fmt,
     dataBytes = 0;
 
     qint64 pos = 12;
+    int chunks = 0;
     while (pos + 8 <= fileSize) {
+        if (++chunks > VoiceKeyerWavDecoder::kMaxChunks) {
+            error = QStringLiteral("Too many chunks in the WAV file.");
+            return false;
+        }
         if (!f.seek(pos)) break;
         char hdr[8];
         if (f.read(hdr, 8) != 8) break;
@@ -101,11 +106,16 @@ bool parseWav(const QString& filePath, WavFormat& fmt,
             dataBytes = std::min<qint64>(chunkSize, fileSize - body);
         }
 
-        // Chunks are word-aligned; a zero-size chunk would loop forever.
-        qint64 advance = 8 + chunkSize + (chunkSize & 1);
-        if (advance <= 8)
-            advance = 9;
-        pos += advance;
+        // Chunks are word-aligned. The stride is taken in 64 bits: in 32-bit
+        // arithmetic `8 + chunkSize` wraps for a declared size near
+        // UINT32_MAX, and the walk then crept through the file a few bytes at
+        // a time, reading audio as chunk headers, instead of ending (#6292
+        // review). At least 8, so the walk always advances; a zero-size chunk
+        // is legal and the next one starts right after its header.
+        const qint64 size = chunkSize;
+        pos = body + size + (size & 1);
+        if (haveFmt && dataOffset >= 0)
+            break;   // nothing later can change the answer
     }
 
     if (!haveFmt) {

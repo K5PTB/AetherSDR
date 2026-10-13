@@ -260,6 +260,83 @@ int main()
         }
     }
 
+    // ── The chunk walk (#6292 review) ───────────────────────────────────
+    // The stride used to be `8 + chunkSize` in 32-bit arithmetic, so a size
+    // near UINT32_MAX wrapped to a tiny step and the walk crept through the
+    // file, reading its bytes as chunk headers. Each case below is decided by
+    // what the decoder ACCEPTS, so a wrong stride shows as a wrong answer.
+    {
+        QByteArray mono;
+        int rate = 0;
+        QString error;
+        QByteArray fmtChunk;
+        fmtChunk.append("fmt ", 4);
+        appendU32(fmtChunk, 16);
+        appendU16(fmtChunk, 1);          // PCM
+        appendU16(fmtChunk, 1);          // mono
+        appendU32(fmtChunk, 8000);
+        appendU32(fmtChunk, 16000);
+        appendU16(fmtChunk, 2);
+        appendU16(fmtChunk, 16);
+        QByteArray dataChunk;
+        dataChunk.append("data", 4);
+        appendU32(dataChunk, 32);
+        dataChunk.append(QByteArray(32, '\x10'));
+        const auto riff = [](const QByteArray& body) {
+            QByteArray file;
+            file.append("RIFF", 4);
+            appendU32(file, static_cast<quint32>(body.size()));
+            file.append(body);
+            return file;
+        };
+
+        // A chunk declaring 0xFFFFFFF9 bytes ends the walk: it runs past the
+        // end of the file, so nothing after its header is a chunk. Inside its
+        // body sits a valid-looking fmt/data pair at offset 48 — exactly where
+        // the wrapped 9-byte stride lands (12, 21, 30, 39, 48) — so the old
+        // walk accepted audio that was really the body of another chunk.
+        QByteArray wrapped;
+        wrapped.append("WAVE", 4);
+        wrapped.append("JUNK", 4);
+        appendU32(wrapped, 0xFFFFFFF9u);
+        wrapped.append(QByteArray(48 - 20, '\0'));   // the JUNK body, file offsets 20..47
+        wrapped.append(fmtChunk);
+        wrapped.append(dataChunk);
+        const QByteArray wrappedFile = riff(wrapped);
+        CHECK(wrappedFile.indexOf("fmt ") == 48, "test layout: fmt must sit at file offset 48");
+        const QString wrappedPath = writeFile(dir, "wrapped_chunk.wav", wrappedFile);
+        CHECK(!VoiceKeyerWavDecoder::decodeToMonoFloat(wrappedPath, mono, rate, error)
+                  && error.contains(QLatin1String("No fmt")),
+              "a chunk size near UINT32_MAX must end the walk, not wrap to a short stride");
+
+        // A zero-size chunk is legal; the next one starts right after its
+        // header. The old guard stepped 9 bytes here and lost every chunk after.
+        QByteArray empty;
+        empty.append("WAVE", 4);
+        empty.append("JUNK", 4);
+        appendU32(empty, 0);
+        empty.append(fmtChunk);
+        empty.append(dataChunk);
+        const QString emptyPath = writeFile(dir, "zero_size_chunk.wav", riff(empty));
+        CHECK(VoiceKeyerWavDecoder::decodeToMonoFloat(emptyPath, mono, rate, error)
+                  && rate == 8000 && mono.size() == 16 * static_cast<int>(sizeof(float)),
+              "a zero-size chunk before fmt must not misalign the walk");
+
+        // Hundreds of chunks before fmt: refused rather than walked.
+        QByteArray many;
+        many.append("WAVE", 4);
+        for (int i = 0; i < VoiceKeyerWavDecoder::kMaxChunks + 50; ++i) {
+            many.append("JUNK", 4);
+            appendU32(many, 0);
+        }
+        many.append(fmtChunk);
+        many.append(dataChunk);
+        const QString manyPath = writeFile(dir, "many_chunks.wav", riff(many));
+        CHECK(!VoiceKeyerWavDecoder::decodeToMonoFloat(manyPath, mono, rate, error)
+                  && error.contains(QLatin1String("Too many chunks")),
+              "a file with more chunks than any real WAV must be refused");
+    }
+
     if (g_failures == 0) {
         std::printf("voice_keyer_wav_decoder_test: all checks passed\n");
         return 0;
