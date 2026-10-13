@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QRegularExpression>
 #include <QHash>
+#include <QPointer>
 #include <QStyle>
 #include "RoundedMenu.h"
 #include "core/ThemeManager.h"
@@ -357,6 +358,12 @@ DvkPanel::DvkPanel(VoiceKeyer* keyer, QWidget* parent)
     // must run after that timer exists. It is what puts the keyer's source in
     // the title and its recordings in the rows on a freshly built panel.
     refreshFromKeyer();
+}
+
+QString DvkPanel::keyerChangedNotice()
+{
+    return QStringLiteral("The voice keyer changed while the file dialog was open, so nothing "
+                          "was transferred — try again.");
 }
 
 QString DvkPanel::recordDescription(int maxRecordingMs)
@@ -742,6 +749,10 @@ void DvkPanel::setKeyer(VoiceKeyer* keyer)
     if (!keyer || keyer == m_model) {
         return;
     }
+    // An inline rename belongs to the keyer it was started on; committed after
+    // the swap it would name the other keyer's slot — a local edit landing on
+    // the radio's shared one. End it here, before the swap.
+    cancelRename();
     // Drop every connection from the outgoing keyer first: left in place, its
     // status would keep driving this panel after the swap.
     disconnect(m_model, nullptr, this, nullptr);
@@ -796,12 +807,19 @@ void DvkPanel::showContextMenu(int id, const QPoint& globalPos)
     connect(renameAct, &QAction::triggered, this, [this, id]() { startRename(id); });
     connect(clearAct, &QAction::triggered, this, [this, id]() { m_model->clear(id); });
 
+    // The file dialogs run a nested event loop, in which the bound keyer can
+    // change; the transfer belongs to the keyer the menu was opened on.
     connect(importAct, &QAction::triggered, this, [this, id]() {
+        const QPointer<VoiceKeyer> owner = m_model;
         QString path = QFileDialog::getOpenFileName(this,
             "Import WAV to DVK Slot",
             QDir::homePath(),
             "WAV Files (*.wav)");
         if (path.isEmpty()) return;
+        if (owner != m_model) {
+            showNotice(keyerChangedNotice(), true);
+            return;
+        }
 
         m_model->importWav(id, path);
     });
@@ -814,11 +832,16 @@ void DvkPanel::showContextMenu(int id, const QPoint& globalPos)
         if (name.isEmpty()) name = QString("Recording_%1").arg(id);
         name.replace(QRegularExpression("[^\\w\\s-]"), "_");
 
+        const QPointer<VoiceKeyer> owner = m_model;
         QString path = QFileDialog::getSaveFileName(this,
             "Export DVK Recording",
             QDir::homePath() + "/" + name + ".wav",
             "WAV Files (*.wav)");
         if (path.isEmpty()) return;
+        if (owner != m_model) {
+            showNotice(keyerChangedNotice(), true);
+            return;
+        }
 
         m_model->exportWav(id, path);
     });

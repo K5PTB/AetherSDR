@@ -106,12 +106,11 @@ bool parseWav(const QString& filePath, WavFormat& fmt,
             dataBytes = std::min<qint64>(chunkSize, fileSize - body);
         }
 
-        // Chunks are word-aligned. The stride is taken in 64 bits: in 32-bit
-        // arithmetic `8 + chunkSize` wraps for a declared size near
-        // UINT32_MAX, and the walk then crept through the file a few bytes at
-        // a time, reading audio as chunk headers, instead of ending (#6292
-        // review). At least 8, so the walk always advances; a zero-size chunk
-        // is legal and the next one starts right after its header.
+        // Chunks are word-aligned. The stride is taken in 64 bits, because
+        // `8 + chunkSize` in 32-bit arithmetic wraps for a declared size near
+        // UINT32_MAX; widened, such a chunk runs past the end and ends the
+        // walk. The stride is at least 8, so the walk always advances, and a
+        // zero-size chunk is legal: the next one starts right after its header.
         const qint64 size = chunkSize;
         pos = body + size + (size & 1);
         if (haveFmt && dataOffset >= 0)

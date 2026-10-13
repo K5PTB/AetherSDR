@@ -111,7 +111,7 @@ private:
     void finishVoxHold(HoldOutcome outcome);
     void releaseVoxHold();
     void restoreVox();
-    void checkVoxStillHeld();
+    void stopRecordingIfVoxOn();
 };
 
 }  // namespace AetherSDR

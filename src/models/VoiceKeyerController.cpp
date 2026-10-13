@@ -44,7 +44,7 @@ VoiceKeyerController::VoiceKeyerController(RadioModel& radio,
     });
     auto& tx = m_radio.transmitModel();
     connect(&tx, &TransmitModel::voxEnableAnswered, this, &VoiceKeyerController::onVoxAnswered);
-    connect(&tx, &TransmitModel::phoneStateChanged, this, &VoiceKeyerController::checkVoxStillHeld);
+    connect(&tx, &TransmitModel::phoneStateChanged, this, &VoiceKeyerController::stopRecordingIfVoxOn);
     connect(&m_radio, &RadioModel::connectionStateChanged, this, [this](bool connected) {
         if (connected)
             return;
@@ -200,18 +200,23 @@ void VoiceKeyerController::restoreVox()
     m_restoreTicket = tx.requestVoxEnable(true);
 }
 
-// While a recording runs under the hold, VOX coming back on — the operator's
-// click, or a status that reports it on — would key the radio on the operator's
-// voice. The recording cannot be made safe again, so it ends, unsaved, and VOX
-// is left as whoever turned it on wanted it. (A FLEX-6500 does not repeat
-// vox_enable in a status, so another client's change may never reach here.)
-void VoiceKeyerController::checkVoxStillHeld()
+// While a local recording runs, VOX turning on — the operator's click, or a
+// status that reports it on — would key the radio on the operator's voice,
+// whether or not this recording had to hold VOX off to start. The recording
+// cannot be made safe again, so it ends, unsaved, and VOX is left as whoever
+// turned it on wanted it. A radio with no VOX AetherSDR controls (the
+// Hermes-Lite 2) has no VOX to key it, so its flag is not watched. (A
+// FLEX-6500 does not repeat vox_enable in a status, so another client's
+// change may never reach here.)
+void VoiceKeyerController::stopRecordingIfVoxOn()
 {
-    if (!m_voxHeldOff || m_holdTicket != 0 || !m_radio.transmitModel().voxEnable())
+    if (m_local->status() != VoiceKeyer::Recording || m_holdTicket != 0
+        || !m_radio.backendCapabilities().voxControl.has_value()
+        || !m_radio.transmitModel().voxEnable())
         return;
-    m_voxHeldOff = false;
     m_restoreOwed = false;
-    emit voxHeldOffChanged(false);
+    if (std::exchange(m_voxHeldOff, false))
+        emit voxHeldOffChanged(false);
     m_local->abandonRecording(
         QStringLiteral("VOX was turned on during the recording, which would key the radio, "
                        "so the recording was stopped and not saved."));

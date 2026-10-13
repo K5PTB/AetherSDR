@@ -12,7 +12,6 @@
 #include "StatusBarNotice.h"
 #include "core/IambicKeyer.h"
 
-#include <QMouseEvent>
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>

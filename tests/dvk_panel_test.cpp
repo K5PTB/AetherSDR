@@ -14,7 +14,11 @@
 #include <QRegularExpression>
 #include <QShortcut>
 #include <QStringList>
+#include <QPointer>
+#include <QMouseEvent>
+#include <QLineEdit>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -292,6 +296,43 @@ int main(int argc, char** argv)
     panel.setSourceQualifier(QString());
     report("title_carries_a_beta_qualifier_and_drops_it",
            betaShown && labelWithText(panel, QStringLiteral("Digital Voice Keyer (Local)")) != nullptr);
+
+    // An inline rename belongs to the keyer it started on. Rebinding the panel
+    // mid-edit — a source change, or Automatic following a licence status —
+    // must not commit it to the other keyer, where a local name would land on
+    // the radio's shared slot (#6292 review). Edit, rebind, then submit.
+    {
+        FakeKeyer first;
+        FakeKeyer other;
+        DvkPanel renamePanel(&first);
+        QLabel* name = labelWithText(renamePanel, first.defaultSlotName(1));
+        QLineEdit* editor = nullptr;
+        if (name) {
+            QMouseEvent dbl(QEvent::MouseButtonDblClick, QPointF(2, 2), QPointF(2, 2),
+                            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(name, &dbl);
+            for (QLineEdit* e : renamePanel.findChildren<QLineEdit*>()) {
+                if (e->property("dvkRole").toString() == QLatin1String("rename"))
+                    editor = e;
+            }
+        }
+        const bool editing = editor != nullptr;
+        const QPointer<QLineEdit> held(editor);
+        if (editor)
+            editor->setText(QStringLiteral("Started on first"));
+        renamePanel.setKeyer(&other);
+        if (held)
+            emit held->returnPressed();   // the operator presses Return after the swap
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        const auto renamed = [](const FakeKeyer& k) {
+            return std::any_of(k.calls.cbegin(), k.calls.cend(),
+                               [](const QString& c) { return c.startsWith(QLatin1String("setName")); });
+        };
+        report("rename_does_not_follow_a_rebind_to_the_other_keyer",
+               editing && !renamed(first) && !renamed(other),
+               (QStringLiteral("editing=%1 first=[%2] other=[%3]").arg(editing)
+                    .arg(joined(first.calls).c_str(), joined(other.calls).c_str())).toStdString());
+    }
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);
     return g_failed ? 1 : 0;

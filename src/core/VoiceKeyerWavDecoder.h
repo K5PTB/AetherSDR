@@ -20,9 +20,8 @@ namespace AetherSDR {
 // averaging — a DVK recording is logically mono.
 //
 // Contributed by dk4dj with the #957 client-side keyer patch and carried into
-// RFC #4214. One change since: the chunk walk's stride is taken in 64 bits and
-// the walk is bounded (kMaxChunks), after the #6292 review found a size near
-// UINT32_MAX wrapped it. Kept free of AudioEngine/RadioModel so the parser is
+// RFC #4214. The chunk walk takes its stride in 64 bits and stops after
+// kMaxChunks. Kept free of AudioEngine/RadioModel so the parser is
 // unit-testable on its own (see tests/voice_keyer_wav_decoder_test.cpp).
 class VoiceKeyerWavDecoder {
 public:

@@ -45,7 +45,7 @@ inline QString voiceKeyerRecordRefusal(bool hasSelectableMicInputs,
 //
 // ConfirmOff: the model says off, but only because it was ASKED to be — an
 // operator's VOX click writes the model before the radio answers, and the
-// radio may answer late or refuse (#6292 review). Ask again and wait for the
+// radio may answer late or refuse. Ask again and wait for the
 // radio's own answer; it was meant to be off, so nothing is given back.
 enum class VoxHold { None, ConfirmOff, HoldAndRestore };
 

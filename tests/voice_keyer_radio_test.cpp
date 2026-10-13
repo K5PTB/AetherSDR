@@ -357,10 +357,37 @@ int main(int argc, char** argv)
         b.backend->caps.voxControl = std::nullopt;
         b.radioReportsVox(true);
         b.keyer()->recStart(1);
+        const bool recordedWithoutHold = b.keyer()->status() == VoiceKeyer::Recording
+                                         && b.voxRequests() == 0;
+        // Its VOX flag means nothing to the radio, so a click on it does not
+        // end the recording either.
+        b.radio.transmitModel().setVoxEnable(true);
+        spin();
         report("a_radio_without_vox_records_without_a_hold",
-               b.keyer()->status() == VoiceKeyer::Recording && b.voxRequests() == 0,
+               recordedWithoutHold && b.keyer()->status() == VoiceKeyer::Recording
+                   && b.failures.isEmpty(),
                b.wire.join(",").toStdString());
         b.keyer()->recStop(1);
+    }
+
+    // VOX turned on during a recording that started with VOX already off —
+    // no hold taken — stops it as surely as one that held VOX off (#6292
+    // review). VOX is left on, as the operator asked, and nothing is restored.
+    {
+        Bench b;
+        b.radioReportsVox(false);
+        b.keyer()->recStart(1);
+        const bool recordingWithoutHold = b.keyer()->status() == VoiceKeyer::Recording
+                                          && b.voxRequests() == 0;
+        b.radio.transmitModel().setVoxEnable(true);   // the operator's click
+        spin();
+        report("vox_on_stops_a_recording_that_needed_no_hold",
+               recordingWithoutHold && b.keyer()->status() == VoiceKeyer::Idle
+                   && b.failures.size() == 1 && b.failures[0].contains(QLatin1String("not saved"))
+                   && b.keyer()->recordings()[0].durationMs == 0
+                   && b.radio.transmitModel().voxEnable()
+                   && b.voxRequests() == 1,   // the operator's own, and no restore
+               (b.failures.join(" | ") + QStringLiteral(" wire=") + b.wire.join(",")).toStdString());
     }
 
     std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "PASSED", g_failed);

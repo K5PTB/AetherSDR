@@ -27,6 +27,9 @@ public:
     // REC's accessible description, naming the bound keyer's own recording
     // limit (10 s on the radio DVK, 30 s for local recordings).
     static QString recordDescription(int maxRecordingMs);
+    // Shown when the bound keyer changed while an import/export file dialog
+    // was open, so the transfer was dropped rather than sent to the other one.
+    static QString keyerChangedNotice();
     int selectedSlot() const;
 
     // Bind a different keyer. Every connection is re-made and the whole

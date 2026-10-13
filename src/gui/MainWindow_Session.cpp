@@ -1217,9 +1217,9 @@ void MainWindow::wireRadioModel()
             this, [this](int) { syncPanSpanControlPlacement(); });
     // ...and CWX/DVK availability follows the TX slice for the same reason. The
     // licence statuses land before the slice statuses, so the pass they trigger
-    // finds no TX slice yet and disables the indicator; on a first connect the
-    // new slice's txSliceChanged repairs that, but a reclaimed one carries its
-    // tx=1 over and nothing re-ran the pass, leaving DVK dead after a reconnect.
+    // finds no TX slice yet and disables the indicator. A new slice's
+    // txSliceChanged re-runs it; a reclaimed one carries tx=1 over and emits no
+    // such edge, so this is what re-runs it after a reconnect.
     connect(&m_radioModel, &RadioModel::slotOccupancyChanged,
             this, [this](int) { updateKeyerAvailability(); });
     connect(&m_radioModel, &RadioModel::sliceConnectEnumerationStarted,
