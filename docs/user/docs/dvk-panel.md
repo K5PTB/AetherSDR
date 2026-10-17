@@ -52,6 +52,8 @@ Right-click the **DVK** indicator, or choose **Settings → Voice Keyer Source..
 
 A change made while a recording, playback or preview is running waits for it to end, so STOP and the F-keys keep driving the keyer that started it. The status line says so, for example `On air · slot 1 · 2.6s of 3.0s · Radio keyer when this ends`.
 
+If the source changes while you are renaming a slot or using its context menu or file dialog, the pending action is canceled. Open it again on the keyer you want to change.
+
 ### Recording
 
 1. Click a slot to select it (the row takes the highlight).

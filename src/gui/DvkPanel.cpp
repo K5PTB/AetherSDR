@@ -787,6 +787,15 @@ void DvkPanel::refreshFromKeyer()
 void DvkPanel::showContextMenu(int id, const QPoint& globalPos)
 {
     QMenu menu;
+    const QPointer<VoiceKeyer> owner = m_model;
+    const auto ownerIsCurrent = [this, owner] {
+        if (owner && owner == m_model) {
+            return true;
+        }
+        showNotice(QStringLiteral("The voice keyer changed while the slot menu was open, "
+                                  "so nothing was changed — try again."), true);
+        return false;
+    };
 
     auto* renameAct = menu.addAction("Rename…");
     menu.addSeparator();
@@ -804,13 +813,23 @@ void DvkPanel::showContextMenu(int id, const QPoint& globalPos)
     importAct->setEnabled(notBusy && idle);
     exportAct->setEnabled(notBusy && hasRecording);
 
-    connect(renameAct, &QAction::triggered, this, [this, id]() { startRename(id); });
-    connect(clearAct, &QAction::triggered, this, [this, id]() { m_model->clear(id); });
+    connect(renameAct, &QAction::triggered, this, [this, id, ownerIsCurrent]() {
+        if (ownerIsCurrent()) {
+            startRename(id);
+        }
+    });
+    connect(clearAct, &QAction::triggered, this, [owner, id, ownerIsCurrent]() {
+        if (ownerIsCurrent()) {
+            owner->clear(id);
+        }
+    });
 
     // The file dialogs run a nested event loop, in which the bound keyer can
     // change; the transfer belongs to the keyer the menu was opened on.
-    connect(importAct, &QAction::triggered, this, [this, id]() {
-        const QPointer<VoiceKeyer> owner = m_model;
+    connect(importAct, &QAction::triggered, this, [this, id, owner, ownerIsCurrent]() {
+        if (!ownerIsCurrent()) {
+            return;
+        }
         QString path = QFileDialog::getOpenFileName(this,
             "Import WAV to DVK Slot",
             QDir::homePath(),
@@ -824,7 +843,10 @@ void DvkPanel::showContextMenu(int id, const QPoint& globalPos)
         m_model->importWav(id, path);
     });
 
-    connect(exportAct, &QAction::triggered, this, [this, id]() {
+    connect(exportAct, &QAction::triggered, this, [this, id, owner, ownerIsCurrent]() {
+        if (!ownerIsCurrent()) {
+            return;
+        }
         QString name;
         for (const auto& r : m_model->recordings()) {
             if (r.id == id) { name = r.name; break; }
@@ -832,7 +854,6 @@ void DvkPanel::showContextMenu(int id, const QPoint& globalPos)
         if (name.isEmpty()) name = QString("Recording_%1").arg(id);
         name.replace(QRegularExpression("[^\\w\\s-]"), "_");
 
-        const QPointer<VoiceKeyer> owner = m_model;
         QString path = QFileDialog::getSaveFileName(this,
             "Export DVK Recording",
             QDir::homePath() + "/" + name + ".wav",

@@ -7,6 +7,7 @@
 #include "models/VoiceKeyer.h"
 
 #include <QApplication>
+#include <QAction>
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
@@ -17,6 +18,8 @@
 #include <QPointer>
 #include <QMouseEvent>
 #include <QLineEdit>
+#include <QMenu>
+#include <QTimer>
 
 #include <algorithm>
 #include <cstdio>
@@ -331,6 +334,37 @@ int main(int argc, char** argv)
         report("rename_does_not_follow_a_rebind_to_the_other_keyer",
                editing && !renamed(first) && !renamed(other),
                (QStringLiteral("editing=%1 first=[%2] other=[%3]").arg(editing)
+                    .arg(joined(first.calls).c_str(), joined(other.calls).c_str())).toStdString());
+    }
+
+    {
+        FakeKeyer first;
+        FakeKeyer other;
+        first.addRecording(1, QStringLiteral("Local CQ"), 1000);
+        DvkPanel menuPanel(&first);
+        QWidget* row = menuPanel.findChild<QWidget*>(QStringLiteral("dvkSlot1"));
+        bool triggered = false;
+        QTimer::singleShot(0, &menuPanel, [&] {
+            QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!menu) {
+                return;
+            }
+            menuPanel.setKeyer(&other);
+            for (QAction* action : menu->actions()) {
+                if (action->text() == QLatin1String("Clear")) {
+                    triggered = true;
+                    action->trigger();
+                    break;
+                }
+            }
+            menu->close();
+        });
+        if (row) {
+            emit row->customContextMenuRequested(QPoint(2, 2));
+        }
+        report("slot_menu_does_not_follow_a_rebind_to_the_other_keyer",
+               row && triggered && first.calls.isEmpty() && other.calls.isEmpty(),
+               (QStringLiteral("triggered=%1 first=[%2] other=[%3]").arg(triggered)
                     .arg(joined(first.calls).c_str(), joined(other.calls).c_str())).toStdString());
     }
 
