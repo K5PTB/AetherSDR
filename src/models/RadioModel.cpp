@@ -9403,7 +9403,12 @@ void RadioModel::applyAdaptiveFrameRate(NetState newState, NetState oldState)
 
 bool RadioModel::usesRemoteNetworkThresholds() const
 {
-    return m_wanConn != nullptr || m_lastInfo.isRouted;
+    return isRemoteSession();
+}
+
+bool RadioModel::isRemoteSession() const
+{
+    return isRemoteRadioSession(isWan(), m_lastInfo);
 }
 
 QString RadioModel::networkQuality() const
@@ -11943,7 +11948,7 @@ QString RadioModel::gpsNtpServerAddress() const
     if (!m_automationGpsNtpServerAddress.isEmpty()) {
         return m_automationGpsNtpServerAddress;
     }
-    if (!capabilities().hasNtpServer || isWan() || m_lastInfo.isRouted
+    if (!capabilities().hasNtpServer || isRemoteSession()
         || m_lastInfo.address.isNull()) {
         return {};
     }

@@ -1697,13 +1697,12 @@ void RadioSetupDialog::updateRadioCapabilityVisibility()
             tr("Not supported by this radio"));
     }
     if (m_ipDhcpButton) {
-        const bool canConfigure = caps.hasClientNetworkConfig;
+        const QString tip = ipConfigUnavailableReason(
+            caps.hasClientNetworkConfig, m_model->isRemoteSession());
+        const bool canConfigure = tip.isEmpty();
         const QString sessionKey = connected
             ? QStringLiteral("%1:%2").arg(m_model->family(), m_model->serial())
             : QString();
-        const QString tip = canConfigure
-            ? QString()
-            : tr("Changing the radio's IP configuration is not supported by this radio.");
         const bool isStatic = m_model->hasStaticIp();
         applyIpConfigPresentation(
             m_ipConfigPresentation, sessionKey, canConfigure, isStatic,
@@ -2629,15 +2628,17 @@ QGroupBox* RadioSetupDialog::buildIpConfigGroup()
     btnRow->setSpacing(4);
 
     const bool isStatic = m_model->hasStaticIp();
-    const bool canConfigure = m_model->backendCapabilities().hasClientNetworkConfig;
-    const QString unavailableTip = tr("Changing the radio's IP configuration is not supported by this radio.");
+    const QString unavailableTip = ipConfigUnavailableReason(
+        m_model->backendCapabilities().hasClientNetworkConfig, m_model->isRemoteSession());
+    const bool canConfigure = unavailableTip.isEmpty();
 
     auto* dhcpBtn = new QPushButton("DHCP");
     m_ipDhcpButton = dhcpBtn;
     dhcpBtn->setCheckable(true);
     dhcpBtn->setChecked(!isStatic);
     dhcpBtn->setEnabled(canConfigure);
-    dhcpBtn->setToolTip(canConfigure ? QString() : unavailableTip);
+    dhcpBtn->setToolTip(unavailableTip);
+    dhcpBtn->setAccessibleDescription(unavailableTip);
     setButtonRole(dhcpBtn, ButtonRole::Select);
     btnRow->addWidget(dhcpBtn);
 
@@ -2646,7 +2647,8 @@ QGroupBox* RadioSetupDialog::buildIpConfigGroup()
     staticBtn->setCheckable(true);
     staticBtn->setChecked(isStatic);
     staticBtn->setEnabled(canConfigure);
-    staticBtn->setToolTip(dhcpBtn->toolTip());
+    staticBtn->setToolTip(unavailableTip);
+    staticBtn->setAccessibleDescription(unavailableTip);
     setButtonRole(staticBtn, ButtonRole::Select);
     btnRow->addWidget(staticBtn);
 
@@ -2691,7 +2693,7 @@ QGroupBox* RadioSetupDialog::buildIpConfigGroup()
         : QString();
     m_ipConfigPresentation.canConfigure = canConfigure;
     applyBtn->setEnabled(false);
-    applyBtn->setToolTip(canConfigure ? QString() : unavailableTip);
+    applyBtn->setToolTip(unavailableTip);
     applyBtn->setAccessibleDescription(applyBtn->toolTip());
     fieldsGrid->addWidget(applyBtn, 4, 1, Qt::AlignLeft);
 

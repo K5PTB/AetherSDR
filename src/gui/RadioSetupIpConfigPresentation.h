@@ -37,6 +37,19 @@ inline void applyCapabilityClusterVisibility(QWidget* cluster,
     cluster->setVisible(!connected || supported);
 }
 
+// Why the IP configuration is unavailable, or empty when it is available. An
+// unsupported radio is named first: a remote session is moot there.
+inline QString ipConfigUnavailableReason(bool supported, bool remote)
+{
+    if (!supported) {
+        return QObject::tr("Changing the radio's IP configuration is not supported by this radio.");
+    }
+    if (remote) {
+        return QObject::tr("Change the radio's network settings from its local network.");
+    }
+    return {};
+}
+
 inline void applyIpConfigPresentation(
     IpConfigPresentationState& state,
     const QString& sessionKey,
