@@ -25,6 +25,7 @@
 #include "core/backends/flex/WanConnection.h"
 #include "core/backends/flex/PanadapterStream.h"
 #include "core/SleepInhibitor.h"
+#include "core/RemoteSession.h"
 #include "core/DaxTxPolicy.h"
 #include "core/DaxTxAudioPermit.h"
 #include "core/backends/DaxTxStream.h"
@@ -972,6 +973,8 @@ public:
     // timer brings the link back when the radio finishes booting.
     bool rebootRadio(std::optional<RadioControlSession> expectedSession = {});
     bool isWan() const { return m_wanConn != nullptr; }
+    // WAN, routed or tailnet: anything but a direct local-network session.
+    bool isRemoteSession() const;
 
     // Phase 2 of GHSA-wfx7-w6p8-4jr2 (#2951): forward the user's
     // cert-mismatch decision down to the active WAN connection. No-op

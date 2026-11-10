@@ -6797,9 +6797,8 @@ void MainWindow::onConnectionStateChanged(bool connected)
     // broadcasts never reach the client by design (#3420).  Routed and
     // SmartLink/WAN sessions cannot receive local broadcasts at all, so flag
     // them as "remote" to fully quiesce discovery rather than just pausing the
-    // re-bind churn.
-    const bool remoteConnection =
-        m_radioModel.isWan() || m_radioModel.lastRadioInfo().isRouted;
+    // re-bind churn. A radio reached at a tailnet address is remote too.
+    const bool remoteConnection = m_radioModel.isRemoteSession();
     m_discovery.setConnected(connected, remoteConnection);
 
     if (connected) {
