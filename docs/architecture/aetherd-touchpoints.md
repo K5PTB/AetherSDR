@@ -4,7 +4,7 @@
 
 Burndown manifest for the engine/UI decoupling ([RFC](../aetherd-headless-engine-design.md) §2, §10). One row per engine header the UI includes; converting a touchpoint means the UI reaches that surface through the versioned protocol instead of the header.
 
-**Totals:** 285 touchpoint headers (230 core, 55 models) — 285/285 tagged, 0/285 converted.
+**Totals:** 286 touchpoint headers (231 core, 55 models) — 286/286 tagged, 0/286 converted.
 
 | Header | Includers | Tag | Status |
 |---|---:|---|---|
@@ -138,6 +138,7 @@ Burndown manifest for the engine/UI decoupling ([RFC](../aetherd-headless-engine
 | `core/RadioMessageTypes.h` | 2 | universal — Generic radio-message classification enums (MessageType/MessageSeverity) — no vendor ties. Extracted from vendor(flex) core/backends/flex/CommandParser.h so above-seam consumers of just the enums decouple from the SmartSDR wire parser (EB3 decouple, #4087). MessageSeverity values are load-bearing wire values (see the header). | unconverted |
 | `core/RadioSettingsScope.h` | 3 | universal — A (family, radioId) handle into the radio-scoped settings store (RFC #4603). Family-neutral by construction — Flex serial, HL2 MAC and Kiwi profile UUID all resolve through the same scope, with radio → family-wide → empty fallback. This is the shape radio-scoped state should keep after the protocol lands. | unconverted |
 | `core/ReceivePresentationSync.h` | 2 | mixed(flex) — Cross-source RX latency sync (queues + GCC-PHAT); mechanism is core, but API hardcodes Flex/KiwiSdr pair | unconverted |
+| `core/RemoteSession.h` | 1 | universal — isRemoteRadioSession(): whether a session is remote (WAN, routed, or a radio at a tailnet address), shared by the connection panel and RadioModel for the Radio Setup IP gate, network-quality thresholds, NTP gate, discovery socket and low-bandwidth default. Reads only RadioInfo's core-profile address and isRouted; no protocol message, no vendor ties. | unconverted |
 | `core/RfkitConnection.h` | 3 | peripheral(rfkit) — Direct HTTP/JSON REST client (default port 8080) for the RF-KIT amplifier — a standalone Ethernet accessory with no FlexRadio awareness at all, same precedent as core/AcomConnection.h, core/SpeConnection.h, core/VkampConnection.h and core/Kpa1500Connection.h. The Flex radio neither discovers it nor proxies its telemetry, so its REST API is the only control channel. Not radio-family wire; a peripheral accessory, NOT behind the IRadioBackend radio seam. See docs/architecture/rfkit-amplifier-design.md. | unconverted |
 | `core/RfkitProtocol.h` | 1 | peripheral(rfkit) — Wire codec for the RF-KIT peripheral: JSON parsers for each REST endpoint (power, data, tuner, antennas, operate mode, operational interface, info), the request-body builders, and the per-field optional Status snapshot. Derived from the vendor's public RFKIT API documentation (OpenAPI 0.9.0), a clean-room input (Constitution Principle IV). Peripheral accessory wire, NOT behind the IRadioBackend radio seam. | unconverted |
 | `core/RtlSdrDiscovery.h` | 1 | vendor(rtl) — RTL-SDR USB device discovery that emits the shared RadioInfo shape. Family-specific discovery belongs below the RTL backend seam. | unconverted |

@@ -1,4 +1,10 @@
 {
+ "core/RemoteSession.h": {
+  "tag": "universal",
+  "note": "isRemoteRadioSession(): whether a session is remote (WAN, routed, or a radio at a tailnet address), shared by the connection panel and RadioModel for the Radio Setup IP gate, network-quality thresholds, NTP gate, discovery socket and low-bandwidth default. Reads only RadioInfo's core-profile address and isRouted; no protocol message, no vendor ties.",
+  "split": "",
+  "confidence": "high"
+ },
  "core/backends/NtpSourceRequest.h": {
   "tag": "universal",
   "note": "Seam vocabulary for a radio-held NTP time source list: the definition and request types with the firmware's id/address/description allowlists, the reported source state and its present-only delta. No wire text; FlexBackend encodes and decodes it (SmartSDR 4.3.16) and capabilities().ntpSourceControl gates it.",
